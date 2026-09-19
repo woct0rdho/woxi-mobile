@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window background while the WebView starts. Colors follow the dark theme by
+         default. MainActivity.applyTheme() switches it with the app theme. -->
+    <color name="woxi_background">#FF1E1E1E</color>
+</resources>

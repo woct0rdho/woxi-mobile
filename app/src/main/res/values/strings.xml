@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Woxi Mobile</string>
+    <string name="startup_failed">The notebook interface could not be loaded.\n\nAndroid did not start this app\'s WebView renderer. Restarting the phone clears that state. Reinstalling the app does not.</string>
+</resources>

@@ -1,0 +1,469 @@
+/*
+ * Layout: top bar / notebook (scrolls) / in-app keyboard (fixed at the bottom).
+ * The keyboard extends behind the navigation bar; its content is inset with
+ * --woxi-inset-bottom, which the native side pushes in (MainActivity).
+ */
+
+:root {
+  /* Dark theme */
+  --woxi-bg: #1e1e1e;
+  --woxi-surface: #262626;
+  --woxi-surface-2: #303030;
+  --woxi-surface-3: #3c3c3c;
+  --woxi-border: #3a3a3a;
+  --woxi-text: #e8e8e8;
+  --woxi-text-dim: #9a9a9a;
+  --woxi-accent: #4d8de0;
+  --woxi-accent-dim: #2b4c78;
+  --woxi-on-accent: #ffffff;
+  /* Text on the full accent (locked keys), which is brighter than accent-dim. */
+  --woxi-on-accent-strong: #ffffff;
+  --woxi-danger: #ff7b72;
+  --woxi-warning: #e3b341;
+  --woxi-ok: #56d364;
+  --woxi-warning-bg: rgba(227, 179, 65, 0.1);
+  --woxi-warning-ink: #f0d999;
+  --woxi-error-bg: rgba(255, 123, 114, 0.1);
+  --woxi-error-ink: #ffb3ad;
+  --woxi-overlay: rgba(0, 0, 0, 0.55);
+  --woxi-toast-bg: #101010;
+  --woxi-key-h: 40px;
+  --woxi-inset-bottom: 0px;
+  --woxi-inset-top: 0px;
+}
+
+html[data-theme="light"] {
+  /* Light theme */
+  --woxi-bg: #ececec;
+  --woxi-surface: #ffffff;
+  --woxi-surface-2: #f0f0f0;
+  --woxi-surface-3: #e2e2e2;
+  --woxi-border: #d0d0d0;
+  --woxi-text: #1b1b1b;
+  --woxi-text-dim: #6a6a6a;
+  --woxi-accent: #3875d7;
+  --woxi-accent-dim: #d3e1f8;
+  --woxi-on-accent: #103a75;
+  --woxi-on-accent-strong: #ffffff;
+  --woxi-danger: #c0392b;
+  --woxi-warning: #9a6b00;
+  --woxi-ok: #1f7a3d;
+  --woxi-warning-bg: #fff6dd;
+  --woxi-warning-ink: #7a5a00;
+  --woxi-error-bg: #ffecea;
+  --woxi-error-ink: #9c2a20;
+  --woxi-overlay: rgba(30, 30, 30, 0.35);
+  --woxi-toast-bg: #262626;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--woxi-bg);
+  color: var(--woxi-text);
+  font-family: system-ui, sans-serif;
+  font-size: 15px;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+
+.woxi-hidden { display: none !important; }
+
+/* boot screen */
+
+#woxi-splash {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--woxi-bg);
+  z-index: 40;
+}
+.woxi-splash-inner { text-align: center; padding: 24px; }
+.woxi-splash-logo { font-size: 34px; font-weight: 600; letter-spacing: 0.02em; color: var(--woxi-accent); }
+.woxi-splash-sub { margin-top: 6px; color: var(--woxi-text-dim); font-size: 13px; }
+
+/* app shell */
+
+#woxi-app {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#woxi-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  background: var(--woxi-surface);
+  border-bottom: 1px solid var(--woxi-border);
+}
+#woxi-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.woxi-topbar-actions { flex: 0 0 auto; display: flex; gap: 4px; }
+.woxi-tabbtn {
+  background: transparent;
+  border: none;
+  color: var(--woxi-text);
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.woxi-tabbtn:active { background: var(--woxi-surface-3); }
+
+/* notebook */
+
+#woxi-notebook {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px 8px 18px 8px;
+}
+
+.woxi-entry {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.woxi-entry-num {
+  flex: 0 0 22px;
+  padding-top: 9px;
+  text-align: right;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--woxi-text-dim);
+}
+.woxi-entry-main { flex: 1 1 auto; min-width: 0; }
+.woxi-entry-input {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  max-height: 45vh;
+  resize: none;
+  overflow-y: auto;
+  background: var(--woxi-surface-2);
+  color: var(--woxi-text);
+  border: 1px solid var(--woxi-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: monospace;
+  font-size: 15px;
+  line-height: 1.35;
+  caret-color: var(--woxi-accent);
+  outline: none;
+}
+.woxi-entry.woxi-active .woxi-entry-input { border-color: var(--woxi-accent); }
+
+.woxi-entry-output { margin-top: 8px; }
+.woxi-entry-output:empty { display: none; }
+
+.woxi-busy {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin: 4px 0;
+  border: 2px solid var(--woxi-surface-3);
+  border-top-color: var(--woxi-accent);
+  border-radius: 50%;
+  animation: woxi-spin 0.7s linear infinite;
+}
+@keyframes woxi-spin { to { transform: rotate(360deg); } }
+
+/* engine output blocks */
+
+.woxi-out { margin: 2px 0; }
+
+.woxi-out-math {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 4px;
+}
+.woxi-out-math .woxi-svg {
+  height: 1.35em;
+  width: auto;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.woxi-out-graphic {
+  padding: 6px 0;
+  overflow-x: auto;
+}
+/* A plot that carries a view handle pans and zooms, so it claims its touches
+   instead of letting the page scroll under the finger. */
+.woxi-plot {
+  touch-action: none;
+  /* The local preview transforms the SVG, and it must not spill over the text. */
+  overflow: hidden;
+  position: relative;
+}
+.woxi-plot svg {
+  cursor: grab;
+}
+.woxi-out-graphic svg {
+  display: block;
+  width: 100%;
+  max-width: 520px;
+  height: auto;
+  border-radius: 8px;
+}
+
+.woxi-out-text {
+  padding: 2px 4px;
+  font-family: monospace;
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.woxi-out-print {
+  padding: 2px 4px;
+  font-family: monospace;
+  font-size: 14px;
+  color: var(--woxi-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.woxi-out-warning {
+  padding: 6px 8px;
+  margin: 4px 0;
+  border-left: 3px solid var(--woxi-warning);
+  background: var(--woxi-warning-bg);
+  color: var(--woxi-warning-ink);
+  font-family: monospace;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.woxi-out-error {
+  padding: 6px 8px;
+  margin: 4px 0;
+  border-left: 3px solid var(--woxi-danger);
+  background: var(--woxi-error-bg);
+  color: var(--woxi-error-ink);
+  font-family: monospace;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Manipulate: live controls under the rendered graphics */
+
+.woxi-manipulate-controls {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+.woxi-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 190px;
+  flex: 1 1 190px;
+  background: var(--woxi-surface-2);
+  border: 1px solid var(--woxi-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.woxi-control-label {
+  flex: 0 0 auto;
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--woxi-text-dim);
+  min-width: 24px;
+}
+.woxi-control-value {
+  flex: 0 0 auto;
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--woxi-text);
+  min-width: 44px;
+  text-align: right;
+}
+.woxi-control input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 90px;
+  accent-color: var(--woxi-accent);
+}
+.woxi-control select,
+.woxi-control input[type="checkbox"] {
+  flex: 1 1 auto;
+  background: var(--woxi-surface-3);
+  color: var(--woxi-text);
+  border: 1px solid var(--woxi-border);
+  border-radius: 6px;
+  padding: 4px;
+  font: inherit;
+  font-size: 13px;
+}
+.woxi-control input[type="checkbox"] { flex: 0 0 auto; width: 20px; height: 20px; }
+
+/* keyboard */
+
+#woxi-keyboard {
+  flex: 0 0 auto;
+  background: var(--woxi-surface);
+  border-top: 1px solid var(--woxi-border);
+  /* Extends behind the navigation bar; keys stay above it. */
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--woxi-inset-bottom, 0px));
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/*
+ * The pad and the bar are viewports holding one or two layers, so a swipe can slide the
+ * outgoing page out while the incoming one follows the finger. Both layers are grids.
+ * The viewport heights are fixed, so the keyboard never changes height while sliding.
+ */
+#woxi-kb-pad-view, #woxi-kb-bar-view { position: relative; overflow: hidden; }
+#woxi-kb-pad-view { height: calc(4 * var(--woxi-key-h) + 3 * 4px + 12px); }
+#woxi-kb-bar-view { height: 47px; }
+.woxi-kb-slide {
+  position: absolute;
+  inset: 0;
+  transition: transform 90ms ease-out;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+/* While the finger is down the pages track it directly, without a transition. */
+.woxi-kb-dragging .woxi-kb-slide { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .woxi-kb-slide { transition: none; }
+}
+
+/*
+ * Four key rows on every page, so swiping never changes the height of the pad.
+ * Pages differ only in how many columns they use (3, 6, 7 or 10).
+ */
+.woxi-kb-keys {
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  grid-auto-rows: var(--woxi-key-h);
+}
+
+.woxi-key {
+  height: var(--woxi-key-h);
+  min-width: 0;
+  border: none;
+  border-radius: 7px;
+  background: var(--woxi-surface-2);
+  color: var(--woxi-text);
+  font-size: 15px;
+  font-family: monospace;
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.woxi-key:active { background: var(--woxi-accent-dim); color: var(--woxi-on-accent); }
+.woxi-key.woxi-key-fn { font-size: 12.5px; }
+.woxi-key.woxi-key-span-2 { grid-column: span 2; }
+.woxi-key.woxi-key-span-4 { grid-column: span 4; }
+.woxi-key.woxi-key-accent { background: var(--woxi-surface-3); color: var(--woxi-accent); font-weight: 600; }
+.woxi-key.woxi-key-danger { background: var(--woxi-surface-3); color: var(--woxi-danger); }
+.woxi-key.woxi-key-ok { background: var(--woxi-accent-dim); color: var(--woxi-on-accent); font-weight: 600; }
+.woxi-key.woxi-key-dim { color: var(--woxi-text-dim); }
+/*
+ * Shift has three looks so the modes cannot be confused: plain when off, the dim accent
+ * while it is armed for one key, and - strongest - the full accent with a filled arrow
+ * (U+2B06 instead of U+21E7) while it is locked.
+ */
+.woxi-key.woxi-key-on { background: var(--woxi-accent-dim); color: var(--woxi-on-accent); }
+.woxi-key.woxi-key-locked { background: var(--woxi-accent); color: var(--woxi-on-accent-strong); }
+
+/* Narrower keys need a smaller face to keep every label on one line. */
+.woxi-kb-keys[data-cols="3"] .woxi-key { font-size: 12.5px; }
+.woxi-kb-keys[data-cols="3"] .woxi-key-fn { font-size: 12px; }
+.woxi-kb-keys[data-cols="6"] .woxi-key { font-size: 12px; }
+.woxi-kb-keys[data-cols="6"] .woxi-key-fn { font-size: 11px; }
+.woxi-kb-keys[data-cols="7"] .woxi-key { font-size: 14px; }
+.woxi-kb-keys[data-cols="7"] .woxi-key-fn { font-size: 12.5px; }
+/* Exceptions: labels (e.g. EulerGamma) that would otherwise be clipped. */
+.woxi-key.woxi-key-xs { font-size: 10.5px; }
+.woxi-kb-keys[data-cols="6"] .woxi-key.woxi-key-xs { font-size: 10px; }
+
+/* Action bar: always the same four equal buttons, one row high. */
+.woxi-kb-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: 42px;
+  gap: 4px;
+  padding: 5px 5px 0 5px;
+}
+.woxi-kb-actions .woxi-key { height: 42px; }
+.woxi-kb-actions .woxi-key-fn { font-size: 14px; }
+.woxi-kb-actions[data-bar="2"] .woxi-key { font-size: 13px; }
+.woxi-kb-actions[data-bar="3"] .woxi-key { font-size: 14px; }
+
+/* overlay / sheet */
+
+#woxi-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: var(--woxi-overlay);
+  display: flex;
+  align-items: flex-end;
+}
+#woxi-sheet {
+  width: 100%;
+  max-height: 78vh;
+  overflow-y: auto;
+  background: var(--woxi-surface);
+  border-top-left-radius: 14px;
+  border-top-right-radius: 14px;
+  border-top: 1px solid var(--woxi-border);
+  padding: 12px 12px calc(18px + max(env(safe-area-inset-bottom, 0px), var(--woxi-inset-bottom, 0px))) 12px;
+}
+#woxi-sheet-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--woxi-text-dim);
+  padding: 4px 6px 10px 6px;
+}
+.woxi-sheet-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--woxi-text);
+  font: inherit;
+  font-size: 16px;
+  padding: 13px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.woxi-sheet-item:active { background: var(--woxi-surface-2); }
+.woxi-sheet-item small { display: block; color: var(--woxi-text-dim); font-size: 12px; margin-top: 2px; }
+.woxi-sheet-sep { height: 1px; background: var(--woxi-border); margin: 8px 6px; }
+.woxi-sheet-text {
+  padding: 4px 10px 10px 10px;
+  color: var(--woxi-text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark shell theme for the Woxi Mobile WebView frontend. Layout/theming live in the web UI.
+         Edge-to-edge is enabled from code via enableEdgeToEdge(), so no
+         (deprecated) statusBarColor / windowLightStatusBar attributes here. -->
+    <style name="Theme.Woxi" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/woxi_background</item>
+        <item name="android:colorBackground">@color/woxi_background</item>
+    </style>
+</resources>

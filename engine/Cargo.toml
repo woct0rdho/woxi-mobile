@@ -1,0 +1,27 @@
+[package]
+name = "woxi-jni"
+version = "0.1.0"
+edition = "2021"
+description = "Android JNI wrapper around the Woxi Wolfram Language interpreter"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "woxi_jni"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The interpreter core. `default-features = false` drops the CLI (tokio, zeromq,
+# rustyline, jupyter) which an embedded engine does not need.
+woxi = { version = "0.3.0", default-features = false }
+jni = "0.21"
+
+[profile.release]
+# Built with all cores: fat LTO + a single codegen unit made the (very large)
+# interpreter crate compile single-threaded, which took far longer than the
+# size win was worth. The final APK is deflated anyway.
+opt-level = 2
+lto = "thin"
+codegen-units = 16
+panic = "unwind"      # panics are caught at the JNI boundary
+strip = "symbols"

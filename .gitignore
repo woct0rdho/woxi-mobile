@@ -1,0 +1,14 @@
+.gradle/
+.kotlin/
+__pycache__/
+build/
+
+/app/src/main/jniLibs/
+/design/
+/dist/
+/engine/target/
+/keystore/
+/screenshots/
+
+local.properties
+keystore.properties
