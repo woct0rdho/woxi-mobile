@@ -9,21 +9,50 @@ updates:
 
   - package-ecosystem: cargo
     directory: /engine
+    ignore:
+      # woxi is the interpreter itself. A patch bump is routine, while breaking changes
+      # are a deliberate decision, so major bumps stay manual.
+      - dependency-name: woxi
+        update-types: ["version-update:semver-major"]
+      # zip is woxi's transitive dependency (7.x), and the advisories are fixed only in
+      # zip 9, which woxi does not allow. The alert stays visible in the Security tab,
+      # and this only stops a security update from being attempted (and failing) every
+      # time Dependabot runs.
+      - dependency-name: zip
     groups:
       cargo:
+        patterns: ["*"]
+      cargo-security:
+        applies-to: security-updates
         patterns: ["*"]
 
   - package-ecosystem: gradle
     directory: /
-    # AGP and the Kotlin plugin pin themselves to the SDK and the JDK. A major bump is
-    # a migration, not a chore.
     ignore:
+      # AGP and the Kotlin plugin pin themselves to the SDK and the JDK. A major bump is
+      # a migration, not a chore.
       - dependency-name: "com.android.application"
         update-types: ["version-update:semver-major"]
       - dependency-name: "org.jetbrains.kotlin.android"
         update-types: ["version-update:semver-major"]
+      # These live on the Gradle buildscript classpath (they arrive through the Android
+      # Gradle plugin and Gradle itself, not from app/build.gradle.kts) and are not in
+      # the APK. Their advisories have no version we can choose, so the security update
+      # fails every run. Ignoring them keeps the run green without hiding the alert.
+      - dependency-name: "com.google.guava:guava"
+      - dependency-name: "com.google.protobuf:*"
+      - dependency-name: "io.netty:*"
+      - dependency-name: "io.opentelemetry:opentelemetry-api"
+      - dependency-name: "org.apache.commons:commons-compress"
+      - dependency-name: "org.bitbucket.b_c:jose4j"
+      - dependency-name: "org.bouncycastle:*"
+      - dependency-name: "org.jdom:jdom2"
+      - dependency-name: "org.jetbrains.kotlin:kotlin-gradle-plugin"
     groups:
       gradle:
+        patterns: ["*"]
+      gradle-security:
+        applies-to: security-updates
         patterns: ["*"]
 
   - package-ecosystem: npm

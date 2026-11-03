@@ -5,7 +5,7 @@
 # rust-toolchain.toml, ktlint from the version below, ESLint/Ruff from the lockfile and
 # the actions.
 
-name: lint
+name: Lint
 
 on:
   push:
