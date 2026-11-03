@@ -40,7 +40,7 @@ sdkmanager "ndk;28.2.13676358"
 .\tools\build-engine.ps1 -Abi x86_64               # for the emulator
 
 # App
-# Gradle 8.14 needs JDK 17-21. JDK 25 is rejected. Point JAVA_HOME at one (or have
+# Gradle 9.8 runs on JDK 17-25. Point JAVA_HOME at one (or have
 # `java` on PATH. deploy.ps1 and test-device.ps1 derive JAVA_HOME from it).
 .\gradlew.bat :app:assembleRelease                 # arm64-v8a
 .\gradlew.bat :app:assembleRelease -Pabi=all       # arm64-v8a + x86_64

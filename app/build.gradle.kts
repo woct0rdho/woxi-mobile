@@ -1,9 +1,7 @@
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 // Optional release signing. Create keystore.properties with:
@@ -31,7 +29,7 @@ val abis: List<String> = run {
 
 android {
     namespace = "com.woctordho.woximobile"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.woctordho.woximobile"
@@ -99,16 +97,8 @@ android {
     }
 }
 
-kotlin {
-    compilerOptions {
-        jvmTarget.set(JvmTarget.JVM_17)
-    }
-}
-
 dependencies {
-    // Pinned to the newest AndroidX versions that support compileSdk 36:
-    // core 1.19.0 requires compileSdk 37 + AGP 9.1, which is not needed here.
-    implementation("androidx.core:core-ktx:1.18.0")
+    implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.activity:activity-ktx:1.13.0")
-    implementation("androidx.webkit:webkit:1.17.0")
+    implementation("androidx.webkit:webkit:1.18.0")
 }
