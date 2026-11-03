@@ -18,11 +18,6 @@ updates:
       # are a deliberate decision, so major bumps stay manual.
       - dependency-name: woxi
         update-types: ["version-update:semver-major"]
-      # zip is woxi's transitive dependency (7.x), and the advisories are fixed only in
-      # zip 9, which woxi does not allow. The alert stays visible in the Security tab,
-      # and this only stops a security update from being attempted (and failing) every
-      # time Dependabot runs.
-      - dependency-name: zip
     groups:
       cargo:
         patterns: ["*"]
@@ -40,8 +35,7 @@ updates:
         update-types: ["version-update:semver-major"]
       # These live on the Gradle buildscript classpath (they arrive through the Android
       # Gradle plugin, not from app/build.gradle.kts) and are not in the APK. Their
-      # advisories have no version we can choose, so the security update would fail
-      # every run. Ignoring them keeps the run green without hiding the alert.
+      # advisories have no version we can choose.
       - dependency-name: "com.google.guava:guava"
       - dependency-name: "org.bitbucket.b_c:jose4j"
       - dependency-name: "org.bouncycastle:*"
