@@ -20,6 +20,7 @@
 
   var engine = null;
   var keyboard = null;
+  var assist = null;
   var notebookEl = null;
   var titleEl = null;
   var overlayEl = null;
@@ -150,6 +151,7 @@
   function setActive(entry) {
     state.activeId = entry ? entry.id : null;
     refreshClasses();
+    refreshAssist();
   }
 
   function refreshClasses() {
@@ -221,6 +223,8 @@
       setActive(entry);
       nativeCall('hideKeyboard');
       autoGrow(input);
+      liftEntry(entry);
+      refreshAssist();
     });
     input.addEventListener('input', function () {
       entry.input = input.value;
@@ -229,7 +233,11 @@
       state.dirty = true;
       updateTitle();
       persist();
+      refreshAssist();
     });
+    // A blur fires before the tap that caused it completes, so the bar is refreshed
+    // after both have run: a key press must land on the keys it was aimed at.
+    input.addEventListener('blur', function () { refreshAssistLater(); });
     // The caret must survive taps on the in-app keyboard buttons (which move the
     // focus away from the textarea on some WebView versions).
     ['keyup', 'click', 'select', 'focus'].forEach(function (type) {
@@ -237,6 +245,7 @@
         if (input.selectionStart !== null && input.selectionStart !== undefined) {
           entry.caret = input.selectionStart;
         }
+        refreshAssist();
       });
     });
     input.addEventListener('keydown', function (event) {
@@ -353,7 +362,38 @@
 
   // evaluation
 
+  // Eval on an unfinished call closes the brackets instead of doing nothing: the
+  // engine says whether the entry is finished, and the closers become part of the
+  // text, so nothing is hidden from the user.
+  function closeRunningCall(entry) {
+    if (!entry || !entry.dom || !engine) return Promise.resolve();
+    var text = entry.dom.input.value;
+    if (!text.trim() || !global.WoxiAssist) return Promise.resolve();
+    return engine.query('is_complete_request', { code: text }).then(function (reply) {
+      var status = reply && reply.content && reply.content.status;
+      if (status !== 'incomplete' || !entry.dom) return;
+      var closers = global.WoxiAssist.closersFor(text, text.length);
+      if (!closers) return;
+      entry.dom.input.value = text + closers;
+      entry.input = entry.dom.input.value;
+      autoGrow(entry.dom.input);
+      state.dirty = true;
+      updateTitle();
+      persist();
+    }, function () {
+      // An engine that cannot answer still gets the text as the user typed it.
+    });
+  }
+
   function evaluateEntry(entry) {
+    return closeRunningCall(entry).then(function () {
+      // User symbols changed with the evaluation, so cached completion is stale.
+      if (assist) assist.invalidate();
+      return runEntry(entry);
+    });
+  }
+
+  function runEntry(entry) {
     if (!entry || !entry.dom) return Promise.resolve();
     var input = entry.dom.input.value;
     entry.input = input;
@@ -393,6 +433,7 @@
       entry.engineMs = Math.round(t1 - t0);
       entry.renderMs = Math.round(t2 - t1);
       entry.bytesJson = json.length;
+      refreshAssist();
     }, function (err) {
       showBusy(entry, false);
       entry.dom.output.innerHTML = '<div class="woxi-out woxi-out-error">' +
@@ -497,6 +538,109 @@
     state.dirty = true;
     updateTitle();
     persist();
+    refreshAssist();
+  }
+
+  // typing help
+
+  // The text and caret the bar describes, or null when there is no entry to describe.
+  // The entry does not have to hold DOM focus: every key on this keyboard inserts through
+  // `entry.caret`, and a tap on a chip must not lose the caret it is about to replace.
+  function readActiveText() {
+    var entry = activeEntry();
+    if (!entry || !entry.dom) return null;
+    var input = entry.dom.input;
+    // Only a focused textarea reports the caret truthfully: some WebViews reset the
+    // selection to 0 when the field blurs, which would move the bar to the start of
+    // the entry every time a key is tapped.
+    var caret = global.document.activeElement === input ? input.selectionStart : entry.caret;
+    if (caret === null || caret === undefined) caret = entry.caret;
+    if (caret === null || caret === undefined) caret = input.value.length;
+    return { code: input.value, caret: caret };
+  }
+
+  // Replaces a range of the active entry, which is how a suggestion is accepted: the
+  // typed prefix goes away and the chosen name (and, for a call, its opening bracket)
+  // takes its place.
+  function replaceRange(start, end, text, caretAfter) {
+    var entry = activeEntry();
+    if (!entry || !entry.dom) return;
+    var input = entry.dom.input;
+    var value = input.value;
+    start = Math.max(0, Math.min(start, value.length));
+    end = Math.max(start, Math.min(end, value.length));
+    input.value = value.slice(0, start) + text + value.slice(end);
+    var caret = start + (caretAfter === undefined ? text.length : caretAfter);
+    entry.caret = caret;
+    input.setSelectionRange(caret, caret);
+    entry.input = input.value;
+    autoGrow(input);
+    state.dirty = true;
+    updateTitle();
+    persist();
+    refreshAssist();
+  }
+
+  function setCaret(offset) {
+    var entry = activeEntry();
+    if (!entry || !entry.dom) return;
+    var input = entry.dom.input;
+    var at = Math.max(0, Math.min(offset, input.value.length));
+    input.setSelectionRange(at, at);
+    entry.caret = at;
+    refreshAssist();
+  }
+
+  function refreshAssist() {
+    if (assist) assist.refresh();
+  }
+
+  // A blur fires before the next focus, so the bar is refreshed after both have run.
+  function refreshAssistLater() {
+    setTimeout(refreshAssist, 0);
+  }
+
+  // While the keyboard is up the entry belongs next to it, not half a screen above:
+  // the caret, the suggestions and the keys are then within one glance and one thumb.
+  function liftEntry(entry) {
+    if (!entry || !entry.dom) return;
+    setTimeout(function () {
+      var root = entry.dom.root;
+      var rect = root.getBoundingClientRect();
+      var view = notebookEl.getBoundingClientRect();
+      if (rect.height >= view.height) return;
+      var below = rect.bottom - (view.bottom - 12);
+      if (below < -1) root.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    }, 40);
+  }
+
+  // Runs one example from the gallery: it replaces the entry, like the old plot keys
+  // did, so "show me something" stays one tap.
+  function runTemplate(text) {
+    var entry = activeEntry();
+    if (!entry || !entry.dom) return;
+    entry.dom.input.value = text;
+    entry.input = text;
+    entry.caret = text.length;
+    autoGrow(entry.dom.input);
+    entry.dom.input.focus();
+    state.dirty = true;
+    updateTitle();
+    persist();
+    evaluateEntry(entry);
+  }
+
+  // The example gallery of the assist sheet. The plot keys insert the call itself and
+  // let the bar name its arguments. The ready-made versions live here.
+  function gatherTemplates() {
+    var list = [];
+    var examples = global.WoxiKeyboard.EXAMPLES || [];
+    for (var i = 0; i < examples.length; i += 1) {
+      var example = examples[i];
+      if (!example.i) continue;
+      list.push({ label: example.l, insert: example.i, hint: example.t || '' });
+    }
+    return list;
   }
 
   function backspace() {
@@ -517,6 +661,7 @@
     state.dirty = true;
     updateTitle();
     persist();
+    refreshAssist();
   }
 
   // Replaces an entry's source, re-evaluates it and keeps the UI in sync.
@@ -532,15 +677,14 @@
   }
 
   // Plot / Solve action keys. A filled entry is wrapped unless it already is such a call.
-  // An empty one gets a ready-to-evaluate example, so the key always does something useful.
+  // An empty one just opens the call: the bar names its arguments, so there is no
+  // example to delete first (the sheet's Examples tab has the ready-made versions).
   function wrapActive(kind) {
     var entry = activeEntry();
     if (!entry || !entry.dom) return;
     var text = entry.dom.input.value.trim();
     if (!text) {
-      applySource(entry, kind === 'plot'
-        ? 'Plot[Sin[x], {x, -2 Pi, 2 Pi}]'
-        : 'Solve[x^2 == 4, x]');
+      insertText(kind === 'plot' ? 'Plot[' : 'Solve[', 0);
       return;
     }
     if (kind === 'plot') {
@@ -639,7 +783,11 @@
     toast('Cut');
   }
 
-  function handleKeyAction(action) {
+  function handleKeyAction(action, data) {
+    if (action === 'assist') {
+      if (assist) assist.action(data);
+      return;
+    }
     if (action === 'enter') submitActive();
     else if (action === 'back') backspace();
     else if (action === 'plot') wrapActive('plot');
@@ -859,6 +1007,18 @@
       onAction: handleKeyAction,
     });
 
+    assist = new global.WoxiAssist.Assist({
+      read: readActiveText,
+      replace: replaceRange,
+      setCaret: setCaret,
+      evaluate: runTemplate,
+      templates: gatherTemplates,
+    });
+    assist.bind(keyboard, function (msgType, content) {
+      if (!engine) return Promise.resolve(null);
+      return engine.query(msgType, content);
+    });
+
     var restored = restore();
     if (!restored) state.entries = [];
     if (!state.entries.length) addEntry('', {});
@@ -926,6 +1086,21 @@
         }
         break;
       }
+      case 'type': {
+        // Puts text in the active entry without evaluating it: what the user has typed
+        // so far, for the assist bar to describe.
+        var typedEntry = activeEntry();
+        if (!typedEntry || !typedEntry.dom) { log('type: no entry'); break; }
+        typedEntry.dom.input.value = argument || '';
+        typedEntry.input = argument || '';
+        typedEntry.caret = typedEntry.input.length;
+        typedEntry.dom.input.focus();
+        typedEntry.dom.input.setSelectionRange(typedEntry.caret, typedEntry.caret);
+        autoGrow(typedEntry.dom.input);
+        refreshAssist();
+        log('type: ' + typedEntry.input);
+        break;
+      }
       case 'add': {
         // Append a new entry with the given source and evaluate it.
         var nowMs = function () { return (global.performance && global.performance.now) ? global.performance.now() : Date.now(); };
@@ -974,6 +1149,79 @@
       case 'dom':
         log('dom: ' + domSummary());
         break;
+      case 'assist': {
+        // Dump the context bar, so a device test can assert on what the user sees.
+        var assistRead = readActiveText();
+        if (!assist || !assistRead) { log('assist: none'); break; }
+        var insets = {};
+        try {
+          insets = JSON.parse(global.WoxiNative.getInsets());
+        } catch (err) {
+          insets = {};
+        }
+        var dpr = global.devicePixelRatio || 1;
+        var insetTop = insets.top || 0;
+        var barKeys = document.querySelectorAll('#woxi-kb-actions .woxi-key');
+        var barRects = [];
+        for (var bk = 0; bk < barKeys.length; bk += 1) {
+          var keyRect = barKeys[bk].getBoundingClientRect();
+          barRects.push(barKeys[bk].getAttribute('data-key') + '@' +
+            Math.round((keyRect.left + keyRect.width / 2) * dpr) + ',' +
+            Math.round(insetTop + (keyRect.top + keyRect.height / 2) * dpr));
+        }
+        log('assist: state=' + assist.state +
+          ' prefix="' + assist.prefix + '"' +
+          ' matches=' + assist.matches.names.slice(0, 6).join(',') +
+          ' caret=' + assistRead.caret +
+          ' text="' + assistRead.code.slice(0, 40) + '"' +
+          ' bar=' + barRects.join(' '));
+        var viewport = global.visualViewport;
+        var kbdRect = document.getElementById('woxi-keyboard').getBoundingClientRect();
+        log('metrics: w=' + global.innerWidth + ' h=' + global.innerHeight +
+          ' dpr=' + global.devicePixelRatio +
+          ' clientH=' + document.documentElement.clientHeight +
+          ' vv=' + (viewport ? Math.round(viewport.height) + '@' + Math.round(viewport.offsetTop) : '-') +
+          ' kb=' + Math.round(kbdRect.top) + '..' + Math.round(kbdRect.bottom) +
+          ' sheet=' + (assist.dom ? assist.dom.className : '-'));
+        break;      }
+      case 'assistaccept': {
+        if (!assist) { log('assistaccept: no assist'); break; }
+        var acceptName = argument || (assist.matches.names.length ? assist.matches.names[0] : '');
+        if (!acceptName) { log('assistaccept: no match'); break; }
+        assist.apply(acceptName);
+        log('assistaccept: ' + acceptName);
+        break;
+      }
+      case 'assistsheet': {
+        if (!assist) { log('assistsheet: no assist'); break; }
+        assist.openSheet(argument || 'all');
+        log('assistsheet: ' + (argument || 'all') + ' rows=' +
+          document.querySelectorAll('#woxi-assist-body [data-assist-insert],#woxi-assist-body [data-assist-template]').length);
+        break;
+      }
+      case 'assistclose': {
+        if (assist) assist.closeSheet();
+        log('assistclose');
+        break;
+      }
+      case 'press': {
+        // Presses one of the keyboard's keys by label, through the same path a tap takes.
+        var pressed = global.WoxiKeyboard.findKey(argument);
+        if (!pressed) { log('press: no key ' + argument); break; }
+        keyboard.press(pressed.key);
+        log('press: ' + argument + ' page=' + pressed.page);
+        break;
+      }
+      case 'caret': {
+        var caretEntry = activeEntry();
+        if (!caretEntry || !caretEntry.dom) { log('caret: no entry'); break; }
+        var at = parseInt(argument, 10);
+        if (isNaN(at)) at = caretEntry.dom.input.value.length;
+        caretEntry.dom.input.focus();
+        setCaret(at);
+        log('caret: ' + caretEntry.dom.input.selectionStart);
+        break;
+      }
       case 'dump': {
         // Log every entry's source and a text preview of its output.
         for (var d = 0; d < state.entries.length; d++) {

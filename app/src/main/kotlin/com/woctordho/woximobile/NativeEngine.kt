@@ -28,6 +28,8 @@ object NativeEngine {
 
     private external fun plotRequest(request: String): String
 
+    private external fun queryRequest(request: String): String
+
     private external fun clear()
 
     private external fun setDarkMode(enabled: Boolean)
@@ -127,19 +129,58 @@ object NativeEngine {
         }
     }
 
-    private fun priorityOf(request: String): Int {
-        val type =
-            try {
-                JSONObject(request).optString("msg_type")
-            } catch (error: Throwable) {
-                ""
-            }
-        return when (type) {
+    // Answers one typing-help message: completion, symbol inspection, or whether the
+    // entry is complete (see the JNI header). Replies share the plot envelope, so the
+    // frontend has one code path for both.
+    //
+    // These run at NORMAL priority, not INTERACTIVE: interactive work drops queued
+    // background re-sampling, and a completion on every keystroke would keep a plot
+    // from ever refining. They still overtake background work, and a gesture frame
+    // still overtakes them.
+    fun query(
+        request: String,
+        callback: (String) -> Unit,
+    ) {
+        val priority = queryPriorityOf(request)
+        submit(priority) {
+            val reply =
+                try {
+                    ensureLoaded()
+                    queryRequest(request)
+                } catch (error: Throwable) {
+                    Log.w(TAG, "query failed", error)
+                    JSONObject()
+                        .put("msg_type", "query_error")
+                        .put("status", "error")
+                        .put("ename", "BridgeFailure")
+                        .put("evalue", error.message ?: error.javaClass.simpleName)
+                        .toString()
+                }
+            callback(reply)
+        }
+    }
+
+    private fun queryPriorityOf(request: String): Int =
+        when (messageType(request)) {
+            // One-off: the category counts for the suggestion sheet.
+            "catalog_request" -> BACKGROUND
+
+            else -> NORMAL
+        }
+
+    private fun priorityOf(request: String): Int =
+        when (messageType(request)) {
             "plot_view", "plot_retain", "plot_release" -> INTERACTIVE
             "plot_refine", "plot_densify" -> BACKGROUND
             else -> NORMAL
         }
-    }
+
+    private fun messageType(request: String): String =
+        try {
+            JSONObject(request).optString("msg_type")
+        } catch (error: Throwable) {
+            ""
+        }
 
     private fun submit(
         priority: Int,

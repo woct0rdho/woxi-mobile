@@ -64,6 +64,20 @@
     });
   };
 
+  // One typing-help message (`complete_request`, `inspect_request`,
+  // `is_complete_request`, `catalog_request`). Same envelope as `plot`.
+  WoxiClient.prototype.query = function (msgType, content) {
+    return this.send(function (bridge, id) {
+      bridge.queryRequest(id, JSON.stringify({ msg_type: msgType, content: content || {} }));
+    }).then(function (text) {
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        return null;
+      }
+    });
+  };
+
   // Evaluates one notebook entry. Resolves with the interpreter's JSON items.
   WoxiClient.prototype.evaluate = function (input) {
     return this.request('text', input);

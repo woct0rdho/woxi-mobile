@@ -467,3 +467,104 @@ html, body {
   line-height: 1.5;
   white-space: pre-wrap;
 }
+
+/* typing help: the context bar and its sheet */
+
+/* Chips on the context bar: a name that can be accepted with one tap. */
+.woxi-key.woxi-key-chip { color: var(--woxi-accent); font-size: 12.5px; }
+.woxi-key.woxi-key-sig {
+  text-align: left;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--woxi-text-dim);
+}
+.woxi-sig { color: var(--woxi-text-dim); }
+.woxi-sig-on { color: var(--woxi-accent); font-weight: 600; }
+.woxi-sig-sep { color: var(--woxi-text-dim); opacity: 0.6; }
+
+/* The sheet sits above the keys, so typing keeps narrowing it. The scrim covers the
+   notebook only: the keyboard stays usable. */
+#woxi-assist {
+  position: fixed;
+  inset: 0;
+  z-index: 31;
+  display: flex;
+  align-items: flex-end;
+  background: var(--woxi-overlay);
+}
+#woxi-assist-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: 52vh;
+  background: var(--woxi-surface);
+  border-top: 1px solid var(--woxi-border);
+  border-top-left-radius: 14px;
+  border-top-right-radius: 14px;
+}
+#woxi-assist-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 2px 8px;
+  border-bottom: 1px solid var(--woxi-border);
+}
+#woxi-assist-tabs { flex: 1 1 auto; display: flex; gap: 2px; min-width: 0; }
+.woxi-assist-tab {
+  background: transparent;
+  border: none;
+  color: var(--woxi-text-dim);
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 10px;
+  border-radius: 8px;
+}
+.woxi-assist-tab.woxi-on { background: var(--woxi-surface-3); color: var(--woxi-text); }
+#woxi-assist-close {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--woxi-accent);
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 10px;
+}
+#woxi-assist-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 6px 10px 6px;
+}
+.woxi-assist-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--woxi-text);
+  font: inherit;
+  text-align: left;
+}
+.woxi-assist-row:active { background: var(--woxi-surface-2); }
+.woxi-assist-name { flex: 0 0 auto; font-family: monospace; font-size: 14px; }
+.woxi-assist-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--woxi-text-dim);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.woxi-assist-meta { flex: 0 0 auto; color: var(--woxi-text-dim); font-size: 11px; }
+.woxi-assist-empty { color: var(--woxi-text-dim); font-size: 13px; padding: 14px 10px; }
+.woxi-assist-about { padding: 6px 8px 10px 8px; }
+.woxi-assist-about-name { font-family: monospace; font-size: 17px; margin-bottom: 6px; }
+.woxi-assist-about-line { font-size: 13px; line-height: 1.5; margin: 3px 0; }
+.woxi-assist-warn { color: var(--woxi-warning); }
+.woxi-assist-doc { color: var(--woxi-accent); font-size: 12px; word-break: break-all; }

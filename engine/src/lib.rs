@@ -5,6 +5,7 @@
 //! - `evaluateAll(input)`  -> JSON array of output items
 //! - `evaluateManipulate(body, bindingsJson)` -> JSON `{svg|text}`
 //! - `plotRequest(json)` -> JSON reply, see below
+//! - `queryRequest(json)` -> JSON reply for typing help, see below
 //! - `clear()`, `setDarkMode(enabled)`
 //!
 //! Item JSON shape, so the notebook frontend can render every kind of output with
@@ -38,8 +39,25 @@
 //! ```
 //!
 //! `plot_retain`/`plot_release` keep the handle registry tied to live frontend
-//! controllers, so a deleted cell frees its plot data. All evaluation happens in the
-//! calling thread. The Kotlin side keeps a single-threaded executor so interpreter
+//! controllers, so a deleted cell frees its plot data.
+//!
+//! Typing help uses the same envelope, with the names from the Jupyter messaging
+//! spec (`complete_request`, `inspect_request`, `is_complete_request`) so the frontend
+//! could later talk to a real kernel unchanged:
+//!
+//! ```json
+//! {"msg_type":"complete_request","content":{"code":"Plo","cursor_pos":3,"limit":24}}
+//! {"msg_type":"complete_reply","status":"ok","content":{
+//!   "matches":["Plot","Plot3D"],"cursor_start":0,"cursor_end":3,
+//!   "metadata":{"_jupyter_types_experimental":[{"text":"Plot",...}],
+//!               "_woxi":[{"implemented":1,"category":"plotting","doc":"..."}]}}}
+//! ```
+//!
+//! `catalog_request` is a Woxi extension (Jupyter has no message for the whole
+//! namespace). It only reports the number of symbols and the version they came from. None of these messages execute the
+//! entry they are asked about, and none of them touch `%` history.
+//!
+//! All evaluation happens in the calling thread. The Kotlin side keeps a single-threaded executor so interpreter
 //! state stays consistent, with views served before background re-sampling.
 
 use jni::errors::LogErrorAndDefault;
@@ -49,6 +67,7 @@ use jni::{Env, EnvUnowned};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use woxi::syntax::Expr;
 
@@ -1054,8 +1073,29 @@ fn json_field_text(json: &str, key: &str) -> Option<String> {
     let at = json.find(&needle)? + needle.len();
     let rest = json[at..].trim_start().strip_prefix(':')?.trim_start();
     let rest = rest.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    // Unescape as we go: user code arrives as a JSON string, so a `"PlotLabel -> \"hi\""`
+    // must come back out exactly as it was typed.
+    let mut value = String::new();
+    let mut chars = rest.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Some(value),
+            '\\' => match chars.next()? {
+                'n' => value.push('\n'),
+                't' => value.push('\t'),
+                'r' => value.push('\r'),
+                'b' => value.push('\u{8}'),
+                'f' => value.push('\u{c}'),
+                'u' => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    value.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                }
+                other => value.push(other),
+            },
+            other => value.push(other),
+        }
+    }
+    None
 }
 
 fn json_field_number(json: &str, key: &str) -> Option<f64> {
@@ -1385,6 +1425,470 @@ fn plot_request(json: &str) -> String {
     }
 }
 
+// typing help
+//
+// The frontend asks these while the user types: which symbol names match a prefix
+// (`complete_request`), what a symbol is and which options it takes
+// (`inspect_request`), and whether the entry is finished (`is_complete_request`).
+// The first two read the symbol table the interpreter already carries, so the
+// answers agree with what the interpreter actually implements, and the third uses
+// the interpreter's own parser. Nothing here evaluates the entry: the only
+// evaluation is an `Options[...]` probe through `interpret_to_expr`, which does not
+// record `Out[]` history.
+
+/// Upper bound on a completion reply, whatever the request asks for.
+const MAX_MATCHES: usize = 200;
+
+/// Every symbol the interpreter knows, with whether Woxi implements it. Built once
+/// from the `functions.csv` embedded in the interpreter, so a rebuild of the engine
+/// is the only thing that can change it. `is_known_wolfram_function` is the
+/// interpreter's own answer for "this name exists in Wolfram Language but Woxi does
+/// not run it yet", which is the flag the completion list needs.
+static SYMBOLS: LazyLock<Vec<(&'static str, bool)>> = LazyLock::new(|| {
+    let mut table: Vec<(&'static str, bool)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for name in woxi::evaluator::functions::get_builtin_function_names() {
+        if seen.insert(name) {
+            table.push((
+                name,
+                !woxi::evaluator::functions::is_known_wolfram_function(name),
+            ));
+        }
+    }
+    for name in woxi::evaluator::functions::known_wolfram_function_names() {
+        if seen.insert(name) {
+            table.push((name, false));
+        }
+    }
+    table.sort_unstable();
+    table
+});
+
+fn symbol_table() -> &'static [(&'static str, bool)] {
+    SYMBOLS.as_slice()
+}
+
+/// Whether `name` is a plain symbol name: the `Options[...]` probe below builds code
+/// from it, so anything that could carry an operator or a bracket is refused.
+fn is_symbol_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '$' => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '$' || ch == '`')
+}
+
+fn is_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '$' || ch == '`'
+}
+
+/// The identifier that ends at `cursor`, with the byte offset it starts at. The
+/// caret is clamped to a character boundary: the request comes from JavaScript,
+/// whose string offsets are UTF-16 code units.
+fn identifier_before(code: &str, cursor: usize) -> (usize, &str) {
+    let mut end = cursor.min(code.len());
+    while end > 0 && !code.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut start = end;
+    for (index, ch) in code[..end].char_indices().rev() {
+        if !is_identifier_char(ch) {
+            break;
+        }
+        start = index;
+    }
+    (start, &code[start..end])
+}
+
+/// The identifier the caret is in or next to. Used by `inspect_request`, where the
+/// caret may sit inside the name rather than after it.
+fn identifier_at_cursor(code: &str, cursor: usize) -> &str {
+    let mut start = cursor.min(code.len());
+    while start > 0 && !code.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = start;
+    for (index, ch) in code[start..].char_indices() {
+        if !is_identifier_char(ch) {
+            break;
+        }
+        end = start + index + ch.len_utf8();
+    }
+    let tail = start;
+    for (index, ch) in code[..tail].char_indices().rev() {
+        if !is_identifier_char(ch) {
+            break;
+        }
+        start = index;
+    }
+    &code[start..end]
+}
+
+/// Whether `needle` is a subsequence of `haystack` that starts at its first character.
+/// A loose subsequence would make a two-letter prefix match hundreds of names (`lo`
+/// would find `Plot`), which is noise on a bar that shows three of them.
+fn is_prefix_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut wanted = needle.chars();
+    let mut chars = haystack.chars();
+    let Some(first) = wanted.next() else {
+        return true;
+    };
+    if chars.next() != Some(first) {
+        return false;
+    }
+    wanted.all(|wanted| chars.any(|candidate| candidate == wanted))
+}
+
+/// How well `name` answers `prefix`: lower is better, `None` means no match. The
+/// levels are exact name, prefix, camel-case initials (`PP` -> `PlotPoints`) and a
+/// subsequence, which is what a half-remembered name looks like.
+fn match_score(prefix: &str, name: &str) -> Option<u8> {
+    if prefix.is_empty() {
+        return Some(3);
+    }
+    let wanted = prefix.to_ascii_lowercase();
+    let candidate = name.to_ascii_lowercase();
+    if candidate == wanted {
+        return Some(0);
+    }
+    if candidate.starts_with(&wanted) {
+        return Some(1);
+    }
+    if prefix.chars().all(|ch| ch.is_ascii_uppercase()) {
+        let initials: String = name.chars().filter(|ch| ch.is_ascii_uppercase()).collect();
+        if initials.starts_with(prefix) {
+            return Some(2);
+        }
+    }
+    if is_prefix_subsequence(&wanted, &candidate) {
+        return Some(4);
+    }
+    None
+}
+
+/// The documentation category of a symbol (`math`, `plotting`, ...), which is the
+/// first path segment of its documentation URL.
+fn category_of(name: &str) -> (&'static str, Option<&'static str>) {
+    let Some(url) = woxi::evaluator::functions::get_doc_url(name) else {
+        return ("", None);
+    };
+    let category = url
+        .split_once("/docs/")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .unwrap_or("");
+    (category, Some(url))
+}
+
+/// One suggestion, with everything the bar and the sheet show about it.
+struct Candidate {
+    name: String,
+    description: String,
+    implemented: bool,
+    session: bool,
+    doc: Option<&'static str>,
+    category: &'static str,
+    score: u8,
+}
+
+/// Ranked suggestions for the prefix before `cursor`, plus the span the frontend
+/// should replace when one is accepted.
+fn candidates(
+    code: &str,
+    cursor: usize,
+    limit: usize,
+    category: &str,
+) -> (usize, usize, usize, Vec<Candidate>) {
+    let (start, prefix) = identifier_before(code, cursor);
+    let mut rows: Vec<Candidate> = Vec::new();
+
+    if category.is_empty() {
+        for name in woxi::get_defined_names() {
+            let Some(score) = match_score(prefix, &name) else {
+                continue;
+            };
+            rows.push(Candidate {
+                name,
+                description: String::new(),
+                implemented: true,
+                session: true,
+                doc: None,
+                category: "",
+                score,
+            });
+        }
+    }
+
+    for (name, implemented) in symbol_table() {
+        let Some(score) = match_score(prefix, name) else {
+            continue;
+        };
+        let (symbol_category, doc) = category_of(name);
+        if !category.is_empty() && symbol_category != category {
+            continue;
+        }
+        let description = woxi::evaluator::functions::get_builtin_function_info(name)
+            .map(|info| info.description.to_string())
+            .unwrap_or_default();
+        rows.push(Candidate {
+            name: name.to_string(),
+            description,
+            implemented: *implemented,
+            session: false,
+            doc,
+            category: symbol_category,
+            score,
+        });
+    }
+
+    rows.sort_by(|a, b| {
+        a.score
+            .cmp(&b.score)
+            .then_with(|| b.session.cmp(&a.session))
+            .then_with(|| b.implemented.cmp(&a.implemented))
+            .then_with(|| a.name.len().cmp(&b.name.len()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let total = rows.len();
+    rows.truncate(limit);
+    (start, cursor, total, rows)
+}
+
+/// The caret position of a request, clamped to the code it points into.
+fn cursor_of(json: &str, code: &str) -> usize {
+    let raw = json_field_number(json, "cursor_pos").unwrap_or(code.len() as f64);
+    let mut cursor = (raw.max(0.0) as usize).min(code.len());
+    while cursor > 0 && !code.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
+}
+
+fn completion_content(json: &str) -> String {
+    let code = json_field_text(json, "code").unwrap_or_default();
+    let cursor = cursor_of(json, &code);
+    let limit = json_field_number(json, "limit")
+        .map(|value| (value.max(1.0) as usize).min(MAX_MATCHES))
+        .unwrap_or(24);
+    let category = json_field_text(json, "category").unwrap_or_default();
+    let (start, end, total, rows) = candidates(&code, cursor, limit, &category);
+
+    let mut matches = Vec::with_capacity(rows.len());
+    let mut types = Vec::with_capacity(rows.len());
+    let mut extra = Vec::with_capacity(rows.len());
+    for row in &rows {
+        matches.push(format!("\"{}\"", json_escape(&row.name)));
+        types.push(format!(
+            "{{\"text\":\"{}\",\"type\":\"{}\",\"docstring\":\"{}\"}}",
+            json_escape(&row.name),
+            if row.session { "variable" } else { "function" },
+            json_escape(&row.description)
+        ));
+        extra.push(format!(
+            "{{\"implemented\":{},\"category\":\"{}\",\"doc\":\"{}\"}}",
+            if row.implemented { 1 } else { 0 },
+            json_escape(row.category),
+            json_escape(row.doc.unwrap_or(""))
+        ));
+    }
+
+    format!(
+        "{{\"matches\":[{}],\"cursor_start\":{},\"cursor_end\":{},\"metadata\":{{\"_jupyter_types_experimental\":[{}],\"_woxi\":[{}],\"total\":{}}}}}",
+        matches.join(","),
+        start,
+        end,
+        types.join(","),
+        extra.join(","),
+        total
+    )
+}
+
+/// The options a symbol takes, in declaration order. `Options[f]` is evaluated
+/// through `interpret_to_expr`, which does not record `Out[]` history.
+fn options_of(name: &str) -> Vec<String> {
+    if !is_symbol_name(name) {
+        return Vec::new();
+    }
+    let Ok(value) = woxi::interpret_to_expr(&format!("Options[{name}]")) else {
+        return Vec::new();
+    };
+    let Expr::List(rules) = &value else {
+        return Vec::new();
+    };
+    let mut options = Vec::new();
+    for rule in rules.iter() {
+        if let Expr::Rule { pattern, .. } = rule {
+            if let Expr::Identifier(option) = pattern.as_ref() {
+                options.push(option.clone());
+            }
+        }
+    }
+    options
+}
+
+fn inspect_content(json: &str) -> String {
+    let code = json_field_text(json, "code").unwrap_or_default();
+    let cursor = cursor_of(json, &code);
+    let name = identifier_at_cursor(&code, cursor);
+    if !is_symbol_name(name) {
+        return "{\"found\":false,\"data\":{},\"metadata\":{}}".to_string();
+    }
+
+    let implemented = !woxi::evaluator::functions::is_known_wolfram_function(name);
+    let description = woxi::evaluator::functions::get_builtin_function_info(name)
+        .map(|info| info.description.to_string())
+        .unwrap_or_default();
+    let (category, doc) = category_of(name);
+    let options = options_of(name);
+    let arity = woxi::evaluator::dispatch::arg_count::get_arg_count_range(name);
+    let arity_json = match arity {
+        Some((min, max)) if max == usize::MAX => format!("[{min},null]"),
+        Some((min, max)) => format!("[{min},{max}]"),
+        None => "null".to_string(),
+    };
+
+    let mut lines = vec![name.to_string()];
+    if !description.is_empty() {
+        lines.push(description.clone());
+    }
+    if !options.is_empty() {
+        lines.push(format!("Options: {}", options.join(", ")));
+    }
+    if let Some((min, max)) = arity {
+        lines.push(if max == usize::MAX {
+            format!("{min} or more arguments")
+        } else if min == max {
+            format!("{min} argument(s)")
+        } else {
+            format!("{min} to {max} arguments")
+        });
+    }
+    if let Some(url) = doc {
+        lines.push(url.to_string());
+    }
+
+    let option_json: Vec<String> = options
+        .iter()
+        .map(|option| format!("\"{}\"", json_escape(option)))
+        .collect();
+    format!(
+        "{{\"found\":true,\"data\":{{\"text/plain\":\"{}\"}},\"metadata\":{{\"_woxi\":{{\"name\":\"{}\",\"description\":\"{}\",\"implemented\":{},\"category\":\"{}\",\"doc\":\"{}\",\"arity\":{},\"options\":[{}]}}}}}}",
+        json_escape(&lines.join("\n")),
+        json_escape(name),
+        json_escape(&description),
+        if implemented { 1 } else { 0 },
+        json_escape(category),
+        json_escape(doc.unwrap_or("")),
+        arity_json,
+        option_json.join(",")
+    )
+}
+
+/// Bracket depth, ignoring string literals and `(* comments *)`. A positive result
+/// means the input stops inside an opening bracket or an unterminated string, which
+/// is what "not finished yet" looks like while typing.
+fn bracket_depth(code: &str) -> i32 {
+    let mut depth: i32 = 0;
+    let mut chars = code.chars().peekable();
+    let mut in_string = false;
+    let mut comment_depth = 0usize;
+    while let Some(ch) = chars.next() {
+        if comment_depth > 0 {
+            if ch == '(' && chars.peek() == Some(&'*') {
+                chars.next();
+                comment_depth += 1;
+            } else if ch == '*' && chars.peek() == Some(&')') {
+                chars.next();
+                comment_depth -= 1;
+            }
+            continue;
+        }
+        if in_string {
+            match ch {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' if chars.peek() == Some(&'*') => {
+                chars.next();
+                comment_depth = 1;
+            }
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ => {}
+        }
+        if depth < 0 {
+            return depth;
+        }
+    }
+    if in_string || comment_depth > 0 {
+        depth.max(1)
+    } else {
+        depth
+    }
+}
+
+/// Whether the input stops on an operator (`1 + `), which the parser reports as an
+/// error but the user is still writing.
+fn ends_with_operator(code: &str) -> bool {
+    let trimmed = code.trim_end();
+    if trimmed.is_empty() {
+        return false;
+    }
+    const TAILS: [&str; 15] = [
+        "->", ":=", "/;", "/@", "//", "/.", ";;", "==", "<=", ">=", "!=", "&&", "||", "=.", "<>",
+    ];
+    if TAILS.iter().any(|tail| trimmed.ends_with(tail)) {
+        return true;
+    }
+    matches!(
+        trimmed.chars().last(),
+        Some('+' | '-' | '*' | '/' | '^' | ',' | '=' | '&' | '|' | '@' | '~' | '<' | '>' | ':')
+    )
+}
+
+fn is_complete_content(json: &str) -> String {
+    let code = json_field_text(json, "code").unwrap_or_default();
+    let status = if code.trim().is_empty() {
+        "complete"
+    } else {
+        let depth = bracket_depth(&code);
+        if depth > 0 || ends_with_operator(&code) {
+            "incomplete"
+        } else if depth < 0 || woxi::parse(&code).is_err() {
+            "invalid"
+        } else {
+            "complete"
+        }
+    };
+    format!("{{\"status\":\"{status}\",\"indent\":\"\"}}")
+}
+
+fn catalog_content() -> String {
+    format!(
+        "{{\"version\":\"{}\",\"total\":{}}}",
+        env!("CARGO_PKG_VERSION"),
+        symbol_table().len()
+    )
+}
+
+fn query_request(json: &str) -> String {
+    let msg_type = json_field_text(json, "msg_type").unwrap_or_default();
+    match msg_type.as_str() {
+        "complete_request" => reply_ok(&msg_type, &completion_content(json)),
+        "inspect_request" => reply_ok(&msg_type, &inspect_content(json)),
+        "is_complete_request" => reply_ok(&msg_type, &is_complete_content(json)),
+        "catalog_request" => reply_ok(&msg_type, &catalog_content()),
+        _ => reply_error(&msg_type, "UnknownMessage", "unknown msg_type"),
+    }
+}
+
 // evaluation
 
 fn evaluate_statement_items(stmt: &str, held: Option<Held>) -> Vec<String> {
@@ -1598,6 +2102,15 @@ pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_plotRequest<'f
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_queryRequest<'frame>(
+    unowned: EnvUnowned<'frame>,
+    _class: JClass<'frame>,
+    request: JString<'frame>,
+) -> jstring {
+    with_string(unowned, request, query_request)
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_clear<'frame>(
     _unowned: EnvUnowned<'frame>,
     _class: JClass<'frame>,
@@ -1765,6 +2278,123 @@ mod tests {
     fn unknown_messages_are_reported() {
         let reply = plot_request("{\"msg_type\":\"plot_dance\"}");
         assert!(reply.contains("\"status\":\"error\""), "{reply}");
+        assert!(reply.contains("UnknownMessage"), "{reply}");
+    }
+
+    // typing help
+
+    fn query(msg_type: &str, content: &str) -> String {
+        query_request(&format!(
+            "{{\"msg_type\":\"{msg_type}\",\"content\":{content}}}"
+        ))
+    }
+
+    fn completion(code: &str, cursor: usize) -> String {
+        query(
+            "complete_request",
+            &format!("{{\"code\":{code:?},\"cursor_pos\":{cursor}}}"),
+        )
+    }
+
+    #[test]
+    fn completion_ranks_prefix_before_subsequence() {
+        let reply = completion("Plo", 3);
+        assert!(reply.contains("\"status\":\"ok\""), "{reply}");
+        // The prefix matches come first and in alphabetical order.
+        let plot = reply.find("\"Plot\"").expect("Plot");
+        let plot_points = reply.find("\"PlotPoints\"").expect("PlotPoints");
+        assert!(plot < plot_points, "{reply}");
+        // Camel-case initials reach a name the prefix cannot.
+        let reply = completion("PP", 2);
+        assert!(reply.contains("\"PlotPoints\""), "{reply}");
+        // A subsequence still matches, after the prefix matches, as long as it starts
+        // the name.
+        let reply = completion("PltRange", 8);
+        assert!(reply.contains("\"PlotRange\""), "{reply}");
+        let reply = completion("lt", 2);
+        assert!(!reply.contains("\"Plot\""), "{reply}");
+    }
+
+    #[test]
+    fn completion_reports_the_span_to_replace() {
+        let reply = completion("Sin[Plo", 7);
+        assert!(reply.contains("\"cursor_start\":4"), "{reply}");
+        assert!(reply.contains("\"cursor_end\":7"), "{reply}");
+        // Outside a name the span is empty, so accepting inserts at the caret.
+        let reply = completion("Sin[", 4);
+        assert!(reply.contains("\"cursor_start\":4"), "{reply}");
+        assert!(reply.contains("\"cursor_end\":4"), "{reply}");
+    }
+
+    #[test]
+    fn completion_offers_session_symbols_first() {
+        reset();
+        let _ = woxi::interpret("myGadget[t_] := t^2");
+        let reply = completion("myGad", 6);
+        assert!(reply.contains("\"matches\":[\"myGadget\""), "{reply}");
+        assert!(reply.contains("\"type\":\"variable\""), "{reply}");
+    }
+
+    #[test]
+    fn inspect_reports_options_without_touching_history() {
+        reset();
+        let _ = woxi::interpret("41 + 1");
+        let before = woxi::get_last_output().map(|expr| format!("{expr:?}"));
+        let reply = query(
+            "inspect_request",
+            "{\"code\":\"Plot[Sin[x], {x, 0, 1}]\",\"cursor_pos\":2}",
+        );
+        assert!(reply.contains("\"found\":true"), "{reply}");
+        assert!(reply.contains("\"name\":\"Plot\""), "{reply}");
+        assert!(reply.contains("\"PlotRange\""), "{reply}");
+        assert!(reply.contains("plotting"), "{reply}");
+        let after = woxi::get_last_output().map(|expr| format!("{expr:?}"));
+        assert_eq!(before, after, "inspect must not record Out[] history");
+        // A name that is only known to Wolfram is reported as not implemented.
+        let reply = query(
+            "inspect_request",
+            "{\"code\":\"PacletInstall\",\"cursor_pos\":5}",
+        );
+        assert!(reply.contains("\"implemented\":0"), "{reply}");
+    }
+
+    #[test]
+    fn is_complete_separates_incomplete_from_invalid() {
+        for code in [
+            "Plot[x, {x, 0, 1",
+            "Table[i, {i, 1, ",
+            "Sin[1] +",
+            "(1 +",
+            "\"abc",
+            "(* note",
+        ] {
+            let reply = query("is_complete_request", &format!("{{\"code\":{code:?}}}"));
+            assert!(reply.contains("\"incomplete\""), "{code}: {reply}");
+        }
+        for code in ["1 + * 2", "Sin[1]]", "a = )"] {
+            let reply = query("is_complete_request", &format!("{{\"code\":{code:?}}}"));
+            assert!(reply.contains("\"invalid\""), "{code}: {reply}");
+        }
+        for code in [
+            "Sin[1]",
+            "Plot[Sin[x], {x, -2 Pi, 2 Pi}]",
+            "Plot[x, {x, 0, 1}]",
+            "a = 1;",
+        ] {
+            let reply = query("is_complete_request", &format!("{{\"code\":{code:?}}}"));
+            assert!(reply.contains("\"complete\""), "{code}: {reply}");
+        }
+        // Brackets inside a string or a comment do not count.
+        let reply = query("is_complete_request", "{\"code\":\"\\\"([\\\"\"}");
+        assert!(reply.contains("\"complete\""), "{reply}");
+    }
+
+    #[test]
+    fn catalog_and_unknown_queries() {
+        let reply = query("catalog_request", "{}");
+        assert!(reply.contains("\"total\":"), "{reply}");
+        assert!(reply.contains("\"version\":"), "{reply}");
+        let reply = query("complete_dance", "{}");
         assert!(reply.contains("UnknownMessage"), "{reply}");
     }
 }

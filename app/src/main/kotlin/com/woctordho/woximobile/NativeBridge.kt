@@ -194,6 +194,18 @@ class NativeBridge(
         }
     }
 
+    // Typing help: completion, symbol inspection, completeness. Same reply envelope as
+    // the plot messages.
+    @JavascriptInterface
+    fun queryRequest(
+        id: Int,
+        request: String,
+    ) {
+        NativeEngine.query(request) { json ->
+            callJs("onEngineResult", id.toString(), json)
+        }
+    }
+
     // System-bar insets in pixels, so the web layer can pad the keyboard itself.
     @JavascriptInterface
     fun getInsets(): String =

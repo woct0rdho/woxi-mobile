@@ -146,18 +146,18 @@
       id: 'plot2d',
       cols: 3,
       keys: [
-        { l: 'Plot', i: 'Plot[Sin[x], {x, -2 Pi, 2 Pi}]', k: 'fn', t: 'Function plot' },
-        { l: 'ListPlot', i: 'ListPlot[{1, 4, 9, 16, 25}]', k: 'fn', t: 'Scatter plot of data' },
-        { l: 'ContourPlot', i: 'ContourPlot[x^2 + y^2 == 4, {x, -3, 3}, {y, -3, 3}]', k: 'fn', t: 'Implicit graph: the zero contour of the equation' },
-        { l: 'ParametricPlot', i: 'ParametricPlot[{Cos[3 t], Sin[2 t]}, {t, 0, 2 Pi}]', k: 'fn', t: 'Parametric curve' },
-        { l: 'ListLinePlot', i: 'ListLinePlot[{3, 1, 4, 1, 5, 9, 2, 6}]', k: 'fn', t: 'Line graph' },
-        { l: 'DensityPlot', i: 'DensityPlot[Sin[x] Cos[y], {x, -3, 3}, {y, -3, 3}]', k: 'fn', t: 'Coloured contour plot' },
-        { l: 'PolarPlot', i: 'PolarPlot[1 + Cos[3 t], {t, 0, 2 Pi}]', k: 'fn', t: 'Polar plot' },
-        { l: 'BoxWhiskerChart', i: 'BoxWhiskerChart[RandomReal[NormalDistribution[0, 1], 200]]', k: 'fn', t: 'Box plot' },
-        { l: 'ArrayPlot', i: 'ArrayPlot[Table[Mod[i + j, 3], {i, 16}, {j, 16}]]', k: 'fn', t: 'Matrix drawn as an image' },
-        { l: 'VectorPlot', i: 'VectorPlot[{y, -x}, {x, -3, 3}, {y, -3, 3}]', k: 'fn', t: 'Vector field' },
-        { l: 'Histogram', i: 'Histogram[RandomReal[NormalDistribution[0, 1], 300]]', k: 'fn', t: 'Histogram of data' },
-        { l: 'Fit', i: 'data = {{1, 2}, {2, 5}, {3, 7}, {4, 9}}; Show[ListPlot[data], Plot[Fit[data, {1, x}, x], {x, 1, 4}]]', k: 'fn', t: 'Regression: fit the data' },
+        { l: 'Plot', i: 'Plot[|]', k: 'fn', t: 'Function plot' },
+        { l: 'ListPlot', i: 'ListPlot[|]', k: 'fn', t: 'Scatter plot of data' },
+        { l: 'ContourPlot', i: 'ContourPlot[|]', k: 'fn', t: 'Zero contour of an equation' },
+        { l: 'ParametricPlot', i: 'ParametricPlot[|]', k: 'fn', t: 'Parametric curve' },
+        { l: 'ListLinePlot', i: 'ListLinePlot[|]', k: 'fn', t: 'Line graph' },
+        { l: 'DensityPlot', i: 'DensityPlot[|]', k: 'fn', t: 'Coloured contour plot' },
+        { l: 'PolarPlot', i: 'PolarPlot[|]', k: 'fn', t: 'Polar plot' },
+        { l: 'BoxWhiskerChart', i: 'BoxWhiskerChart[|]', k: 'fn', t: 'Box plot' },
+        { l: 'ArrayPlot', i: 'ArrayPlot[|]', k: 'fn', t: 'Matrix drawn as an image' },
+        { l: 'VectorPlot', i: 'VectorPlot[|]', k: 'fn', t: 'Vector field' },
+        { l: 'Histogram', i: 'Histogram[|]', k: 'fn', t: 'Histogram of data' },
+        { l: 'Fit', i: 'Fit[|]', k: 'fn', t: 'Regression: fit the data' },
       ],
     },
     // level: plot 3D (swipe down twice)
@@ -165,21 +165,54 @@
       id: 'plot3d',
       cols: 3,
       keys: [
-        { l: 'Plot3D', i: 'Plot3D[Sin[x] Cos[y], {x, -3, 3}, {y, -3, 3}]', k: 'fn', t: 'Surface of a function' },
-        { l: 'ListPlot3D', i: 'ListPlot3D[Table[Sin[i/2] Cos[j/2], {i, 12}, {j, 12}]]', k: 'fn', t: 'Surface from a table of heights' },
-        { l: 'RegionPlot', i: 'RegionPlot[x^2 + y^2 < 1, {x, -1.5, 1.5}, {y, -1.5, 1.5}]', k: 'fn', t: 'Implicit region' },
-        { l: 'ParametricPlot3D', i: 'ParametricPlot3D[{Cos[t], Sin[t], t}, {t, 0, 4 Pi}]', k: 'fn', t: 'Parametric curve in 3D' },
-        { l: 'ListLinePlot3D', i: 'ListLinePlot3D[Table[{n, n^2, Sin[n]}, {n, 10}]]', k: 'fn', t: 'Line through points in 3D' },
-        { l: 'RegionPlot3D', i: 'RegionPlot3D[x^2 + y^2 + z^2 < 1, {x, -1.5, 1.5}, {y, -1.5, 1.5}, {z, -1.5, 1.5}]', k: 'fn', t: 'Implicit region in 3D' },
-        { l: 'SphericalPlot3D', i: 'SphericalPlot3D[1 + 0.4 Sin[4 u] Cos[4 v], {u, 0, Pi}, {v, 0, 2 Pi}]', k: 'fn', t: 'Spherical coordinates' },
-        { l: 'ComplexPlot', i: 'ComplexPlot[Sin[z], {z, -3 - 3 I, 3 + 3 I}]', k: 'fn', t: 'Complex plane' },
-        { l: 'DiscretePlot3D', i: 'DiscretePlot3D[Sin[x] Cos[y], {x, 0, 10}, {y, 0, 10}]', k: 'fn', t: 'Values on a lattice' },
-        { l: 'VectorPlot3D', i: 'VectorPlot3D[{y, -x, z}, {x, -1, 1}, {y, -1, 1}, {z, -1, 1}]', k: 'fn', t: 'Vector field in 3D' },
-        { l: 'ComplexPlot3D', i: 'ComplexPlot3D[Sin[z], {z, -2 - 2 I, 2 + 2 I}]', k: 'fn', t: 'Modulus of a complex function' },
-        { l: 'RevolutionPlot3D', i: 'RevolutionPlot3D[Sqrt[x], {x, 0, 4}]', k: 'fn', t: 'Surface of revolution, the cylindrical plotS' },
+        { l: 'Plot3D', i: 'Plot3D[|]', k: 'fn', t: 'Surface of a function' },
+        { l: 'ListPlot3D', i: 'ListPlot3D[|]', k: 'fn', t: 'Surface from a table of heights' },
+        { l: 'RegionPlot', i: 'RegionPlot[|]', k: 'fn', t: 'Implicit region' },
+        { l: 'ParametricPlot3D', i: 'ParametricPlot3D[|]', k: 'fn', t: 'Parametric curve in 3D' },
+        { l: 'ListLinePlot3D', i: 'ListLinePlot3D[|]', k: 'fn', t: 'Line through points in 3D' },
+        { l: 'RegionPlot3D', i: 'RegionPlot3D[|]', k: 'fn', t: 'Implicit region in 3D' },
+        { l: 'SphericalPlot3D', i: 'SphericalPlot3D[|]', k: 'fn', t: 'Spherical coordinates' },
+        { l: 'ComplexPlot', i: 'ComplexPlot[|]', k: 'fn', t: 'Complex plane' },
+        { l: 'DiscretePlot3D', i: 'DiscretePlot3D[|]', k: 'fn', t: 'Values on a lattice' },
+        { l: 'VectorPlot3D', i: 'VectorPlot3D[|]', k: 'fn', t: 'Vector field in 3D' },
+        { l: 'ComplexPlot3D', i: 'ComplexPlot3D[|]', k: 'fn', t: 'Modulus of a complex function' },
+        { l: 'RevolutionPlot3D', i: 'RevolutionPlot3D[|]', k: 'fn', t: 'Surface of revolution' },
       ],
     },
   };
+
+  // Ready-made examples, one tap each. The keys insert the call and let the assist
+  // bar name its arguments, and this list backs the sheet's Examples tab.
+  var EXAMPLES = [
+    { l: 'Plot', i: 'Plot[Sin[x], {x, -2 Pi, 2 Pi}]', t: 'Function plot' },
+    { l: 'ListPlot', i: 'ListPlot[{1, 4, 9, 16, 25}]', t: 'Scatter plot of data' },
+    { l: 'ContourPlot', i: 'ContourPlot[x^2 + y^2 == 4, {x, -3, 3}, {y, -3, 3}]', t: 'Implicit graph: the zero contour of the equation' },
+    { l: 'ParametricPlot', i: 'ParametricPlot[{Cos[3 t], Sin[2 t]}, {t, 0, 2 Pi}]', t: 'Parametric curve' },
+    { l: 'ListLinePlot', i: 'ListLinePlot[{3, 1, 4, 1, 5, 9, 2, 6}]', t: 'Line graph' },
+    { l: 'DensityPlot', i: 'DensityPlot[Sin[x] Cos[y], {x, -3, 3}, {y, -3, 3}]', t: 'Coloured contour plot' },
+    { l: 'PolarPlot', i: 'PolarPlot[1 + Cos[3 t], {t, 0, 2 Pi}]', t: 'Polar plot' },
+    { l: 'BoxWhiskerChart', i: 'BoxWhiskerChart[RandomReal[NormalDistribution[0, 1], 200]]', t: 'Box plot' },
+    { l: 'ArrayPlot', i: 'ArrayPlot[Table[Mod[i + j, 3], {i, 16}, {j, 16}]]', t: 'Matrix drawn as an image' },
+    { l: 'VectorPlot', i: 'VectorPlot[{y, -x}, {x, -3, 3}, {y, -3, 3}]', t: 'Vector field' },
+    { l: 'Histogram', i: 'Histogram[RandomReal[NormalDistribution[0, 1], 300]]', t: 'Histogram of data' },
+    { l: 'Fit', i: 'data = {{1, 2}, {2, 5}, {3, 7}, {4, 9}}; Show[ListPlot[data], Plot[Fit[data, {1, x}, x], {x, 1, 4}]]', t: 'Regression: fit the data' },
+    { l: 'Plot3D', i: 'Plot3D[Sin[x] Cos[y], {x, -3, 3}, {y, -3, 3}]', t: 'Surface of a function' },
+    { l: 'ListPlot3D', i: 'ListPlot3D[Table[Sin[i/2] Cos[j/2], {i, 12}, {j, 12}]]', t: 'Surface from a table of heights' },
+    { l: 'RegionPlot', i: 'RegionPlot[x^2 + y^2 < 1, {x, -1.5, 1.5}, {y, -1.5, 1.5}]', t: 'Implicit region' },
+    { l: 'ParametricPlot3D', i: 'ParametricPlot3D[{Cos[t], Sin[t], t}, {t, 0, 4 Pi}]', t: 'Parametric curve in 3D' },
+    { l: 'ListLinePlot3D', i: 'ListLinePlot3D[Table[{n, n^2, Sin[n]}, {n, 10}]]', t: 'Line through points in 3D' },
+    { l: 'RegionPlot3D', i: 'RegionPlot3D[x^2 + y^2 + z^2 < 1, {x, -1.5, 1.5}, {y, -1.5, 1.5}, {z, -1.5, 1.5}]', t: 'Implicit region in 3D' },
+    { l: 'SphericalPlot3D', i: 'SphericalPlot3D[1 + 0.4 Sin[4 u] Cos[4 v], {u, 0, Pi}, {v, 0, 2 Pi}]', t: 'Spherical coordinates' },
+    { l: 'ComplexPlot', i: 'ComplexPlot[Sin[z], {z, -3 - 3 I, 3 + 3 I}]', t: 'Complex plane' },
+    { l: 'DiscretePlot3D', i: 'DiscretePlot3D[Sin[x] Cos[y], {x, 0, 10}, {y, 0, 10}]', t: 'Values on a lattice' },
+    { l: 'VectorPlot3D', i: 'VectorPlot3D[{y, -x, z}, {x, -1, 1}, {y, -1, 1}, {z, -1, 1}]', t: 'Vector field in 3D' },
+    { l: 'ComplexPlot3D', i: 'ComplexPlot3D[Sin[z], {z, -2 - 2 I, 2 + 2 I}]', t: 'Modulus of a complex function' },
+    { l: 'RevolutionPlot3D', i: 'RevolutionPlot3D[Sqrt[x], {x, 0, 4}]', t: 'Surface of revolution' },
+    { l: 'Table', i: 'Table[i^2, {i, 10}]', t: 'A list of values' },
+    { l: 'Integrate', i: 'Integrate[Sin[x]^2, x]', t: 'Symbolic integral' },
+    { l: 'Solve', i: 'Solve[x^2 - 5 x + 6 == 0, x]', t: 'Roots of an equation' },
+    { l: 'Manipulate', i: 'Manipulate[Plot[Sin[a x], {x, 0, 2 Pi}], {a, 1, 5}]', t: 'Slider-driven plot' },
+  ];
 
   // Navigation is a graph of pages plus one remembered step. A swipe moves from the
   // current page in that direction:
@@ -520,7 +553,11 @@
       classes += ' ' + key.k.split(' ').map(function (name) { return 'woxi-key-' + name; }).join(' ');
     }
     if (key.s) classes += ' woxi-key-span-' + key.s;
-    var btn = el('button', classes, labelFor(key, this.shiftApplies()));
+    var btn = el('button', classes);
+    // The context bar renders rich labels (the signature highlights the argument the
+    // caret is in). Every other key is plain text.
+    if (key.h !== undefined) btn.innerHTML = key.h;
+    else btn.textContent = labelFor(key, this.shiftApplies());
     btn.type = 'button';
     if (key.t) btn.title = key.t;
     btn.setAttribute('data-key', key.l);
@@ -540,13 +577,28 @@
     this.buildBar(this.barPage, this.actionsEl);
   };
 
-  // Fills `into` with the four buttons of one bar page.
+  // Fills `into` with the buttons of one bar page. The context page changes while the
+  // user types (see `setBarKeys`), so its column widths come from the keys themselves.
   Keyboard.prototype.buildBar = function (barPage, into) {
     var self = this;
+    var keys = BARS[barPage];
     into.className = 'woxi-kb-slide woxi-kb-actions';
     into.innerHTML = '';
     into.setAttribute('data-bar', String(barPage + 1));
-    BARS[barPage].forEach(function (key) { into.appendChild(self.makeKey(key)); });
+    var weighted = keys.some(function (key) { return key.g !== undefined; });
+    into.style.gridTemplateColumns = weighted
+      ? keys.map(function (key) { return (key.g === undefined ? 1 : key.g) + 'fr'; }).join(' ')
+      : '';
+    keys.forEach(function (key) { into.appendChild(self.makeKey(key)); });
+  };
+
+  // Replaces one bar page. The context page is rebuilt on every keystroke. When it is
+  // the page on screen it is redrawn at once, and a running slide picks up the new keys
+  // when it finishes (it reads BARS again).
+  Keyboard.prototype.setBarKeys = function (index, keys) {
+    if (!BARS[index]) return;
+    BARS[index] = keys;
+    if (this.barPage === index && !this.slide) this.renderBar();
   };
 
   Keyboard.prototype.renderPad = function () {
@@ -641,7 +693,7 @@
   Keyboard.prototype.press = function (key) {
     if (key.a === 'shift') { this.toggleShift(); return; }
     if (key.a) {
-      if (this.handlers.onAction) this.handlers.onAction(key.a);
+      if (this.handlers.onAction) this.handlers.onAction(key.a, key.d);
       return;
     }
     var spec = insertFor(key, this.shiftApplies());
@@ -692,6 +744,7 @@
     Keyboard: Keyboard,
     PAGES: PAGES,
     BARS: BARS,
+    EXAMPLES: EXAMPLES,
     NEXT: NEXT,
     OPPOSITE: OPPOSITE,
     parseInsert: parseInsert,
