@@ -53,6 +53,10 @@ Notes:
 - `cargo-ndk` needs an NDK. `tools/build-engine.ps1` uses `ANDROID_NDK_HOME` if set, otherwise the newest NDK under the SDK found through `ANDROID_HOME`, `ANDROID_SDK_ROOT` or Android Studio's default location.
 - The library is stored uncompressed and mmapped from the APK. Only ABIs that have a `libwoxi_jni.so` in `app/src/main/jniLibs` are packaged, and `-Pabi` picks which. The default is arm64-v8a alone, since that is the phone.
 
+## Lint and test
+
+See `.github/workflows/lint.yml`.
+
 ## Automation hooks
 
 The web layer exposes `window.WoxiApp.testAction(action, argument)`, and `MainActivity.handleTestIntent()` drives it from an intent extra, so the app can be driven on a device without touching the screen:

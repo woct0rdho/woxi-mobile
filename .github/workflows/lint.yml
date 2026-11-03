@@ -1,9 +1,3 @@
-# Formatting and static checks for pull requests.
-#
-# Each job is independent so a formatting nit does not hide a real failure. Versions
-# are pinned: ktlint from the version below, ESLint/Ruff from the lockfile and
-# the actions.
-
 name: Lint
 
 on:
@@ -30,25 +24,20 @@ jobs:
           cache-workspaces: engine
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      # Single-threaded: the tests share the interpreter's global session state.
+      # Single-threaded. The tests share the interpreter's global session state.
       - run: cargo test -- --test-threads=1
 
   kotlin:
     name: kotlin (ktlint)
     runs-on: ubuntu-latest
-    env:
-      KTLINT_VERSION: 1.8.0
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
-      # The standalone CLI, so this job needs no Android SDK. Build scripts
-      # (*.gradle.kts) are deliberately not linted.
-      - run: |
-          curl -sSL -o ktlint.jar "https://github.com/pinterest/ktlint/releases/download/${KTLINT_VERSION}/ktlint"
-          java -jar ktlint.jar --relative "app/src/main/kotlin/**/*.kt"
+      - uses: gradle/actions/setup-gradle@v6
+      - run: ./gradlew ktlintCheck
 
   js:
     name: js (eslint)
