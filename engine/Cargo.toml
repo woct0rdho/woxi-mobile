@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 # The interpreter core. `default-features = false` drops the CLI (tokio, zeromq,
 # rustyline, jupyter) which an embedded engine does not need.
 woxi = { version = "0.3.0", default-features = false }
-jni = "0.21"
+jni = "0.22"
 
 [profile.release]
 # Built with all cores: fat LTO + a single codegen unit made the (very large)
