@@ -35,25 +35,17 @@ updates:
     schedule:
       interval: daily
     ignore:
-      # AGP and the Kotlin plugin pin themselves to the SDK and the JDK. A major bump is
-      # a migration, not a chore.
+      # AGP pins itself to the SDK and the JDK. A major bump is a migration, not a chore.
       - dependency-name: "com.android.application"
         update-types: ["version-update:semver-major"]
-      - dependency-name: "org.jetbrains.kotlin.android"
-        update-types: ["version-update:semver-major"]
       # These live on the Gradle buildscript classpath (they arrive through the Android
-      # Gradle plugin and Gradle itself, not from app/build.gradle.kts) and are not in
-      # the APK. Their advisories have no version we can choose, so the security update
-      # fails every run. Ignoring them keeps the run green without hiding the alert.
+      # Gradle plugin, not from app/build.gradle.kts) and are not in the APK. Their
+      # advisories have no version we can choose, so the security update would fail
+      # every run. Ignoring them keeps the run green without hiding the alert.
       - dependency-name: "com.google.guava:guava"
-      - dependency-name: "com.google.protobuf:*"
-      - dependency-name: "io.netty:*"
-      - dependency-name: "io.opentelemetry:opentelemetry-api"
-      - dependency-name: "org.apache.commons:commons-compress"
       - dependency-name: "org.bitbucket.b_c:jose4j"
       - dependency-name: "org.bouncycastle:*"
       - dependency-name: "org.jdom:jdom2"
-      - dependency-name: "org.jetbrains.kotlin:kotlin-gradle-plugin"
     groups:
       gradle:
         patterns: ["*"]
