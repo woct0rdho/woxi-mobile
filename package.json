@@ -1,0 +1,14 @@
+{
+  "name": "woxi-mobile-web",
+  "private": true,
+  "description": "Lint tooling for the WebView layer. Nothing here ships in the APK.",
+  "packageManager": "pnpm@12.16.1",
+  "scripts": {
+    "lint": "eslint app/src/main/assets/www/js"
+  },
+  "devDependencies": {
+    "eslint": "^10.14.0",
+    "@eslint/js": "^10.0.1",
+    "globals": "^15.15.0"
+  }
+}

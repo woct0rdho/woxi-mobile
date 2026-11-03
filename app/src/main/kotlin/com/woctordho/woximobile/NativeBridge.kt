@@ -17,8 +17,9 @@ import java.io.ByteArrayOutputStream
 //
 // Notebook text crosses the JS/Java boundary as base64 so that the file bytes arrive in the
 // WebView unchanged, whatever they contain.
-class NativeBridge(private val activity: MainActivity) {
-
+class NativeBridge(
+    private val activity: MainActivity,
+) {
     companion object {
         private const val TAG = "Woxi"
     }
@@ -64,16 +65,18 @@ class NativeBridge(private val activity: MainActivity) {
     // Used by the action bar's Copy/Cut keys.
     @JavascriptInterface
     fun setClipboard(text: String) {
-        val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE)
-            as android.content.ClipboardManager
+        val clipboard =
+            activity.getSystemService(Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
         clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Woxi", text))
     }
 
     // Returns the clipboard's text ("" when it holds something else). Used by Paste.
     @JavascriptInterface
     fun getClipboard(): String {
-        val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE)
-            as android.content.ClipboardManager
+        val clipboard =
+            activity.getSystemService(Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
         val clip = clipboard.primaryClip ?: return ""
         if (clip.itemCount == 0) return ""
         return clip.getItemAt(0).coerceToText(activity).toString()
@@ -84,7 +87,11 @@ class NativeBridge(private val activity: MainActivity) {
     // @param name suggested file name, e.g. `Untitled.ipynb`
     // @param base64 notebook bytes (UTF-8 JSON, the .ipynb text)
     @JavascriptInterface
-    fun saveFile(name: String, base64: String, mime: String) {
+    fun saveFile(
+        name: String,
+        base64: String,
+        mime: String,
+    ) {
         activity.runOnUiThread {
             pendingSaveBytes = Base64.decode(base64, Base64.DEFAULT)
             pendingSaveName = name
@@ -106,10 +113,11 @@ class NativeBridge(private val activity: MainActivity) {
             callJs("onSaveComplete", "false", name)
             return
         }
-        val ok = runCatching {
-            activity.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
-                ?: error("cannot open output stream")
-        }.isSuccess
+        val ok =
+            runCatching {
+                activity.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                    ?: error("cannot open output stream")
+            }.isSuccess
         callJs("onSaveComplete", if (ok) "true" else "false", displayName(uri) ?: name)
     }
 
@@ -118,28 +126,32 @@ class NativeBridge(private val activity: MainActivity) {
             callJs("onFileOpened", "", "")
             return
         }
-        val result = runCatching {
-            val input = activity.contentResolver.openInputStream(uri) ?: error("cannot open input stream")
-            val buffer = ByteArrayOutputStream()
-            input.use { stream -> stream.copyTo(buffer) }
-            buffer.toByteArray()
-        }
-        result.onSuccess { bytes ->
-            val name = displayName(uri) ?: "Untitled.ipynb"
-            callJs("onFileOpened", name, Base64.encodeToString(bytes, Base64.NO_WRAP))
-        }.onFailure { error ->
-            Log.w(TAG, "open failed", error)
-            callJs("onFileOpened", "", "")
-            toast("Could not read file: ${error.message}")
-        }
+        val result =
+            runCatching {
+                val input = activity.contentResolver.openInputStream(uri) ?: error("cannot open input stream")
+                val buffer = ByteArrayOutputStream()
+                input.use { stream -> stream.copyTo(buffer) }
+                buffer.toByteArray()
+            }
+        result
+            .onSuccess { bytes ->
+                val name = displayName(uri) ?: "Untitled.ipynb"
+                callJs("onFileOpened", name, Base64.encodeToString(bytes, Base64.NO_WRAP))
+            }.onFailure { error ->
+                Log.w(TAG, "open failed", error)
+                callJs("onFileOpened", "", "")
+                toast("Could not read file: ${error.message}")
+            }
     }
 
-    private fun displayName(uri: Uri): String? = runCatching {
-        activity.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor ->
-                if (cursor.moveToFirst()) cursor.getString(0) else null
-            }
-    }.getOrNull()
+    private fun displayName(uri: Uri): String? =
+        runCatching {
+            activity.contentResolver
+                .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                }
+        }.getOrNull()
 
     // window / system
 
@@ -158,7 +170,13 @@ class NativeBridge(private val activity: MainActivity) {
     // interpreter's JSON output items via `WoxiNativeCallbacks.onEngineResult(id, json)`.
     // Work happens on the engine thread, so the UI is not blocked.
     @JavascriptInterface
-    fun engineRequest(id: Int, kind: String, input: String, body: String, bindings: String) {
+    fun engineRequest(
+        id: Int,
+        kind: String,
+        input: String,
+        body: String,
+        bindings: String,
+    ) {
         NativeEngine.request(kind, input, body, bindings) { json ->
             callJs("onEngineResult", id.toString(), json)
         }
@@ -167,7 +185,10 @@ class NativeBridge(private val activity: MainActivity) {
     // One plot-interaction message (pan/zoom frame, re-sample, retain, release).
     // Replies through the same callback channel as `engineRequest`.
     @JavascriptInterface
-    fun plotRequest(id: Int, request: String) {
+    fun plotRequest(
+        id: Int,
+        request: String,
+    ) {
         NativeEngine.plotRequest(request) { json ->
             callJs("onEngineResult", id.toString(), json)
         }
@@ -175,14 +196,19 @@ class NativeBridge(private val activity: MainActivity) {
 
     // System-bar insets in pixels, so the web layer can pad the keyboard itself.
     @JavascriptInterface
-    fun getInsets(): String = JSONObject().apply {
-        put("top", activity.insetTopPx)
-        put("bottom", activity.insetBottomPx)
-    }.toString()
+    fun getInsets(): String =
+        JSONObject()
+            .apply {
+                put("top", activity.insetTopPx)
+                put("bottom", activity.insetBottomPx)
+            }.toString()
 
     // helpers
 
-    private fun callJs(function: String, vararg args: String) {
+    private fun callJs(
+        function: String,
+        vararg args: String,
+    ) {
         val view = webView ?: return
         val argList = args.joinToString(",") { JSONObject.quote(it) }
         val script = "window.WoxiNativeCallbacks && window.WoxiNativeCallbacks.$function($argList);"

@@ -19,7 +19,7 @@ val keystoreProps = Properties().apply {
 // Which ABIs to package. The phone is arm64, so that is the default. Emulator builds
 // pass -Pabi=arm64-v8a,x86_64 (or -Pabi=all). An ABI can only be selected if
 // app/src/main/jniLibs has a libwoxi_jni.so for it, which tools/build-engine.ps1
-// builds:  .\tools\build-engine.ps1 -Abi x86_64
+// builds: .\tools\build-engine.ps1 -Abi x86_64
 val abis: List<String> = run {
     val requested = (project.findProperty("abi") as String?)?.trim().orEmpty()
     when {

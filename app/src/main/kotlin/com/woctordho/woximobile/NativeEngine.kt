@@ -17,13 +17,19 @@ import org.json.JSONObject
 // the frontend asks for a re-sample again once the gesture has settled, so a queued
 // one is already out of date.
 object NativeEngine {
-
     private const val TAG = "Woxi"
 
     private external fun evaluateAll(input: String): String
-    private external fun evaluateManipulate(body: String, bindingsJson: String): String
+
+    private external fun evaluateManipulate(
+        body: String,
+        bindingsJson: String,
+    ): String
+
     private external fun plotRequest(request: String): String
+
     private external fun clear()
+
     private external fun setDarkMode(enabled: Boolean)
 
     // Kinds of work the frontend can ask for.
@@ -32,7 +38,9 @@ object NativeEngine {
     const val KIND_MANIPULATE = "manipulate"
 
     // A queued unit of work, already bound to its callback.
-    private class Task(val run: () -> Unit)
+    private class Task(
+        val run: () -> Unit,
+    )
 
     private val lock = Object()
     private val interactive = ArrayDeque<Task>()
@@ -66,53 +74,66 @@ object NativeEngine {
         callback: (String) -> Unit,
     ) {
         submit(NORMAL) {
-            val result = try {
-                ensureLoaded()
-                applyDarkFlag()
-                when (kind) {
-                    KIND_RESET -> {
-                        clear()
-                        "[]"
+            val result =
+                try {
+                    ensureLoaded()
+                    applyDarkFlag()
+                    when (kind) {
+                        KIND_RESET -> {
+                            clear()
+                            "[]"
+                        }
+
+                        KIND_MANIPULATE -> {
+                            evaluateManipulate(body, bindings)
+                        }
+
+                        else -> {
+                            evaluateAll(input)
+                        }
                     }
-                    KIND_MANIPULATE -> evaluateManipulate(body, bindings)
-                    else -> evaluateAll(input)
+                } catch (error: Throwable) {
+                    Log.w(TAG, "engine request failed", error)
+                    errorJson(error.message ?: error.javaClass.simpleName)
                 }
-            } catch (error: Throwable) {
-                Log.w(TAG, "engine request failed", error)
-                errorJson(error.message ?: error.javaClass.simpleName)
-            }
             callback(result)
         }
     }
 
     // Runs one plot-interaction message (see the JNI header for the shape) and hands
     // the reply JSON to [callback].
-    fun plotRequest(request: String, callback: (String) -> Unit) {
+    fun plotRequest(
+        request: String,
+        callback: (String) -> Unit,
+    ) {
         val priority = priorityOf(request)
         submit(priority) {
-            val reply = try {
-                ensureLoaded()
-                plotRequest(request)
-            } catch (error: Throwable) {
-                Log.w(TAG, "plot request failed", error)
-                // Still a well-formed reply, so the frontend has one code path.
-                val message = JSONObject()
-                    .put("msg_type", "plot_error")
-                    .put("status", "error")
-                    .put("ename", "BridgeFailure")
-                    .put("evalue", error.message ?: error.javaClass.simpleName)
-                message.toString()
-            }
+            val reply =
+                try {
+                    ensureLoaded()
+                    plotRequest(request)
+                } catch (error: Throwable) {
+                    Log.w(TAG, "plot request failed", error)
+                    // Still a well-formed reply, so the frontend has one code path.
+                    val message =
+                        JSONObject()
+                            .put("msg_type", "plot_error")
+                            .put("status", "error")
+                            .put("ename", "BridgeFailure")
+                            .put("evalue", error.message ?: error.javaClass.simpleName)
+                    message.toString()
+                }
             callback(reply)
         }
     }
 
     private fun priorityOf(request: String): Int {
-        val type = try {
-            JSONObject(request).optString("msg_type")
-        } catch (error: Throwable) {
-            ""
-        }
+        val type =
+            try {
+                JSONObject(request).optString("msg_type")
+            } catch (error: Throwable) {
+                ""
+            }
         return when (type) {
             "plot_view", "plot_retain", "plot_release" -> INTERACTIVE
             "plot_refine", "plot_densify" -> BACKGROUND
@@ -120,7 +141,10 @@ object NativeEngine {
         }
     }
 
-    private fun submit(priority: Int, run: () -> Unit) {
+    private fun submit(
+        priority: Int,
+        run: () -> Unit,
+    ) {
         synchronized(lock) {
             startWorkerLocked()
             when (priority) {
@@ -129,8 +153,14 @@ object NativeEngine {
                     // A queued re-sample is stale as soon as the view moves on.
                     background.clear()
                 }
-                BACKGROUND -> background.addLast(Task(run))
-                else -> normal.addLast(Task(run))
+
+                BACKGROUND -> {
+                    background.addLast(Task(run))
+                }
+
+                else -> {
+                    normal.addLast(Task(run))
+                }
             }
             lock.notifyAll()
         }
@@ -138,21 +168,23 @@ object NativeEngine {
 
     private fun startWorkerLocked() {
         if (worker != null) return
-        val thread = Thread({
-            while (true) {
-                val task = synchronized(lock) {
-                    while (interactive.isEmpty() && normal.isEmpty() && background.isEmpty()) {
-                        lock.wait()
-                    }
-                    when {
-                        interactive.isNotEmpty() -> interactive.removeFirst()
-                        normal.isNotEmpty() -> normal.removeFirst()
-                        else -> background.removeFirst()
-                    }
+        val thread =
+            Thread({
+                while (true) {
+                    val task =
+                        synchronized(lock) {
+                            while (interactive.isEmpty() && normal.isEmpty() && background.isEmpty()) {
+                                lock.wait()
+                            }
+                            when {
+                                interactive.isNotEmpty() -> interactive.removeFirst()
+                                normal.isNotEmpty() -> normal.removeFirst()
+                                else -> background.removeFirst()
+                            }
+                        }
+                    task.run()
                 }
-                task.run()
-            }
-        }, "woxi-engine")
+            }, "woxi-engine")
         thread.isDaemon = true
         thread.start()
         worker = thread
@@ -170,9 +202,10 @@ object NativeEngine {
     }
 
     private fun errorJson(message: String): String {
-        val item = JSONObject()
-            .put("type", "error")
-            .put("text", message)
+        val item =
+            JSONObject()
+                .put("type", "error")
+                .put("text", message)
         return "[$item]"
     }
 

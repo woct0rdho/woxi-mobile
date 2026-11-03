@@ -15,7 +15,25 @@ $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'adbfunc.ps1')
 
-$Env:JAVA_HOME = 'C:\android\jdk21'
+function Resolve-JavaHome {
+    if ($Env:JAVA_HOME -and (Test-Path (Join-Path $Env:JAVA_HOME 'bin\java.exe'))) { return }
+    if ($Env:WOXI_JAVA_HOME) {
+        if (-not (Test-Path (Join-Path $Env:WOXI_JAVA_HOME 'bin\java.exe'))) {
+            throw "WOXI_JAVA_HOME is not a JDK: $($Env:WOXI_JAVA_HOME)"
+        }
+        $Env:JAVA_HOME = $Env:WOXI_JAVA_HOME
+        return
+    }
+    $java = Get-Command java -ErrorAction SilentlyContinue
+    if ($java) {
+        # bin\java.exe -> the JDK home two levels up.
+        $Env:JAVA_HOME = Split-Path -Parent (Split-Path -Parent $java.Source)
+        return
+    }
+    throw 'no JDK: set JAVA_HOME (JDK 17-21), or put java on PATH'
+}
+
+Resolve-JavaHome
 Set-Location $repo
 if (-not $Screenshot) { $Screenshot = Join-Path $repo 'screenshots\latest.png' }
 

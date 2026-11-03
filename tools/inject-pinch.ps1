@@ -24,7 +24,8 @@ param(
   [int]$TouchDevice = 2   # /dev/input/eventN of a touchscreen (see: getevent -pl)
 )
 $ErrorActionPreference = 'Stop'
-$adb = if (Test-Path 'C:\mathstudio-woxi\tools\adbfunc.ps1') { (Get-Content 'C:\mathstudio-woxi\tools\adbfunc.ps1' | Select-String -Pattern "AdbPath = '(.*)'").Matches[0].Groups[1].Value } else { 'C:\android\sdk\platform-tools\adb.exe' }
+. (Join-Path $PSScriptRoot 'adbfunc.ps1')
+$adb = $script:AdbPath
 
 $script = @"
 #!/system/bin/sh

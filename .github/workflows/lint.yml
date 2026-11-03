@@ -1,0 +1,80 @@
+# Formatting and static checks for pull requests.
+#
+# Each job is independent so a formatting nit does not hide a real failure, and every
+# tool is pinned: rustfmt/clippy through rust-toolchain.toml, ktlint by the version
+# below, ESLint/Ruff through the lockfile and the actions.
+
+name: lint
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: rust (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # Single-threaded: the tests share the interpreter's global session state.
+      - run: cargo test -- --test-threads=1
+
+  kotlin:
+    name: kotlin (ktlint)
+    runs-on: ubuntu-latest
+    env:
+      KTLINT_VERSION: 1.8.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      # The standalone CLI, so this job needs no Android SDK. Build scripts
+      # (*.gradle.kts) are deliberately not linted.
+      - run: |
+          curl -sSL -o ktlint.jar "https://github.com/pinterest/ktlint/releases/download/${KTLINT_VERSION}/ktlint"
+          java -jar ktlint.jar --relative "app/src/main/kotlin/**/*.kt"
+
+  js:
+    name: js (eslint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec eslint app/src/main/assets/www/js
+
+  python:
+    name: python (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v3
+        with:
+          src: tools
+      - uses: astral-sh/ruff-action@v3
+        with:
+          src: tools
+          args: format --check

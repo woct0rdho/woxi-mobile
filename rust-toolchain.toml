@@ -1,0 +1,5 @@
+# Pinned so `cargo fmt --check` and `cargo clippy` behave the same for everyone.
+# CI reads this file through dtolnay/rust-toolchain (see .github/workflows/lint.yml).
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]

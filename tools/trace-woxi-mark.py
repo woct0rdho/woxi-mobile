@@ -60,6 +60,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -71,14 +72,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DESIGN = os.path.join(ROOT, "design")
 TEMP = os.environ.get("TEMP", ".")
 DEFAULT_SOURCE = os.path.join(TEMP, "woxi-logo.png")
-DEFAULT_POTRACE = r"C:\potrace\potrace.exe"
+DEFAULT_POTRACE = os.environ.get("WOXI_POTRACE") or shutil.which("potrace") or "potrace"
 STOPS = [(0.0, "FAC22A"), (0.5, "F07C39"), (1.0, "DA3355")]
 SS = 4
-SHORT_EDGE = 8.0                # edges under this are treated as artefacts, see tidy_corners
+SHORT_EDGE = 8.0  # edges under this are treated as artefacts, see tidy_corners
 
 
 def rgb(value):
-    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+    return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
 
 
 def mix(a, b, t):
@@ -96,6 +97,7 @@ def gradient_at(t):
 
 
 # source
+
 
 def coverage_field(path):
     """Per-pixel ink coverage of the mark, plus the window it was found in."""
@@ -115,7 +117,7 @@ def coverage_field(path):
         strong = row[(row.max(axis=1) - row.min(axis=1)) > 60]
         if len(strong) == 0:
             continue
-        ink = np.percentile(strong, 99, axis=0)                 # a fully covered pixel of this row
+        ink = np.percentile(strong, 99, axis=0)  # a fully covered pixel of this row
         span = np.maximum(ink - background, 1.0)
         coverage[y] = np.clip(((row - background) / span).mean(axis=1), 0.0, 1.0)
     return coverage, (int(x0), int(y0))
@@ -146,21 +148,25 @@ def mirror(field, axis):
 
 # tracers
 
+
 def trace_potrace(coverage, exe, upscale=4, turdsize=10):
     """Straight-segment potrace trace, returned as polygons in source pixels."""
     grey = Image.fromarray((np.clip(coverage, 0, 1) * 255).astype(np.uint8))
     big = grey.resize((coverage.shape[1] * upscale, coverage.shape[0] * upscale), Image.BICUBIC)
     pgm = os.path.join(TEMP, "woxi-mark-input.pgm")
-    Image.fromarray(255 - np.asarray(big)).save(pgm)            # potrace: dark is figure
+    Image.fromarray(255 - np.asarray(big)).save(pgm)  # potrace: dark is figure
     svg = os.path.join(TEMP, "woxi-mark-potrace.svg")
     # no --tight: with it, potrace's coordinates become crop-relative and the crop
     # origin is not recoverable from the file, whereas untight coordinates map
     # straight onto the input image through the transform that potrace writes.
-    done = subprocess.run([exe, pgm, "-o", svg, "-b", "svg", "-a", "0",
-                           "-t", str(turdsize), "-u", "10"],
-                          capture_output=True, text=True)
+    done = subprocess.run(
+        [exe, pgm, "-o", svg, "-b", "svg", "-a", "0", "-t", str(turdsize), "-u", "10"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if done.returncode != 0:
-        sys.exit("potrace failed: %s%s" % (done.stdout, done.stderr))
+        sys.exit(f"potrace failed: {done.stdout}{done.stderr}")
     return parse_potrace(open(svg, encoding="utf-8").read(), upscale)
 
 
@@ -171,8 +177,7 @@ def parse_potrace(svg, upscale):
     noise speckles included) and cuts counters out by winding, so every element is
     read and the resulting contours are combined even-odd.
     """
-    transform = re.search(
-        r'transform="translate\(([-\d.]+),([-\d.]+)\)\s*scale\(([-\d.]+),([-\d.]+)\)"', svg)
+    transform = re.search(r'transform="translate\(([-\d.]+),([-\d.]+)\)\s*scale\(([-\d.]+),([-\d.]+)\)"', svg)
     if not transform:
         sys.exit("cannot read potrace's transform")
     tx, ty, sx, sy = (float(v) for v in transform.groups())
@@ -200,12 +205,12 @@ def parse_potrace(svg, upscale):
                 continue
             numbers.append(float(token))
             if command in "Mm" and len(numbers) == 2:
-                pen = (np.array(numbers) if command == "M" else pen + np.array(numbers))
+                pen = np.array(numbers) if command == "M" else pen + np.array(numbers)
                 start = pen.copy()
                 current = [pen.copy()]
                 numbers = []
             elif command in "Ll" and len(numbers) == 2:
-                pen = (np.array(numbers) if command == "L" else pen + np.array(numbers))
+                pen = np.array(numbers) if command == "L" else pen + np.array(numbers)
                 current.append(pen.copy())
                 numbers = []
             elif command in "HhVv" and len(numbers) == 1:
@@ -233,11 +238,11 @@ def trace_marching_squares(coverage, min_area=20.0):
         return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
 
     found = measure.find_contours(coverage, 0.5)
-    return [c[:, ::-1] for c in found
-            if area(np.column_stack((c[:, 1], c[:, 0]))) > min_area]
+    return [c[:, ::-1] for c in found if area(np.column_stack((c[:, 1], c[:, 0]))) > min_area]
 
 
 # geometry
+
 
 def rdp(points, eps):
     """Ramer-Douglas-Peucker, iterative so a long contour cannot blow the stack."""
@@ -253,7 +258,7 @@ def rdp(points, eps):
             continue
         segment = points[last] - points[first]
         length = np.hypot(*segment)
-        chunk = points[first + 1:last]
+        chunk = points[first + 1 : last]
         if length == 0:
             distance = np.hypot(*(chunk - points[first]).T)
         else:
@@ -318,8 +323,7 @@ def straighten(points, tolerance_deg=6.0, snap_deg=3.0, min_run=2.0):
 
     def run_of(group):
         first, last = group[0], group[-1]
-        return np.asarray([points[(first + step) % count]
-                           for step in range((last - first) % count + 2)])
+        return np.asarray([points[(first + step) % count] for step in range((last - first) % count + 2)])
 
     def line_of(run):
         point, direction = fit_line(run)
@@ -355,7 +359,7 @@ def straighten(points, tolerance_deg=6.0, snap_deg=3.0, min_run=2.0):
     for index in range(len(lines)):
         before, current = lines[index - 1], lines[index]
         matrix = np.column_stack((before[1], -current[1]))
-        if abs(np.linalg.det(matrix)) < 1e-9:                    # parallel: no corner here
+        if abs(np.linalg.det(matrix)) < 1e-9:  # parallel: no corner here
             corners.append(before[0])
             continue
         offset = np.linalg.solve(matrix, current[0] - before[0])[0]
@@ -391,22 +395,22 @@ def tidy_corners(points, threshold=SHORT_EDGE, collinear_deg=1.5, locality=3.0, 
         second, after = pts[(index + 1) % count], pts[(index + 2) % count]
         short = second - first
         length = float(np.hypot(*short))
-        if (angle_between(short, first - before) <= collinear_deg
-                or angle_between(short, after - second) <= collinear_deg):
-            merged = first                                     # straight run: drop the joint
+        if (
+            angle_between(short, first - before) <= collinear_deg
+            or angle_between(short, after - second) <= collinear_deg
+        ):
+            merged = first  # straight run: drop the joint
         else:
             span = after - second
             matrix = np.column_stack((first - before, -span))
             merged = None
-            if abs(np.linalg.det(matrix)) > 1e-9:
-                if angle_between(first - before, span) > collinear_deg:
-                    offset = np.linalg.solve(matrix, second - before)[0]
-                    candidate = before + offset * (first - before)
-                    if max(np.hypot(*(candidate - first)),
-                           np.hypot(*(candidate - second))) <= max(locality, 0.75 * length):
-                        merged = candidate
+            if abs(np.linalg.det(matrix)) > 1e-9 and angle_between(first - before, span) > collinear_deg:
+                offset = np.linalg.solve(matrix, second - before)[0]
+                candidate = before + offset * (first - before)
+                if max(np.hypot(*(candidate - first)), np.hypot(*(candidate - second))) <= max(locality, 0.75 * length):
+                    merged = candidate
             if merged is None:
-                merged = (first + second) / 2                  # give up gracefully
+                merged = (first + second) / 2  # give up gracefully
         del pts[index]
         del pts[index % len(pts)]
         pts.insert(index, merged)
@@ -456,8 +460,7 @@ def polish(polygons, rounds=3):
     out = polygons
     for _ in range(rounds):
         settled = [snap_axes(merge_collinear(points)) for points in out]
-        if all(len(a) == len(b) and np.allclose(a, b, atol=1e-12)
-               for a, b in zip(out, settled)):
+        if all(len(a) == len(b) and np.allclose(a, b, atol=1e-12) for a, b in zip(out, settled)):
             return settled
         out = settled
     return out
@@ -495,7 +498,7 @@ def axis_meetings(points, axis, on_axis=0.3):
     for index in range(count):
         first, second = points[index], points[(index + 1) % count]
         if abs(first[0] - axis) <= on_axis and abs(second[0] - axis) <= on_axis:
-            continue                                             # a segment lying along it
+            continue  # a segment lying along it
         if abs(first[0] - axis) <= on_axis:
             meetings.append((index, np.array([axis, first[1]])))
         elif (first[0] - axis) * (second[0] - axis) < 0:
@@ -543,12 +546,12 @@ def mirror_rebuild(points, axis, on_axis=0.3):
     left = arc(first_edge, second_edge)
     if left is None:
         return points
-    if np.mean([point[0] for point in left]) > axis:         # that arc was the right-hand one
+    if np.mean([point[0] for point in left]) > axis:  # that arc was the right-hand one
         left = arc(second_edge, first_edge)
         if left is None:
             return points
         first, second = second, first
-    left = squash([first] + left)[1:]                        # drop points on top of `first`
+    left = squash([first] + left)[1:]  # drop points on top of `first`
     mirrored = [np.array([2 * axis - point[0], point[1]]) for point in reversed(left)]
     rebuilt = squash([first] + left + [second] + mirrored)
     return np.asarray(rebuilt) if len(rebuilt) >= 3 else points
@@ -575,7 +578,7 @@ def enforce_mirror(polygons, axis):
         left = sided[index]
         result.append(left)
         result.append(np.column_stack((2 * axis - left[:, 0], left[:, 1])))
-    if len(sided) % 2:                                           # unpaired: keep as it is
+    if len(sided) % 2:  # unpaired: keep as it is
         result.append(sided[-1])
     return result
 
@@ -618,11 +621,16 @@ def measure(polygons, coverage):
     # For a pixel only the source covers, the distance to the nearest gap in it.
     over = np.logical_and(guess, ~truth)
     short = np.logical_and(truth, ~guess)
-    worst = max(ndimage.distance_transform_edt(~truth)[over].max() if over.any() else 0.0,
-                ndimage.distance_transform_edt(truth)[short].max() if short.any() else 0.0)
-    return {"iou": float(iou), "mean_coverage_error": float(np.abs(coverage - filled).mean()),
-            "max_edge_px": float(worst),
-            "pixels_wrong": int(np.logical_xor(truth, guess).sum())}
+    worst = max(
+        ndimage.distance_transform_edt(~truth)[over].max() if over.any() else 0.0,
+        ndimage.distance_transform_edt(truth)[short].max() if short.any() else 0.0,
+    )
+    return {
+        "iou": float(iou),
+        "mean_coverage_error": float(np.abs(coverage - filled).mean()),
+        "max_edge_px": float(worst),
+        "pixels_wrong": int(np.logical_xor(truth, guess).sum()),
+    }
 
 
 def describe(polygons, axis):
@@ -657,13 +665,18 @@ def describe(polygons, axis):
     for point in flat:
         distances = np.hypot(images[:, 0] - point[0], images[:, 1] - point[1])
         worst = max(worst, float(distances.min()))
-    return {"horizontals": horizontals, "verticals": verticals, "shortest_edge_px": shortest,
-            "near_axis_but_not_on_it": inexact,
-            "closest_vertices_px": None if closest is math.inf else closest,
-            "symmetry_residual_px": worst}
+    return {
+        "horizontals": horizontals,
+        "verticals": verticals,
+        "shortest_edge_px": shortest,
+        "near_axis_but_not_on_it": inexact,
+        "closest_vertices_px": None if closest is math.inf else closest,
+        "symmetry_residual_px": worst,
+    }
 
 
 # output
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -675,39 +688,42 @@ def main():
     ap.add_argument("--marching-squares", action="store_true", help="do not use potrace")
     args = ap.parse_args()
     if not os.path.exists(args.source):
-        sys.exit("source bitmap not found: %s" % args.source)
+        sys.exit(f"source bitmap not found: {args.source}")
 
     coverage, window = coverage_field(args.source)
     axis, residual = symmetry_axis(coverage)
     field = 0.5 * (coverage + mirror(coverage, axis))
-    use_potrace = not args.marching_squares and os.path.exists(args.potrace)
+    use_potrace = not args.marching_squares and bool(shutil.which(args.potrace) or os.path.exists(args.potrace))
     tracer = "potrace -a 0" if use_potrace else "marching squares"
-    print("source      %s" % os.path.relpath(args.source, ROOT))
-    print("window      %dx%d px at (%d, %d)" % (coverage.shape[1], coverage.shape[0], *window))
-    print("mirror axis x=%.3f px (window center %.3f), residual %.4f before, %.4f after"
-          % (axis, coverage.shape[1] / 2, residual, float(np.abs(field - mirror(field, axis)).mean())))
-    print("tracer      %s" % tracer)
+    print(f"source      {os.path.relpath(args.source, ROOT)}")
+    print(f"window      {coverage.shape[1]}x{coverage.shape[0]} px at ({window[0]}, {window[1]})")
+    print(
+        f"mirror axis x={axis:.3f} px (window center {coverage.shape[1] / 2:.3f}), residual {residual:.4f} before, {float(np.abs(field - mirror(field, axis)).mean()):.4f} after"
+    )
+    print(f"tracer      {tracer}")
 
-    raw = (trace_potrace(field, args.potrace) if use_potrace
-           else trace_marching_squares(field))
-    raw = [c for c in raw if area(c) > 20.0]                     # drop specks
-    polygons = [symmetrise(tidy_corners(straighten(rdp(c, args.eps), args.tolerance,
-                                                  args.snap)), axis)
-                for c in raw]
+    raw = trace_potrace(field, args.potrace) if use_potrace else trace_marching_squares(field)
+    raw = [c for c in raw if area(c) > 20.0]  # drop specks
+    polygons = [symmetrise(tidy_corners(straighten(rdp(c, args.eps), args.tolerance, args.snap)), axis) for c in raw]
     polygons = [merge_collinear(p) for p in enforce_mirror(polygons, axis)]
     polygons = polish(polygons)
     stats = measure(polygons, coverage)
     report = describe(polygons, axis)
-    print("figure      %d contours, %d vertices (from %d traced points): %d corners, "
-          "%d horizontal, %d vertical edges"
-          % (len(polygons), sum(len(p) for p in polygons), sum(len(c) for c in raw),
-             sum(len(p) for p in polygons), report["horizontals"], report["verticals"]))
-    print("cleanliness closest two vertices %.2f px apart. shortest edge %.2f px. "
-          "%d near-axis edges not exactly on an axis. symmetry residual %.2e px"
-          % (report["closest_vertices_px"], report["shortest_edge_px"],
-             report["near_axis_but_not_on_it"], report["symmetry_residual_px"]))
-    print("fidelity    IoU %.5f, mean coverage error %.4f, worst edge %.2f px, %d px wrong"
-          % (stats["iou"], stats["mean_coverage_error"], stats["max_edge_px"], stats["pixels_wrong"]))
+    print(
+        f"figure      {len(polygons)} contours, {sum(len(p) for p in polygons)} vertices "
+        f"(from {sum(len(c) for c in raw)} traced points): {sum(len(p) for p in polygons)} corners, "
+        f"{report['horizontals']} horizontal, {report['verticals']} vertical edges"
+    )
+    print(
+        f"cleanliness closest two vertices {report['closest_vertices_px']:.2f} px apart. "
+        f"shortest edge {report['shortest_edge_px']:.2f} px. "
+        f"{report['near_axis_but_not_on_it']} near-axis edges not exactly on an axis. "
+        f"symmetry residual {report['symmetry_residual_px']:.2e} px"
+    )
+    print(
+        f"fidelity    IoU {stats['iou']:.5f}, mean coverage error {stats['mean_coverage_error']:.4f}, "
+        f"worst edge {stats['max_edge_px']:.2f} px, {stats['pixels_wrong']} px wrong"
+    )
 
     points = np.vstack(polygons)
     lo, hi = points.min(axis=0), points.max(axis=0)
@@ -716,52 +732,64 @@ def main():
 
     os.makedirs(DESIGN, exist_ok=True)
     with open(os.path.join(DESIGN, "woxi-mark.json"), "w", encoding="utf-8") as fh:
-        json.dump({
-            "source": "images/logo.png in ad-si/Woxi",
-            "method": "%s, RDP %.2f px, edges merged within %.1f deg and snapped within "
-                      "%.1f deg, vertices mirrored about x=%.3f" % (
-                          tracer, args.eps, args.tolerance, args.snap, axis),
-            "metrics": {k: round(v, 6) for k, v in stats.items()},
-            "figure": {k: (round(v, 6) if isinstance(v, float) else v)
-                       for k, v in report.items()},
-            "mirror_axis_px": round(axis, 3),
-            "source_window": {"x": window[0], "y": window[1],
-                              "width": int(coverage.shape[1]), "height": int(coverage.shape[0])},
-            "bbox_px": {"x": round(float(lo[0]), 3), "y": round(float(lo[1]), 3),
-                        "width": round(float(size[0]), 3), "height": round(float(size[1]), 3)},
-            "aspect": round(float(size[0] / size[1]), 5),
-            "contours_px": [[[round(float(v), 3) for v in p] for p in contour]
-                            for contour in polygons],
-            "contours_unit": [[[round(float(v), 5) for v in p] for p in contour]
-                              for contour in unit],
-        }, fh, indent=2)
+        json.dump(
+            {
+                "source": "images/logo.png in ad-si/Woxi",
+                "method": f"{tracer}, RDP {args.eps:.2f} px, edges merged within {args.tolerance:.1f} deg and snapped within "
+                f"{args.snap:.1f} deg, vertices mirrored about x={axis:.3f}",
+                "metrics": {k: round(v, 6) for k, v in stats.items()},
+                "figure": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in report.items()},
+                "mirror_axis_px": round(axis, 3),
+                "source_window": {
+                    "x": window[0],
+                    "y": window[1],
+                    "width": int(coverage.shape[1]),
+                    "height": int(coverage.shape[0]),
+                },
+                "bbox_px": {
+                    "x": round(float(lo[0]), 3),
+                    "y": round(float(lo[1]), 3),
+                    "width": round(float(size[0]), 3),
+                    "height": round(float(size[1]), 3),
+                },
+                "aspect": round(float(size[0] / size[1]), 5),
+                "contours_px": [[[round(float(v), 3) for v in p] for p in contour] for contour in polygons],
+                "contours_unit": [[[round(float(v), 5) for v in p] for p in contour] for contour in unit],
+            },
+            fh,
+            indent=2,
+        )
         fh.write("\n")
     print("wrote design/woxi-mark.json")
 
     w = 100.0
     h = w * size[1] / size[0]
-    d = " ".join("M" + " L".join("%.3f %.3f" % (p[0] * w, p[1] * h) for p in contour) + " Z"
-                 for contour in unit)
-    stops = "\n".join('      <stop offset="%g%%" stop-color="#%s" />' % (o * 100, c)
-                      for o, c in STOPS)
+    d = " ".join("M" + " L".join(f"{p[0] * w:.3f} {p[1] * h:.3f}" for p in contour) + " Z" for contour in unit)
+    stops = "\n".join(f'      <stop offset="{o * 100:g}%" stop-color="#{c}" />' for o, c in STOPS)
     svg = """<?xml version="1.0" encoding="utf-8"?>
 <!-- Woxi's W, traced from images/logo.png in ad-si/Woxi by tools/trace-woxi-mark.py and
      tidied into the geometric figure it is: one vertex per corner, straight edges, the
      near-horizontal cuts exactly horizontal, and mirror symmetry about the vertical axis.
-     IoU %(iou).5f against the source bitmap, worst edge %(worst).2f px.
+     IoU {iou:.5f} against the source bitmap, worst edge {worst:.2f} px.
      The path is even-odd filled, so the three counters are holes. Recolour by changing
      the fill. The gradient below is Woxi's own. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="%(w)g" height="%(h).3f"
-     viewBox="0 0 %(w)g %(h).3f">
+<svg xmlns="http://www.w3.org/2000/svg" width="{w:g}" height="{h:.3f}"
+     viewBox="0 0 {w:g} {h:.3f}">
   <defs>
     <linearGradient id="woxi" x1="0" y1="0" x2="0" y2="1">
-%(stops)s
+{stops}
     </linearGradient>
   </defs>
-  <path id="woxi-mark" fill="url(#woxi)" fill-rule="evenodd" d="%(d)s" />
+  <path id="woxi-mark" fill="url(#woxi)" fill-rule="evenodd" d="{d}" />
 </svg>
-""" % {"iou": stats["iou"], "worst": stats["max_edge_px"], "w": w, "h": h,
-       "stops": stops, "d": d}
+""".format(
+        iou=stats["iou"],
+        worst=stats["max_edge_px"],
+        w=w,
+        h=h,
+        stops=stops,
+        d=d,
+    )
     with open(os.path.join(DESIGN, "woxi-mark.svg"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(svg)
     print("wrote design/woxi-mark.svg")
@@ -771,8 +799,7 @@ def main():
     for index, background in enumerate(((255, 255, 255), (26, 26, 28))):
         scale = min(px / w, px / h) * 0.9
         ox, oy = (px - w * scale) / 2, (px - h * scale) / 2
-        fitted = [np.column_stack((p[:, 0] * w * scale + ox, p[:, 1] * h * scale + oy))
-                  for p in unit]
+        fitted = [np.column_stack((p[:, 0] * w * scale + ox, p[:, 1] * h * scale + oy)) for p in unit]
         mask = Image.fromarray((render(fitted, (px, px)) * 255).astype(np.uint8))
         gradient = Image.new("RGB", (px, px))
         painter = ImageDraw.Draw(gradient)
@@ -799,8 +826,7 @@ def main():
         layer = Image.new("1", size, 0)
         ImageDraw.Draw(layer).polygon([at(point) for point in contour], fill=1)
         body ^= np.asarray(layer, dtype=bool)
-    canvas.paste(Image.new("RGB", size, (238, 238, 240)), (0, 0),
-                 Image.fromarray((body * 255).astype(np.uint8)))
+    canvas.paste(Image.new("RGB", size, (238, 238, 240)), (0, 0), Image.fromarray((body * 255).astype(np.uint8)))
     suspicious = 0
     for contour in polygons:
         count = len(contour)
@@ -820,8 +846,7 @@ def main():
             x, y = at(point)
             draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=(30, 90, 220))
     canvas.save(os.path.join(DESIGN, "woxi-mark-vertices.png"))
-    print("wrote design/woxi-mark-vertices.png (blue = routing points, red = %d suspicious)"
-          % suspicious)
+    print(f"wrote design/woxi-mark-vertices.png (blue = routing points, red = {suspicious} suspicious)")
 
 
 if __name__ == "__main__":

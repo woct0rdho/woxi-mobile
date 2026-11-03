@@ -30,7 +30,6 @@ import org.json.JSONObject
 // web workers, `fetch`, WebGL and storage behave exactly like a normal secure web origin
 // (a `file://` origin would break worker creation and storage APIs).
 class MainActivity : ComponentActivity() {
-
     companion object {
         private const val TAG = "Woxi"
         const val ORIGIN = "https://woxi.local"
@@ -87,8 +86,9 @@ class MainActivity : ComponentActivity() {
     private fun handleTestIntent(intent: Intent?) {
         val action = intent?.getStringExtra("woxi_action") ?: return
         val argument = intent.getStringExtra("woxi_arg") ?: ""
-        val script = "window.WoxiApp && WoxiApp.testAction(" + JSONObject.quote(action) +
-            "," + JSONObject.quote(argument) + ")"
+        val script =
+            "window.WoxiApp && WoxiApp.testAction(" + JSONObject.quote(action) +
+                "," + JSONObject.quote(argument) + ")"
         Log.w(TAG, "test action: $action $argument")
         webView.postDelayed({ webView.evaluateJavascript(script, null) }, 1200)
     }
@@ -124,71 +124,86 @@ class MainActivity : ComponentActivity() {
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
         }
 
-        val assetLoader = WebViewAssetLoader.Builder()
-            .setDomain("woxi.local")
-            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
-            .build()
+        val assetLoader =
+            WebViewAssetLoader
+                .Builder()
+                .setDomain("woxi.local")
+                .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+                .build()
 
-        wv.webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(
-                view: WebView,
-                request: WebResourceRequest,
-            ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
+        wv.webViewClient =
+            object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: WebView,
+                    request: WebResourceRequest,
+                ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
 
-            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
-                Log.w(TAG, "page started: " + url)
+                override fun onPageStarted(
+                    view: WebView,
+                    url: String,
+                    favicon: android.graphics.Bitmap?,
+                ) {
+                    Log.w(TAG, "page started: " + url)
+                }
+
+                override fun onPageFinished(
+                    view: WebView,
+                    url: String,
+                ) {
+                    Log.w(TAG, "page finished: " + url)
+                    pageLoaded = true
+                    // The page can now receive the insets it needs for the keyboard padding.
+                    pushInsetsToWeb()
+                }
+
+                override fun onReceivedError(
+                    view: WebView,
+                    request: WebResourceRequest,
+                    error: android.webkit.WebResourceError,
+                ) {
+                    Log.w(
+                        TAG,
+                        "resource error: " + request.url + " main=" + request.isForMainFrame +
+                            " " + error.errorCode + " " + error.description,
+                    )
+                }
+
+                override fun onReceivedHttpError(
+                    view: WebView,
+                    request: WebResourceRequest,
+                    response: WebResourceResponse,
+                ) {
+                    Log.w(TAG, "http error: " + request.url + " " + response.statusCode)
+                }
+
+                override fun onRenderProcessGone(
+                    view: WebView,
+                    detail: android.webkit.RenderProcessGoneDetail,
+                ): Boolean {
+                    Log.w(TAG, "WebView renderer gone (crashed=" + detail.didCrash() + ")")
+                    recreateWebView()
+                    loadApp()
+                    return true
+                }
             }
 
-            override fun onPageFinished(view: WebView, url: String) {
-                Log.w(TAG, "page finished: " + url)
-                pageLoaded = true
-                // The page can now receive the insets it needs for the keyboard padding.
-                pushInsetsToWeb()
+        wv.webChromeClient =
+            object : WebChromeClient() {
+                override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                    Log.w(TAG, "console: ${message.message()} (${message.sourceId()}:${message.lineNumber()})")
+                    return true
+                }
             }
-
-            override fun onReceivedError(
-                view: WebView,
-                request: WebResourceRequest,
-                error: android.webkit.WebResourceError,
-            ) {
-                Log.w(TAG, "resource error: " + request.url + " main=" + request.isForMainFrame +
-                    " " + error.errorCode + " " + error.description)
-            }
-
-            override fun onReceivedHttpError(
-                view: WebView,
-                request: WebResourceRequest,
-                response: WebResourceResponse,
-            ) {
-                Log.w(TAG, "http error: " + request.url + " " + response.statusCode)
-            }
-
-            override fun onRenderProcessGone(
-                view: WebView,
-                detail: android.webkit.RenderProcessGoneDetail,
-            ): Boolean {
-                Log.w(TAG, "WebView renderer gone (crashed=" + detail.didCrash() + ")")
-                recreateWebView()
-                loadApp()
-                return true
-            }
-        }
-
-        wv.webChromeClient = object : WebChromeClient() {
-            override fun onConsoleMessage(message: ConsoleMessage): Boolean {
-                Log.w(TAG, "console: ${message.message()} (${message.sourceId()}:${message.lineNumber()})")
-                return true
-            }
-        }
 
         // Edge-to-edge: keep content clear of the status bar and cutouts. The bottom
         // inset is not applied here - the keyboard extends behind the navigation bar
         // and insets its own content via the --woxi-inset-bottom CSS variable, so no blank
         // strip appears between the keyboard and the system buttons.
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
-            val bars = insets.getInsets(
-                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
-            )
+            val bars =
+                insets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+                )
             v.setPadding(bars.left, bars.top, bars.right, 0)
             insetTopPx = bars.top
             insetBottomPx = bars.bottom
@@ -236,27 +251,32 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showStartupProblem() {
-        val message = android.widget.TextView(this).apply {
-            setPadding(48, 120, 48, 48)
-            textSize = 16f
-            setTextColor(0xFFE6E9EE.toInt())
-            setBackgroundColor(0xFF14161A.toInt())
-            text = getString(R.string.startup_failed)
-        }
+        val message =
+            android.widget.TextView(this).apply {
+                setPadding(48, 120, 48, 48)
+                textSize = 16f
+                setTextColor(0xFFE6E9EE.toInt())
+                setBackgroundColor(0xFF14161A.toInt())
+                text = getString(R.string.startup_failed)
+            }
         setContentView(message)
     }
+
     private fun setupBackHandling() {
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (backHandlerActive) {
-                    // Web layer owns back (open panel / fullscreen plot / menu).
-                    webView.evaluateJavascript("window.WoxiApp && window.WoxiApp.onNativeBack()", null)
-                } else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    if (backHandlerActive) {
+                        // Web layer owns back (open panel / fullscreen plot / menu).
+                        webView.evaluateJavascript("window.WoxiApp && window.WoxiApp.onNativeBack()", null)
+                    } else {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                    }
                 }
-            }
-        })
+            },
+        )
     }
 
     // services used by NativeBridge
@@ -264,8 +284,9 @@ class MainActivity : ComponentActivity() {
     // Hands the current insets to the web layer (window.WoxiNativeCallbacks.onInsets).
     fun pushInsetsToWeb() {
         if (!::webView.isInitialized) return
-        val script = "window.WoxiNativeCallbacks && WoxiNativeCallbacks.onInsets && " +
-            "WoxiNativeCallbacks.onInsets($insetTopPx,$insetBottomPx)"
+        val script =
+            "window.WoxiNativeCallbacks && WoxiNativeCallbacks.onInsets && " +
+                "WoxiNativeCallbacks.onInsets($insetTopPx,$insetBottomPx)"
         webView.post { webView.evaluateJavascript(script, null) }
     }
 

@@ -768,11 +768,8 @@
     var name = state.fileName || global.WoxiNotebook.suggestFileName(state.title);
     var json = global.WoxiNotebook.serialize(state);
     var base64 = global.WoxiNotebook.utf8ToBase64(json);
-    pendingSave = { forced: !!forcePicker };
     nativeCall('saveFile', name, base64, global.WoxiNotebook.MIME);
   }
-
-  var pendingSave = null;
 
   function openDocument() {
     nativeCall('openFile');
@@ -818,8 +815,7 @@
       } else {
         toast('Save cancelled');
       }
-      pendingSave = null;
-    },
+      },
     onFileOpened: function (name, base64) {
       if (!name || !base64) {
         toast('Nothing opened');
@@ -1012,8 +1008,7 @@
       }
       case 'save': {
         var name = argument || 'Test.ipynb';
-        pendingSave = { forced: false };
-        nativeCall('saveFile', name, global.WoxiNotebook.utf8ToBase64(global.WoxiNotebook.serialize(state)), 'application/json');
+            nativeCall('saveFile', name, global.WoxiNotebook.utf8ToBase64(global.WoxiNotebook.serialize(state)), 'application/json');
         log('save: requested ' + name);
         break;
       }
@@ -1116,20 +1111,20 @@
       case 'plotview': {
         // Drives the plot gestures from a test: "pan,<dx>,<dy>" or
         // "zoom,<factor>[,<fx>,<fy>]" with the anchor in fractions of the plot area.
-        var plot = global.WoxiPlot.first(notebookEl || document);
-        if (!plot) { log('plotview: no interactive plot'); break; }
+        var drivePlot = global.WoxiPlot.first(notebookEl || document);
+        if (!drivePlot) { log('plotview: no interactive plot'); break; }
         var parts = (argument || '').split(',');
-        var gesture = plot.__woxiPlot;
+        var gesture = drivePlot.__woxiPlot;
         var next = null;
         if (parts[0] === 'zoom') {
           var factor = Number(parts[1]);
           var fx = parts.length > 2 ? Number(parts[2]) : undefined;
           var fy = parts.length > 3 ? Number(parts[3]) : undefined;
           next = gesture ? gesture.zoomBy(factor, fx, fy)
-            : global.WoxiPlot.zoomView(plot, factor, fx, fy);
+            : global.WoxiPlot.zoomView(drivePlot, factor, fx, fy);
         } else {
           next = gesture ? gesture.panBy(Number(parts[1] || 0), Number(parts[2] || 0))
-            : global.WoxiPlot.panView(plot, Number(parts[1] || 0), Number(parts[2] || 0));
+            : global.WoxiPlot.panView(drivePlot, Number(parts[1] || 0), Number(parts[2] || 0));
         }
         if (!next) { log('plotview: nothing to do'); break; }
         log('plotview ' + parts[0] + ': id=' + next.id +
@@ -1141,16 +1136,16 @@
         // Reports the input-box geometry, to check that wrapped lines are not clipped,
         // plus the keyboard geometry, to check that swiping does not resize it.
         for (var m = 0; m < state.entries.length; m++) {
-          var item = state.entries[m];
-          if (!item.dom) continue;
-          var box = item.dom.input;
-          var rect = box.getBoundingClientRect();
-          log('metrics ' + (m + 1) + ': len=' + box.value.length +
-            ' lines=' + (box.value.split('\n').length) +
+          var metricEntry = state.entries[m];
+          if (!metricEntry.dom) continue;
+          var inputEl = metricEntry.dom.input;
+          var rect = inputEl.getBoundingClientRect();
+          log('metrics ' + (m + 1) + ': len=' + inputEl.value.length +
+            ' lines=' + (inputEl.value.split('\n').length) +
             ' width=' + Math.round(rect.width) +
-            ' clientH=' + box.clientHeight + ' scrollH=' + box.scrollHeight +
-            ' styleH=' + box.style.height + ' overflow=' + box.style.overflowY +
-            ' clipped=' + (box.scrollHeight > box.clientHeight + 1));
+            ' clientH=' + inputEl.clientHeight + ' scrollH=' + inputEl.scrollHeight +
+            ' styleH=' + inputEl.style.height + ' overflow=' + inputEl.style.overflowY +
+            ' clipped=' + (inputEl.scrollHeight > inputEl.clientHeight + 1));
         }
         var kbd = document.getElementById('woxi-keyboard').getBoundingClientRect();
         var pad = document.getElementById('woxi-kb-keys').getBoundingClientRect();
@@ -1260,16 +1255,16 @@
         var slider = notebookEl.querySelector('.woxi-manipulate input[type=range]');
         if (!slider) { log('slider: none found'); return; }
         var block = slider.closest('.woxi-manipulate');
-        var view = block.querySelector('.woxi-manipulate-view');
+        var viewEl = block.querySelector('.woxi-manipulate-view');
         var fraction = parseFloat(argument);
         if (isNaN(fraction)) fraction = 0.75;
-        var beforeSvg = view.querySelector('svg');
+        var beforeSvg = viewEl.querySelector('svg');
         var beforeMarkup = beforeSvg ? beforeSvg.outerHTML : '';
         var target = Number(slider.min) + (Number(slider.max) - Number(slider.min)) * fraction;
         slider.value = String(target);
         slider.dispatchEvent(new global.Event('input', { bubbles: true }));
         setTimeout(function () {
-          var svg = view.querySelector('svg');
+          var svg = viewEl.querySelector('svg');
           var afterMarkup = svg ? svg.outerHTML : '';
           var firstDiff = -1;
           for (var i = 0; i < Math.min(beforeMarkup.length, afterMarkup.length); i++) {

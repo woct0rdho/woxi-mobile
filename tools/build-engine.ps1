@@ -22,9 +22,17 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $out = Join-Path $repo 'app\src\main\jniLibs'
 
-# Locate the newest installed NDK unless the caller already exported one.
+# Locate the newest installed NDK unless the caller already exported one. The SDK
+# comes from ANDROID_HOME / ANDROID_SDK_ROOT / Android Studio's default location.
 if (-not $Env:ANDROID_NDK_HOME -and -not $Env:ANDROID_NDK_ROOT) {
-    $ndkRoot = 'C:\android\sdk\ndk'
+    $sdkRoots = @($Env:ANDROID_HOME, $Env:ANDROID_SDK_ROOT, (Join-Path $Env:LOCALAPPDATA 'Android\Sdk'))
+    $ndkRoot = $null
+    foreach ($root in $sdkRoots) {
+        if (-not $root) { continue }
+        $candidate = Join-Path $root 'ndk'
+        if (Test-Path $candidate) { $ndkRoot = $candidate; break }
+    }
+    if (-not $ndkRoot) { throw 'no Android SDK found: set ANDROID_HOME, or ANDROID_NDK_HOME to an installed NDK' }
     $candidate = Get-ChildItem $ndkRoot -Directory -ErrorAction SilentlyContinue |
         Sort-Object Name -Descending | Select-Object -First 1
     if (-not $candidate) { throw "no NDK found in $ndkRoot - install one with sdkmanager 'ndk;<version>'" }

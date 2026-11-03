@@ -15,12 +15,13 @@ Usage:
 import argparse
 import sys
 from collections import Counter
+
 from PIL import Image
 
-DARK_TOLERANCE = 2      # the page (30,30,30) and a plot card (26,26,26) differ by only 4
-INK_DELTA = 60          # how much brighter than the card ink has to be (sum of RGB)
-MIN_CARD_HEIGHT = 150   # px, a plot is tall, the entry box and the keyboard are not
-MIN_CARD_LEFT = 20      # px, the page background starts at x=0, a card does not
+DARK_TOLERANCE = 2  # the page (30,30,30) and a plot card (26,26,26) differ by only 4
+INK_DELTA = 60  # how much brighter than the card ink has to be (sum of RGB)
+MIN_CARD_HEIGHT = 150  # px, a plot is tall, the entry box and the keyboard are not
+MIN_CARD_LEFT = 20  # px, the page background starts at x=0, a card does not
 
 
 def same(a, b, tol=DARK_TOLERANCE):
@@ -84,10 +85,22 @@ def analyse(path, probe_x):
     def is_ink(x, y):
         return sum(px[x, y]) > base + INK_DELTA
 
-    ink_left = next((x for x in range(left + inset, right - inset)
-                     if any(is_ink(x, y) for y in range(top + inset, bottom - inset))), None)
-    ink_bottom = next((y for y in range(bottom - inset, top + inset, -1)
-                       if any(is_ink(x, y) for x in range(left + inset, right - inset))), None)
+    ink_left = next(
+        (
+            x
+            for x in range(left + inset, right - inset)
+            if any(is_ink(x, y) for y in range(top + inset, bottom - inset))
+        ),
+        None,
+    )
+    ink_bottom = next(
+        (
+            y
+            for y in range(bottom - inset, top + inset, -1)
+            if any(is_ink(x, y) for x in range(left + inset, right - inset))
+        ),
+        None,
+    )
 
     card_w = right - left
     card_h = bottom - top
@@ -96,14 +109,17 @@ def analyse(path, probe_x):
     if ink_left is not None:
         print(f"  left gap  : {ink_left - left:4} px  ({100.0 * (ink_left - left) / card_w:5.1f}% of card width)")
     if ink_bottom is not None:
-        print(f"  bottom gap: {bottom - ink_bottom:4} px  ({100.0 * (bottom - ink_bottom) / card_h:5.1f}% of card height)")
+        print(
+            f"  bottom gap: {bottom - ink_bottom:4} px  ({100.0 * (bottom - ink_bottom) / card_h:5.1f}% of card height)"
+        )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("shots", nargs="+", help="screenshot PNGs to measure")
-    parser.add_argument("--probe-x", type=int, default=150,
-                        help="column used to find the card's top and bottom (default 150)")
+    parser.add_argument(
+        "--probe-x", type=int, default=150, help="column used to find the card's top and bottom (default 150)"
+    )
     args = parser.parse_args()
     for path in args.shots:
         analyse(path, args.probe_x)

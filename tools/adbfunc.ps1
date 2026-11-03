@@ -5,9 +5,30 @@
 # The USB link to this device can drop and re-appear, so every command waits for
 # the device first and retries the whole command on transport errors.
 
-$script:AdbPath = 'C:\android\sdk\platform-tools\adb.exe'
-# Serial of the device to drive. Set WOXI_ADB_SERIAL to use another one, e.g. an
-# emulator:  $Env:WOXI_ADB_SERIAL = 'emulator-5554'
+# adb is resolved once, in this order:
+# 1. $Env:WOXI_ADB
+# 2. adb on PATH
+# 3. $Env:ANDROID_HOME / $Env:ANDROID_SDK_ROOT / Android Studio's default SDK
+function Resolve-AdbPath {
+    if ($Env:WOXI_ADB) {
+        if (Test-Path $Env:WOXI_ADB) { return (Resolve-Path $Env:WOXI_ADB).Path }
+        throw "WOXI_ADB points at a missing file: $($Env:WOXI_ADB)"
+    }
+    $onPath = Get-Command adb -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+    $roots = @($Env:ANDROID_HOME, $Env:ANDROID_SDK_ROOT, (Join-Path $Env:LOCALAPPDATA 'Android\Sdk'))
+    foreach ($root in $roots) {
+        if (-not $root) { continue }
+        $candidate = Join-Path $root 'platform-tools\adb.exe'
+        if (Test-Path $candidate) { return $candidate }
+    }
+    throw 'adb not found: put platform-tools on PATH, set ANDROID_HOME, or set WOXI_ADB'
+}
+
+$script:AdbPath = Resolve-AdbPath
+
+# Serial of the device to drive. Set WOXI_ADB_SERIAL to use another one, e.g. an emulator:
+# $Env:WOXI_ADB_SERIAL = 'emulator-5554'
 $script:AdbSerial = if ($Env:WOXI_ADB_SERIAL) { $Env:WOXI_ADB_SERIAL } else { '3116TF1010011589' }
 
 function Get-AdbDevice {

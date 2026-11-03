@@ -30,19 +30,18 @@ design/                  what those three write: SVGs, PNGs, the traced outline 
 ## Build
 
 ```powershell
-# SDK and NDK
+# SDK and NDK (put them on PATH, or export ANDROID_HOME pointing at the SDK)
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
-& 'C:\android\cmdline-tools\bin\sdkmanager.bat' --sdk_root=C:\android\sdk 'ndk;28.2.13676358'
+sdkmanager "ndk;28.2.13676358"
 
 # Engine (after changing `engine/`)
 .\tools\build-engine.ps1                           # -> app/src/main/jniLibs/arm64-v8a/libwoxi_jni.so
 .\tools\build-engine.ps1 -Abi x86_64               # for the emulator
 
 # App
-# Gradle 8.14 needs JDK 17-21. JDK 25 is rejected. This repo uses a local Temurin 21:
-# https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse
-$Env:JAVA_HOME = 'C:\android\jdk21'
+# Gradle 8.14 needs JDK 17-21. JDK 25 is rejected. Point JAVA_HOME at one (or have
+# `java` on PATH. deploy.ps1 and test-device.ps1 derive JAVA_HOME from it).
 .\gradlew.bat :app:assembleRelease                 # arm64-v8a
 .\gradlew.bat :app:assembleRelease -Pabi=all       # arm64-v8a + x86_64
 
@@ -51,7 +50,7 @@ $Env:JAVA_HOME = 'C:\android\jdk21'
 ```
 
 Notes:
-- `cargo-ndk` needs an NDK. `tools/build-engine.ps1` picks the newest one under `C:\android\sdk\ndk` unless `ANDROID_NDK_HOME` is set.
+- `cargo-ndk` needs an NDK. `tools/build-engine.ps1` uses `ANDROID_NDK_HOME` if set, otherwise the newest NDK under the SDK found through `ANDROID_HOME`, `ANDROID_SDK_ROOT` or Android Studio's default location.
 - The library is stored uncompressed and mmapped from the APK. Only ABIs that have a `libwoxi_jni.so` in `app/src/main/jniLibs` are packaged, and `-Pabi` picks which. The default is arm64-v8a alone, since that is the phone.
 
 ## Automation hooks
@@ -71,10 +70,9 @@ An emulator is the better environment for gesture work: a standard ROM, and it c
 
 ```powershell
 # System image and AVD (avdmanager's prompt hangs when not on a TTY, so the AVD is written by hand)
-& 'C:\android\cmdline-tools\bin\sdkmanager.bat' --sdk_root=C:\android\sdk `
-    'system-images;android-36;google_apis;x86_64'
+sdkmanager "system-images;android-36;google_apis;x86_64"
 # Installed to %USERPROFILE%\.android\avd\woxi36.ini and woxi36.avd\config.ini, then:
-& 'C:\android\sdk\emulator\emulator.exe' -avd woxi36 -no-snapshot -no-boot-anim -gpu auto
+emulator -avd woxi36 -no-snapshot -no-boot-anim -gpu auto
 
 # The engine also has to exist for the emulator's ABI
 rustup target add x86_64-linux-android

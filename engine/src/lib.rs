@@ -78,7 +78,11 @@ fn item(kind: &str, text: &str, svg: Option<&str>) -> String {
             json_escape(text),
             json_escape(svg)
         ),
-        None => format!("{{\"type\":\"{}\",\"text\":\"{}\"}}", kind, json_escape(text)),
+        None => format!(
+            "{{\"type\":\"{}\",\"text\":\"{}\"}}",
+            kind,
+            json_escape(text)
+        ),
     }
 }
 
@@ -238,13 +242,14 @@ fn parse_manipulate(stmt: &str) -> Option<(String, Vec<Control>)> {
         let (min, max) = (numeric(&rest[0]), numeric(&rest[1]));
         if let (Some(min), Some(max)) = (min, max) {
             let step = rest.get(2).and_then(|s| numeric(s));
-            let initial = rest
-                .get(3)
-                .and_then(|s| numeric(s))
-                .unwrap_or(min);
+            let initial = rest.get(3).and_then(|s| numeric(s)).unwrap_or(min);
             controls.push(Control {
                 name,
-                kind: if step.is_some() { "discrete" } else { "continuous" },
+                kind: if step.is_some() {
+                    "discrete"
+                } else {
+                    "continuous"
+                },
                 min: Some(min),
                 max: Some(max),
                 step,
@@ -260,7 +265,7 @@ fn parse_manipulate(stmt: &str) -> Option<(String, Vec<Control>)> {
 
 fn manipulate_json(body: &str, controls: &[Control], initial_svg: Option<&str>) -> String {
     let mut json = String::from("{\"type\":\"manipulate\",\"body\":\"");
-    json.push_str(&json_escape(&body));
+    json.push_str(&json_escape(body));
     json.push_str("\",\"controls\":[");
     for (index, control) in controls.iter().enumerate() {
         if index > 0 {
@@ -409,17 +414,61 @@ struct PlotKind {
 }
 
 const PLOT_KINDS: &[PlotKind] = &[
-    PlotKind { head: "Plot", x: 1, y: None },
-    PlotKind { head: "LogPlot", x: 1, y: None },
-    PlotKind { head: "LogLinearPlot", x: 1, y: None },
-    PlotKind { head: "LogLogPlot", x: 1, y: None },
-    PlotKind { head: "ReImPlot", x: 1, y: None },
-    PlotKind { head: "ContourPlot", x: 1, y: Some(2) },
-    PlotKind { head: "DensityPlot", x: 1, y: Some(2) },
-    PlotKind { head: "RegionPlot", x: 1, y: Some(2) },
-    PlotKind { head: "VectorPlot", x: 1, y: Some(2) },
-    PlotKind { head: "StreamPlot", x: 1, y: Some(2) },
-    PlotKind { head: "StreamDensityPlot", x: 1, y: Some(2) },
+    PlotKind {
+        head: "Plot",
+        x: 1,
+        y: None,
+    },
+    PlotKind {
+        head: "LogPlot",
+        x: 1,
+        y: None,
+    },
+    PlotKind {
+        head: "LogLinearPlot",
+        x: 1,
+        y: None,
+    },
+    PlotKind {
+        head: "LogLogPlot",
+        x: 1,
+        y: None,
+    },
+    PlotKind {
+        head: "ReImPlot",
+        x: 1,
+        y: None,
+    },
+    PlotKind {
+        head: "ContourPlot",
+        x: 1,
+        y: Some(2),
+    },
+    PlotKind {
+        head: "DensityPlot",
+        x: 1,
+        y: Some(2),
+    },
+    PlotKind {
+        head: "RegionPlot",
+        x: 1,
+        y: Some(2),
+    },
+    PlotKind {
+        head: "VectorPlot",
+        x: 1,
+        y: Some(2),
+    },
+    PlotKind {
+        head: "StreamPlot",
+        x: 1,
+        y: Some(2),
+    },
+    PlotKind {
+        head: "StreamDensityPlot",
+        x: 1,
+        y: Some(2),
+    },
 ];
 
 /// Extra room sampled around the visible range, so a small pan stays inside the
@@ -509,8 +558,16 @@ fn collect_bounds(expr: &Expr, min: &mut [f64; 2], max: &mut [f64; 2], count: &m
     // Primitives are named, but only the ones that mean coordinates are followed,
     // so option values (`Thickness[0.01]`) cannot be mistaken for data.
     const COORDINATE_HEADS: [&str; 10] = [
-        "Line", "Point", "Polygon", "Arrow", "Rectangle", "Style", "Directive", "Tooltip",
-        "Annotation", "Graphics",
+        "Line",
+        "Point",
+        "Polygon",
+        "Arrow",
+        "Rectangle",
+        "Style",
+        "Directive",
+        "Tooltip",
+        "Annotation",
+        "Graphics",
     ];
     match expr {
         Expr::List(items) => {
@@ -530,9 +587,10 @@ fn collect_bounds(expr: &Expr, min: &mut [f64; 2], max: &mut [f64; 2], count: &m
                 }
             }
             "Circle" | "Disk" => {
-                if let (Some(center), Some(radius)) =
-                    (args.first().and_then(point_of), args.get(1).and_then(number_of))
-                {
+                if let (Some(center), Some(radius)) = (
+                    args.first().and_then(point_of),
+                    args.get(1).and_then(number_of),
+                ) {
                     add_point(center.0 - radius, center.1 - radius, min, max, count);
                     add_point(center.0 + radius, center.1 + radius, min, max, count);
                 }
@@ -764,11 +822,7 @@ fn collect_plot_sites(expr: &Expr, path: &mut Vec<usize>, out: &mut Vec<Site>) {
 fn iterator_with_bounds(expr: &Expr, bounds: (f64, f64)) -> Expr {
     match expr {
         Expr::List(items) if items.len() == 3 || items.len() == 4 => {
-            let mut rebuilt = vec![
-                items[0].clone(),
-                Expr::Real(bounds.0),
-                Expr::Real(bounds.1),
-            ];
+            let mut rebuilt = vec![items[0].clone(), Expr::Real(bounds.0), Expr::Real(bounds.1)];
             if items.len() == 4 {
                 rebuilt.push(items[3].clone());
             }
@@ -985,9 +1039,8 @@ fn clear_plot_views() {
 }
 
 fn range_expr(x: (f64, f64), y: (f64, f64)) -> Expr {
-    let axis = |range: (f64, f64)| {
-        Expr::List(vec![Expr::Real(range.0), Expr::Real(range.1)].into())
-    };
+    let axis =
+        |range: (f64, f64)| Expr::List(vec![Expr::Real(range.0), Expr::Real(range.1)].into());
     Expr::List(vec![axis(x), axis(y)].into())
 }
 
@@ -1009,7 +1062,9 @@ fn json_field_number(json: &str, key: &str) -> Option<f64> {
     let at = json.find(&needle)? + needle.len();
     let rest = json[at..].trim_start().strip_prefix(':')?.trim_start();
     let end = rest
-        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
+        .find(|c: char| {
+            !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')
+        })
         .unwrap_or(rest.len());
     if end == 0 {
         return None;
@@ -1104,24 +1159,28 @@ fn plot_range_rule(view: ((f64, f64), (f64, f64))) -> Expr {
 /// Re-renders a registered plot at another data range, from Woxi's cached plot
 /// data.
 fn render_view(id: u64, (x, y): ((f64, f64), (f64, f64))) -> Result<String, PlotFailure> {
-    let (stored, data, data_y, sample, densify) = PLOT_VIEWS.with(|views| {
-        views.borrow().get(&id).map(|view| {
-            (
-                view.graphic.clone(),
-                view.data,
-                view.data_y,
-                view.call.as_ref().is_some_and(|call| !call.sites.is_empty()),
-                view.call.as_ref().is_some_and(|call| call.densify),
-            )
+    let (stored, data, data_y, sample, densify) = PLOT_VIEWS
+        .with(|views| {
+            views.borrow().get(&id).map(|view| {
+                (
+                    view.graphic.clone(),
+                    view.data,
+                    view.data_y,
+                    view.call
+                        .as_ref()
+                        .is_some_and(|call| !call.sites.is_empty()),
+                    view.call.as_ref().is_some_and(|call| call.densify),
+                )
+            })
         })
-    })
-    .ok_or(PlotFailure::Expired)?;
+        .ok_or(PlotFailure::Expired)?;
 
     let show = Expr::FunctionCall {
         name: "Show".to_string(),
         args: vec![stored, plot_range_rule((x, y))].into(),
     };
-    let rendered = woxi::evaluator::evaluate_expr_to_expr(&show).map_err(|_| PlotFailure::Failed)?;
+    let rendered =
+        woxi::evaluator::evaluate_expr_to_expr(&show).map_err(|_| PlotFailure::Failed)?;
     let svg = match &rendered {
         Expr::Graphics { svg, .. } if !svg.trim().is_empty() => svg.clone(),
         _ => return Err(PlotFailure::Failed),
@@ -1142,7 +1201,8 @@ fn render_view(id: u64, (x, y): ((f64, f64), (f64, f64))) -> Result<String, Plot
 /// out, or panning away) and finer detail inside it (zooming in on something that
 /// oscillates faster than the original sampling could follow).
 fn render_refine(id: u64, view: ((f64, f64), (f64, f64))) -> Result<String, PlotFailure> {
-    let call = PLOT_VIEWS.with(|views| views.borrow().get(&id).and_then(|view| view.call.clone()))
+    let call = PLOT_VIEWS
+        .with(|views| views.borrow().get(&id).and_then(|view| view.call.clone()))
         .ok_or(PlotFailure::Expired)?;
     if call.sites.is_empty() {
         // A fixed parameter domain: there is nothing to rewrite, only more points
@@ -1236,16 +1296,17 @@ fn render_densify(
     view: ((f64, f64), (f64, f64)),
     level: u32,
 ) -> Result<String, PlotFailure> {
-    let (call, data) = PLOT_VIEWS.with(|views| {
-        views.borrow().get(&id).and_then(|entry| {
-            entry
-                .call
-                .clone()
-                .filter(|call| call.densify)
-                .map(|call| (call, entry.data))
+    let (call, data) = PLOT_VIEWS
+        .with(|views| {
+            views.borrow().get(&id).and_then(|entry| {
+                entry
+                    .call
+                    .clone()
+                    .filter(|call| call.densify)
+                    .map(|call| (call, entry.data))
+            })
         })
-    })
-    .ok_or(PlotFailure::Unsupported)?;
+        .ok_or(PlotFailure::Unsupported)?;
 
     let denser = woxi::evaluator::evaluate_expr_to_expr(&with_plot_points(
         &call.expr,
@@ -1486,7 +1547,7 @@ pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_evaluateAll(
     _class: JClass,
     input: JString,
 ) -> jstring {
-    with_string(&mut env, input, |text| evaluate_all(text))
+    with_string(&mut env, input, evaluate_all)
 }
 
 #[no_mangle]
@@ -1504,7 +1565,8 @@ pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_evaluateManipu
         Ok(value) => value.into(),
         Err(_) => return std::ptr::null_mut(),
     };
-    let result = match std::panic::catch_unwind(|| evaluate_manipulate(&body_text, &bindings_text)) {
+    let result = match std::panic::catch_unwind(|| evaluate_manipulate(&body_text, &bindings_text))
+    {
         Ok(value) => value,
         Err(_) => "{\"text\":\"interpreter panicked\"}".to_string(),
     };
@@ -1579,7 +1641,10 @@ mod tests {
         assert_eq!(literal_statement("{1, 2}"), "({1, 2})");
         assert_eq!(literal_statement("42;"), "42;");
         assert_eq!(literal_statement("a = 1"), "a = 1");
-        assert_eq!(literal_statement("Plot[Sin[x], {x, 0, 1}]"), "Plot[Sin[x], {x, 0, 1}]");
+        assert_eq!(
+            literal_statement("Plot[Sin[x], {x, 0, 1}]"),
+            "Plot[Sin[x], {x, 0, 1}]"
+        );
     }
 
     #[test]
@@ -1593,11 +1658,19 @@ mod tests {
     #[test]
     fn only_side_effect_free_wrappers_are_resampled() {
         assert!(resample_safe(&parse("Plot[Sin[x], {x, 0, 1}]")));
-        assert!(resample_safe(&parse("ParametricPlot[{Cos[t], Sin[t]}, {t, 0, 1}]")));
-        assert!(resample_safe(&parse("Show[Plot[Sin[x], {x, 0, 1}], Axes -> False]")));
+        assert!(resample_safe(&parse(
+            "ParametricPlot[{Cos[t], Sin[t]}, {t, 0, 1}]"
+        )));
+        assert!(resample_safe(&parse(
+            "Show[Plot[Sin[x], {x, 0, 1}], Axes -> False]"
+        )));
         assert!(resample_safe(&parse("p = Plot[Sin[x], {x, 0, 1}]")));
-        assert!(!resample_safe(&parse("Module[{y = 2}, Plot[y x, {x, 0, 1}]]")));
-        assert!(!resample_safe(&parse("Table[Plot[Sin[x], {x, 0, 1}], {k, 1, 2}]")));
+        assert!(!resample_safe(&parse(
+            "Module[{y = 2}, Plot[y x, {x, 0, 1}]]"
+        )));
+        assert!(!resample_safe(&parse(
+            "Table[Plot[Sin[x], {x, 0, 1}], {k, 1, 2}]"
+        )));
         assert!(!resample_safe(&parse("n++; Plot[Sin[x], {x, 0, 1}]")));
     }
 
@@ -1630,14 +1703,21 @@ mod tests {
         assert!(reply.contains("\"status\":\"ok\""), "{reply}");
         assert!(reply.contains("\"svg\":\"<svg"), "{reply}");
 
-        let reply = plot_request(&view_request("plot_refine", handle, (0.2, 0.4), (-0.5, 0.5)));
+        let reply = plot_request(&view_request(
+            "plot_refine",
+            handle,
+            (0.2, 0.4),
+            (-0.5, 0.5),
+        ));
         assert!(reply.contains("\"status\":\"ok\""), "{reply}");
         // Coverage is the padded view.
         assert!(reply.contains("\"d\":[0.15"), "{reply}");
 
-        let retain = format!("{{\"msg_type\":\"plot_retain\",\"content\":{{\"handle\":{handle}}}}}");
+        let retain =
+            format!("{{\"msg_type\":\"plot_retain\",\"content\":{{\"handle\":{handle}}}}}");
         assert!(plot_request(&retain).contains("\"status\":\"ok\""));
-        let release = format!("{{\"msg_type\":\"plot_release\",\"content\":{{\"handle\":{handle}}}}}");
+        let release =
+            format!("{{\"msg_type\":\"plot_release\",\"content\":{{\"handle\":{handle}}}}}");
         assert!(plot_request(&release).contains("\"status\":\"ok\""));
         let reply = plot_request(&view_request("plot_view", handle, (0.2, 0.4), (-0.5, 0.5)));
         assert!(reply.contains("ExpiredHandle"), "{reply}");
