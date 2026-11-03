@@ -24,9 +24,9 @@ module.exports = [
     },
     rules: {
       // Unused parameters and caught errors are sometimes intentional (feature
-      // detection, ignored rejections); unused variables are not.
+      // detection, ignored rejections). Unused variables are not.
       'no-unused-vars': ['error', { args: 'none', caughtErrors: 'none' }],
-      // Scripts here rely on hoisting and on sharing state through `window`; the
+      // Scripts here rely on hoisting and on sharing state through `window`. The
       // recommended rules already cover the real mistakes (undefined globals, typos).
       'no-empty': ['error', { allowEmptyCatch: true }],
       // ESLint 10's new rule cannot see the two-path try/catch idiom used throughout

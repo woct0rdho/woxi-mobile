@@ -1,8 +1,7 @@
 # Formatting and static checks for pull requests.
 #
 # Each job is independent so a formatting nit does not hide a real failure. Versions
-# are pinned where the tool is ours: the Rust channel and its components come from
-# rust-toolchain.toml, ktlint from the version below, ESLint/Ruff from the lockfile and
+# are pinned: ktlint from the version below, ESLint/Ruff from the lockfile and
 # the actions.
 
 name: Lint

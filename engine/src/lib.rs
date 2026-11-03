@@ -42,9 +42,10 @@
 //! calling thread. The Kotlin side keeps a single-threaded executor so interpreter
 //! state stays consistent, with views served before background re-sampling.
 
+use jni::errors::LogErrorAndDefault;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jstring};
-use jni::JNIEnv;
+use jni::{Env, EnvUnowned};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -1521,87 +1522,98 @@ fn parse_bindings(json: &str) -> Vec<(String, String)> {
 }
 
 // JNI entry points
+//
+// `jni` 0.22 hands a native method an `EnvUnowned`, which is FFI safe. The usable
+// `Env` only exists inside `with_env`. Failures (a JNI error or a Rust panic) are
+// resolved through `LogErrorAndDefault`, which logs and returns the default value -
+// a null `jstring` here - so nothing unwinds into the JVM.
 
-fn with_string<F>(env: &mut JNIEnv, input: JString, f: F) -> jstring
+fn read_string(env: &Env, value: &JString) -> jni::errors::Result<String> {
+    value.mutf8_chars(env).map(|chars| chars.to_string())
+}
+
+fn write_string(env: &mut Env, text: &str) -> jni::errors::Result<jstring> {
+    env.new_string(text).map(|output| output.into_raw())
+}
+
+/// Runs `f` with the usable environment, turning a JNI error or a panic into the
+/// default return value.
+fn with_env<'frame, T: Default>(
+    mut unowned: EnvUnowned<'frame>,
+    f: impl FnOnce(&mut Env<'frame>) -> jni::errors::Result<T>,
+) -> T {
+    unowned.with_env(f).resolve::<LogErrorAndDefault>()
+}
+
+fn with_string<'frame, F>(unowned: EnvUnowned<'frame>, input: JString<'frame>, f: F) -> jstring
 where
     F: FnOnce(&str) -> String + std::panic::UnwindSafe,
 {
-    let text: String = match env.get_string(&input) {
-        Ok(value) => value.into(),
-        Err(_) => return std::ptr::null_mut(),
-    };
-    // A Rust panic must not take the app down. Report it as a normal error item.
-    let result = match std::panic::catch_unwind(|| f(&text)) {
-        Ok(value) => value,
-        Err(_) => "{\"error\":\"interpreter panicked\"}".to_string(),
-    };
-    match env.new_string(result) {
-        Ok(output) => output.into_raw(),
-        Err(_) => std::ptr::null_mut(),
-    }
+    with_env(unowned, |env| {
+        let text = read_string(env, &input)?;
+        // A Rust panic must not take the app down. Report it as a normal error item.
+        let result = match std::panic::catch_unwind(|| f(&text)) {
+            Ok(value) => value,
+            Err(_) => "{\"error\":\"interpreter panicked\"}".to_string(),
+        };
+        write_string(env, &result)
+    })
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_evaluateAll(
-    mut env: JNIEnv,
-    _class: JClass,
-    input: JString,
+pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_evaluateAll<'frame>(
+    unowned: EnvUnowned<'frame>,
+    _class: JClass<'frame>,
+    input: JString<'frame>,
 ) -> jstring {
-    with_string(&mut env, input, evaluate_all)
+    with_string(unowned, input, evaluate_all)
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_evaluateManipulate(
-    mut env: JNIEnv,
-    _class: JClass,
-    body: JString,
-    bindings: JString,
+pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_evaluateManipulate<'frame>(
+    unowned: EnvUnowned<'frame>,
+    _class: JClass<'frame>,
+    body: JString<'frame>,
+    bindings: JString<'frame>,
 ) -> jstring {
-    let body_text: String = match env.get_string(&body) {
-        Ok(value) => value.into(),
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let bindings_text: String = match env.get_string(&bindings) {
-        Ok(value) => value.into(),
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let result = match std::panic::catch_unwind(|| evaluate_manipulate(&body_text, &bindings_text))
-    {
-        Ok(value) => value,
-        Err(_) => "{\"text\":\"interpreter panicked\"}".to_string(),
-    };
-    match env.new_string(result) {
-        Ok(output) => output.into_raw(),
-        Err(_) => std::ptr::null_mut(),
-    }
+    with_env(unowned, |env| {
+        let body_text = read_string(env, &body)?;
+        let bindings_text = read_string(env, &bindings)?;
+        let result =
+            match std::panic::catch_unwind(|| evaluate_manipulate(&body_text, &bindings_text)) {
+                Ok(value) => value,
+                Err(_) => "{\"text\":\"interpreter panicked\"}".to_string(),
+            };
+        write_string(env, &result)
+    })
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_plotRequest(
-    mut env: JNIEnv,
-    _class: JClass,
-    request: JString,
+pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_plotRequest<'frame>(
+    unowned: EnvUnowned<'frame>,
+    _class: JClass<'frame>,
+    request: JString<'frame>,
 ) -> jstring {
-    with_string(&mut env, request, plot_request)
+    with_string(unowned, request, plot_request)
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_clear(
-    _env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_clear<'frame>(
+    _unowned: EnvUnowned<'frame>,
+    _class: JClass<'frame>,
 ) {
     let _ = std::panic::catch_unwind(clear_plot_views);
     let _ = std::panic::catch_unwind(woxi::clear_state);
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_setDarkMode(
-    _env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_setDarkMode<'frame>(
+    _unowned: EnvUnowned<'frame>,
+    _class: JClass<'frame>,
     enabled: jboolean,
 ) {
-    let on = enabled != 0;
-    let _ = std::panic::catch_unwind(move || woxi::set_dark_mode(on));
+    // `jboolean` is a plain `bool` since jni 0.22 (it was a `u8` before).
+    let _ = std::panic::catch_unwind(move || woxi::set_dark_mode(enabled));
 }
 
 #[cfg(test)]
