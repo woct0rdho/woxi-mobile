@@ -108,7 +108,7 @@ kotlin {
 dependencies {
     // Pinned to the newest AndroidX versions that support compileSdk 36:
     // core 1.19.0 requires compileSdk 37 + AGP 9.1, which is not needed here.
-    implementation("androidx.core:core-ktx:1.18.0")
+    implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.activity:activity-ktx:1.13.0")
-    implementation("androidx.webkit:webkit:1.17.0")
+    implementation("androidx.webkit:webkit:1.18.0")
 }
