@@ -3,12 +3,16 @@ version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
+    schedule:
+      interval: daily
     groups:
       actions:
         patterns: ["*"]
 
   - package-ecosystem: cargo
     directory: /engine
+    schedule:
+      interval: daily
     ignore:
       # woxi is the interpreter itself. A patch bump is routine, while breaking changes
       # are a deliberate decision, so major bumps stay manual.
@@ -28,6 +32,8 @@ updates:
 
   - package-ecosystem: gradle
     directory: /
+    schedule:
+      interval: daily
     ignore:
       # AGP and the Kotlin plugin pin themselves to the SDK and the JDK. A major bump is
       # a migration, not a chore.
@@ -57,6 +63,8 @@ updates:
 
   - package-ecosystem: npm
     directory: /
+    schedule:
+      interval: daily
     groups:
       js:
         patterns: ["*"]
