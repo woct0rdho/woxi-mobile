@@ -1717,10 +1717,14 @@ fn options_of(name: &str) -> Vec<String> {
     };
     let mut options = Vec::new();
     for rule in rules.iter() {
-        if let Expr::Rule { pattern, .. } = rule {
-            if let Expr::Identifier(option) = pattern.as_ref() {
-                options.push(option.clone());
-            }
+        // Options may be declared with a delayed rule (`DisplayFunction :> …`), which
+        // Woxi 0.4 uses for several of Plot's defaults.
+        let pattern = match rule {
+            Expr::Rule { pattern, .. } | Expr::RuleDelayed { pattern, .. } => pattern,
+            _ => continue,
+        };
+        if let Expr::Identifier(option) = pattern.as_ref() {
+            options.push(option.clone());
         }
     }
     options
@@ -2347,6 +2351,8 @@ mod tests {
         assert!(reply.contains("\"found\":true"), "{reply}");
         assert!(reply.contains("\"name\":\"Plot\""), "{reply}");
         assert!(reply.contains("\"PlotRange\""), "{reply}");
+        // A delayed option default must be listed too.
+        assert!(reply.contains("\"PlotTheme\""), "{reply}");
         assert!(reply.contains("plotting"), "{reply}");
         let after = woxi::get_last_output().map(|expr| format!("{expr:?}"));
         assert_eq!(before, after, "inspect must not record Out[] history");

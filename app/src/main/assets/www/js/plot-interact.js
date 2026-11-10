@@ -95,10 +95,50 @@
 
   // The rectangle the data is actually drawn in, in screen pixels.
 
-  // Woxi's plot SVG has no clip path, but its axes are straight line segments along
-  // the edges of the data area, and a framed plot (contours, densities) draws that
-  // frame as a `<rect>`. Both give the data rectangle in SVG user units. The screen
-  // mapping comes from the SVG's own transform, so letterboxing is included too.
+  // A straight segment as `{x1, y1, x2, y2}`. Woxi 0.4 draws the axes as `<line>`
+  // elements; earlier versions used two-point polylines, and framed plots draw a
+  // `<rect>` instead. Anything that is not a single straight segment is ignored, which
+  // is what keeps the curve itself (a polyline with hundreds of points) out of this.
+  function segmentOf(element) {
+    var tag = element.tagName.toLowerCase();
+    if (tag === 'line') {
+      var x1 = parseFloat(element.getAttribute('x1'));
+      var y1 = parseFloat(element.getAttribute('y1'));
+      var x2 = parseFloat(element.getAttribute('x2'));
+      var y2 = parseFloat(element.getAttribute('y2'));
+      if (!isFinite(x1) || !isFinite(y1) || !isFinite(x2) || !isFinite(y2)) return null;
+      return { x1: x1, y1: y1, x2: x2, y2: y2 };
+    }
+    if (tag === 'polyline') {
+      var points = (element.getAttribute('points') || '').trim().split(/\s+/);
+      if (points.length < 2 || points.length > 6) return null;
+      var nums = [];
+      for (var i = 0; i < points.length; i++) {
+        var pair = points[i].split(',');
+        if (pair.length !== 2) return null;
+        nums.push(parseFloat(pair[0]), parseFloat(pair[1]));
+      }
+      if (nums.length !== 4 || !isFinite(nums[0]) || !isFinite(nums[1]) ||
+        !isFinite(nums[2]) || !isFinite(nums[3])) {
+        return null;
+      }
+      return { x1: nums[0], y1: nums[1], x2: nums[2], y2: nums[3] };
+    }
+    if (tag === 'path') {
+      var d = element.getAttribute('d') || '';
+      var parts = d.split(/[MmLlHhVv, ]+/).filter(function (part) { return part.length > 0; });
+      if (parts.length !== 4) return null;
+      var values = parts.map(parseFloat);
+      for (var j = 0; j < values.length; j++) if (!isFinite(values[j])) return null;
+      return { x1: values[0], y1: values[1], x2: values[2], y2: values[3] };
+    }
+    return null;
+  }
+
+  // Woxi's plot SVG has no clip path, but its axes are straight line segments that
+  // span the data area, and a framed plot (contours, densities) draws that frame as a
+  // `<rect>`. Both give the data rectangle in SVG user units. The screen mapping comes
+  // from the SVG's own transform, so letterboxing is included too.
   function userRect(svg) {
     var rects = svg.querySelectorAll('rect');
     var frame = null;
@@ -119,39 +159,30 @@
     }
     if (frame) return frame;
 
-    var lines = svg.querySelectorAll('polyline');
+    var nodes = svg.querySelectorAll('line, polyline, path');
     var horizontal = null;
     var vertical = null;
-    for (var j = 0; j < lines.length; j++) {
-      // The axes are single segments. The curves are long point lists.
-      var points = (lines[j].getAttribute('points') || '').trim().split(/\s+/);
-      if (points.length < 2 || points.length > 6) continue;
-      var xs = [];
-      var ys = [];
-      var parsed = true;
-      for (var k = 0; k < points.length; k++) {
-        var pair = points[k].split(',');
-        if (pair.length !== 2) { parsed = false; break; }
-        xs.push(parseFloat(pair[0]));
-        ys.push(parseFloat(pair[1]));
+    for (var j = 0; j < nodes.length; j++) {
+      var segment = segmentOf(nodes[j]);
+      if (!segment) continue;
+      var dx = Math.abs(segment.x2 - segment.x1);
+      var dy = Math.abs(segment.y2 - segment.y1);
+      if (dy <= 0.5 && (!horizontal || dx > horizontal.length)) {
+        horizontal = { length: dx, min: Math.min(segment.x1, segment.x2), max: Math.max(segment.x1, segment.x2) };
       }
-      if (!parsed) continue;
-      var minX = Math.min.apply(null, xs);
-      var maxX = Math.max.apply(null, xs);
-      var minY = Math.min.apply(null, ys);
-      var maxY = Math.max.apply(null, ys);
-      if (maxY - minY <= 0.5 && (!horizontal || maxX - minX > horizontal.length)) {
-        horizontal = { length: maxX - minX, min: minX, max: maxX, at: minY };
-      }
-      if (maxX - minX <= 0.5 && (!vertical || maxY - minY > vertical.length)) {
-        vertical = { length: maxY - minY, min: minY, max: maxY, at: minX };
+      if (dx <= 0.5 && (!vertical || dy > vertical.length)) {
+        vertical = { length: dy, min: Math.min(segment.y1, segment.y2), max: Math.max(segment.y1, segment.y2) };
       }
     }
     if (!horizontal || !vertical) return null;
+    // The axes span the data area and cross wherever the data origin happens to be, so
+    // the rectangle comes from their extents rather than from where they meet: a plot
+    // of `Sin` is centred on zero, and taking the crossing as a corner would describe
+    // a quarter of the picture.
     return {
-      x: vertical.at,
+      x: horizontal.min,
       y: vertical.min,
-      width: horizontal.max - vertical.at,
+      width: horizontal.max - horizontal.min,
       height: vertical.max - vertical.min,
     };
   }
