@@ -1,8 +1,44 @@
 /*
  * Layout: top bar / notebook (scrolls) / in-app keyboard (fixed at the bottom).
- * The keyboard extends behind the navigation bar; its content is inset with
+ * The keyboard extends behind the navigation bar. Its content is inset with
  * --woxi-inset-bottom, which the native side pushes in (MainActivity).
  */
+
+/*
+ * The engine lays out typeset results with fixed advances (0.632 em per cell),
+ * and its plot padding tables measure labels with Atkinson Hyperlegible Next.
+ * Both faces ship in fonts/ so the device draws what the layout assumed. The
+ * fallback fills the glyphs the primary mono needs but does not have (→, ∈,
+ * Greek). See fonts/README.md.
+ */
+@font-face {
+  font-family: 'Atkinson Hyperlegible Mono';
+  src: url('../fonts/AtkinsonHyperlegibleMono-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: 'Atkinson Hyperlegible Mono';
+  src: url('../fonts/AtkinsonHyperlegibleMono-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: 'Atkinson Hyperlegible Next';
+  src: url('../fonts/AtkinsonHyperlegibleNext-VariableFont_wght.ttf') format('truetype-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: 'Woxi Mono Fallback';
+  src: url('../fonts/WoxiMonoFallback.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
 
 :root {
   /* Dark theme */
@@ -194,14 +230,30 @@ html, body {
   align-items: center;
   min-height: 24px;
   padding: 2px 4px;
+  /* A wide result keeps the layout's text size and scrolls sideways. Shrinking
+     it to the card width is what made long polynomials unreadable. */
+  overflow-x: auto;
 }
+/* The SVG carries its size in em (see svgTag in render-output.js), so its text
+   keeps the 14 px layout scale instead of being fitted to one fixed height:
+   a one-line result is one line of text tall, a fraction is taller. */
 .woxi-out-math .woxi-svg {
-  height: 1.35em;
+  height: auto;
   width: auto;
-  max-width: 100%;
+  max-width: none;
+  flex: none;
   vertical-align: middle;
 }
-
+/* The layout reserved 0.632 em per cell, i.e. Atkinson Hyperlegible Mono. The
+   fallback only supplies the glyphs that face does not cover. */
+.woxi-out-math .woxi-svg text {
+  font-family: 'Atkinson Hyperlegible Mono', 'Woxi Mono Fallback', monospace;
+}
+/* Plot labels and ticks are measured with Atkinson Hyperlegible Next by the
+   engine's padding tables, so the device has to draw them with that face. */
+.woxi-out-graphic svg text {
+  font-family: 'Atkinson Hyperlegible Next', sans-serif;
+}
 .woxi-out-graphic {
   padding: 6px 0;
   overflow-x: auto;
@@ -227,7 +279,7 @@ html, body {
 
 .woxi-out-text {
   padding: 2px 4px;
-  font-family: monospace;
+  font-family: 'Atkinson Hyperlegible Mono', 'Woxi Mono Fallback', monospace;
   font-size: 14px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -324,7 +376,7 @@ html, body {
   flex: 0 0 auto;
   background: var(--woxi-surface);
   border-top: 1px solid var(--woxi-border);
-  /* Extends behind the navigation bar; keys stay above it. */
+  /* Extends behind the navigation bar. Keys stay above it. */
   padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--woxi-inset-bottom, 0px));
   user-select: none;
   -webkit-user-select: none;
@@ -572,7 +624,7 @@ html, body {
 
 .woxi-key.woxi-key-warn { color: var(--woxi-warning); }
 
-/* The sheet's tabs share one row; they scroll instead of wrapping when there are more
+/* The sheet's tabs share one row. They scroll instead of wrapping when there are more
    of them than a phone can show. */
 #woxi-assist-tabs { overflow-x: auto; scrollbar-width: none; }
 #woxi-assist-tabs::-webkit-scrollbar { display: none; }

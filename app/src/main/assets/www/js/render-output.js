@@ -23,13 +23,36 @@
 
   // Typeset SVGs carry width/height but often no viewBox, so CSS cannot scale them.
   // Add one and a class hook before handing them to the notebook.
-  function svgTag(svg, cls) {
+  //
+  // With `toEm`, the size is rewritten in em using the font size of the layout
+  // (the largest <text> size: the scripts are smaller, the roots are not).
+  // A typeset result then draws at its own scale - one line of text is 1 em of
+  // the body font, a fraction is taller - instead of being stretched or shrunk
+  // to a fixed CSS height. Graphics keep their pixel size and are scaled by CSS.
+  function layoutFontSize(svg) {
+    var sizes = String(svg).match(/font-size="[0-9.]+"/g) || [];
+    var base = 0;
+    for (var i = 0; i < sizes.length; i += 1) {
+      base = Math.max(base, parseFloat(sizes[i].replace(/[^0-9.]/g, '')));
+    }
+    return base;
+  }
+
+  function svgTag(svg, cls, toEm) {
     return String(svg).replace(/^<svg\b([^>]*)>/, function (match, attrs) {
       var out = attrs;
       var width = /width="([0-9.]+)"/.exec(attrs);
       var height = /height="([0-9.]+)"/.exec(attrs);
       if (width && height && !/viewBox=/.test(attrs)) {
         out += ' viewBox="0 0 ' + width[1] + ' ' + height[1] + '"';
+      }
+      if (toEm && width && height) {
+        var base = layoutFontSize(svg);
+        if (base > 0) {
+          out = out
+            .replace('width="' + width[1] + '"', 'width="' + (parseFloat(width[1]) / base).toFixed(3) + 'em"')
+            .replace('height="' + height[1] + '"', 'height="' + (parseFloat(height[1]) / base).toFixed(3) + 'em"');
+        }
       }
       if (!/class=/.test(out)) out += ' class="' + cls + '"';
       return '<svg' + out + '>';
@@ -101,7 +124,7 @@
     switch (item.type) {
       case 'text':
         return item.svg
-          ? '<div class="woxi-out woxi-out-math">' + svgTag(item.svg, 'woxi-svg') + '</div>'
+          ? '<div class="woxi-out woxi-out-math">' + svgTag(item.svg, 'woxi-svg', true) + '</div>'
           : '<div class="woxi-out woxi-out-text">' + escapeHtml(item.text) + '</div>';
       case 'graphics': {
         // A 2D plot carries a handle and the range it shows, so the plot can be

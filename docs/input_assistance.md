@@ -1,4 +1,4 @@
-# Input assistance: what ships, and what is deliberately left out
+# Input Assistance
 
 Portrait phones only. Measured on the emulator (1080*2400 px, 440 dpi, 393*873 dp. WebView viewport 393*827) or in a host probe against the interpreter.
 
@@ -9,43 +9,43 @@ One row, one state, still 47 dp - it is the action bar's first page, so nothing 
 ```
 | 1  Plot[Sin[x], {x, -5, 5},          |
 *--------------------------------------*
-| Eval | f, {x, xmin, xmax} |2/2▾| <- |  signature + argument progress
+| Eval | f, {x, xmin, xmax} |2/2 v| <- |  signature + argument progress
 | Eval | Plot | Plot3D | PlotGrid |+86 |  candidates, dimmed by status
-| Eval |{x,-5,5}|{x,0,2 Pi}|  ⚠ 1 | <- |  iterator + an issue
-| Eval |  Plot  |  Solve   |  ⚠ 2 | <- |  idle + issues
+| Eval |{x,-5,5}|{x,0,2 Pi}|  ! 1 | <- |  iterator + an issue
+| Eval |  Plot  |  Solve   |  ! 2 | <- |  idle + issues
 ```
 
-- Signature shows the chosen variant's slots with the current one highlighted. Tapping it moves to the next argument. The `n/m ▾` key opens the call card.
+- Signature shows the chosen variant's slots with the current one highlighted. Tapping it moves to the next argument. The `n/m v` key opens the call card.
 - Candidates show up to three names. `+N` opens the sheet. Names that are not implemented are dimmed, and a parameter of the definition the caret is in comes first with "parameter of this definition". When completion applies but has no answer, the bar shows the default action row instead of an empty one.
 - Options are the call's own `Options[...]`, with names already written in the call filtered out.
 - Iterator offers `{x, -5, 5}` and `{x, 0, 2 Pi}` when the caret is inside an empty `{}` in an iterator slot.
-- Issues adds one amber chip (`⚠ 2`) when the engine found something in finished input.
+- Issues adds one amber chip (`! 2`) when the engine found something in finished input.
 
 ## The action bar and the menu
 
-The bar is the keyboard's first two pages, four keys each; the menu is the sheet behind the Menu button. The split follows the notebook apps: the toolbar holds what is used while writing a cell, the menu holds what changes the whole notebook or is rare.
+The bar is the keyboard's first two pages, four keys each. The menu is the sheet behind the Menu button. The split follows the notebook apps: the toolbar holds what is used while writing a cell, the menu holds what changes the whole notebook or is rare.
 
 | Bar page | Keys | Why there |
 |---|---|---|
-| 1 (context) | Eval, the function chips / signature, `←` | every keystroke updates it |
-| 2 (cell) | Undo, Redo, Insert, Delete | no keyboard shortcuts on a phone; Insert and Delete are the two cell edits, next to each other |
+| 1 (context) | Eval, the function chips / signature, `<-` | every keystroke updates it |
+| 2 (cell) | Undo, Redo, Insert, Delete | no keyboard shortcuts on a phone. Insert and Delete are the two cell edits, next to each other |
 | 3 (text) | Cut, Copy, Paste, Format | selection edits, plus normalising the entry |
 
 | Menu | Why not the bar |
 |---|---|
 | New notebook, Open, Save, Save as | file-level, rare |
-| Evaluate notebook | JupyterLab Run▸Run All / Mathematica Evaluation▸Evaluate Notebook: notebook-wide, slow, done once |
+| Evaluate notebook | JupyterLab Run > Run All / Mathematica Evaluation > Evaluate Notebook: notebook-wide, slow, done once |
 | Format notebook | the notebook-wide counterpart of the bar's Format |
-| Go to definition | navigation, used occasionally; the About card also has a tappable "defined in entry N" |
+| Go to definition | navigation, used occasionally. The About card also has a tappable "defined in entry N" |
 | Duplicate entry, Clear entry | they create or wipe a whole cell (JupyterLab has both in Edit, not the toolbar) |
 
 Four keys per page is not a style choice: the bar is a `repeat(4, 1fr)` grid 47 px high, so a fifth key lands in a second row that is clipped. That is how Delete disappeared when Undo/Redo were added.
 
-Every page is defined in `keyboard.js`'s `BARS`; only page 1 is replaced at run time (the assistance chips). Page 2's buttons do not change, only their state: the app answers `handlers.keyState` with `dim` for Undo/Redo when the entry's history is empty, and `refreshKeyStates` rewrites the classes of the buttons on screen without replacing them (a button that disappears under a finger never fires its click).
+Every page is defined in `keyboard.js`'s `BARS`. Only page 1 is replaced at run time (the assistance chips). Page 2's buttons do not change, only their state: the app answers `handlers.keyState` with `dim` for Undo/Redo when the entry's history is empty, and `refreshKeyStates` rewrites the classes of the buttons on screen without replacing them (a button that disappears under a finger never fires its click).
 
 ## The sheet
 
-Five tabs, opened by `+N`, `n/m ▾`, `⚠`, or the matches button:
+Five tabs, opened by `+N`, `n/m v`, `!`, or the matches button:
 - Matches - the long list, with description, status and documentation category per row.
 - Examples - the 28 gallery templates the plot keys used to paste. A tap replaces the entry and runs it.
 - Call - the call being edited: the variant in use, one row per slot with its role and the example arguments the gallery actually uses (tapping an example replaces the current argument), the other overloads, the head's options (already-set ones marked), and insert skeleton.
@@ -184,7 +184,7 @@ Priorities: NORMAL for everything the user is waiting on, BACKGROUND for the one
 ## What is not implemented, and why
 
 - Association keys (`assoc["..."]`). Woxi stores associations in a separate value store. `lookup_env_as_expr` deliberately returns just the symbol for them, so reading the keys would mean evaluating user code while typing. Only a literal `<|...|>` in the same entry could be read safely, which is a narrow enough case to skip for now.
-- Go to definition is in the menu and in the About card; "find references" is still absent (the jump is the useful half).
+- Go to definition is in the menu and in the About card. "Find references" is still absent (the jump is the useful half).
 - Overlay squiggles, bracket matching and ghost text need a mirrored layer under the textarea. Everything above lives in the bar and the sheet instead.
 - Keyboard layout changes were proposed but not made: the plot pages still carry their 12 keys each, and no new "pattern" page exists. The only keyboard change so far is `Undo`/`Redo` on bar page 2, plus the hold gesture. `?` still inserts `?`, as before.
 

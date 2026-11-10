@@ -50,7 +50,8 @@ pub(crate) fn evaluate_statement_items(stmt: &str, held: Option<Held>) -> Vec<St
                     items.push(item("text", &residual, None));
                 }
             } else if let Some(svg) = typeset {
-                items.push(item("text", &result.result, Some(svg)));
+                let svg = crate::typeset::respace_svg(svg);
+                items.push(item("text", &result.result, Some(&svg)));
             } else if result.result != "\0" {
                 items.push(item("text", &result.result, None));
             }

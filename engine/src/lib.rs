@@ -66,6 +66,7 @@ mod json;
 mod manipulate;
 mod output;
 mod plot;
+mod typeset;
 
 use jni::errors::LogErrorAndDefault;
 use jni::objects::{JClass, JString};

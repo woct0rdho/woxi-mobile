@@ -1,4 +1,4 @@
-# Plot Interaction Review
+# Plot Interaction
 
 ## Scope
 
