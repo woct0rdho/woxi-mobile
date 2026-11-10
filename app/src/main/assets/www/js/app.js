@@ -39,7 +39,6 @@
     return node;
   }
 
-
   // Calls a method on the injected Java object. The object is a proxy, so the
   // method must be invoked directly (`.apply`/`typeof` checks do not work on it)
   // and a failure inside the error path must not re-enter this function.
