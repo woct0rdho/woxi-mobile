@@ -243,6 +243,9 @@
       entry.caret = input.selectionStart;
       entry.selStart = input.selectionStart;
       entry.selEnd = input.selectionEnd;
+      // A hardware key is recorded by `beforeinput`, which cannot know where the edit
+      // ends. The caret it left is known now, so the next key joins its word.
+      entry.lastCaret = input.selectionStart;
       autoGrow(input);
       state.dirty = true;
       updateTitle();
@@ -532,7 +535,6 @@
   function insertText(text, caretOffset, key) {
     var entry = activeEntry();
     if (!entry || !entry.dom) return;
-    recordEdit(entry, 'type');
     var input = entry.dom.input;
     var selection = selectionOf(entry);
     var start = selection.selStart;
@@ -549,8 +551,11 @@
       text = text.slice(0, at) + value.slice(start, end) + text.slice(at);
       after = 0;
     }
-    input.value = value.slice(0, start) + text + value.slice(end);
     var caret = start + Math.max(0, text.length - after);
+    // One character is typing and joins the current word. A pair or a whole call is one
+    // structural step of its own.
+    recordEdit(entry, text.length > 1 ? 'edit' : 'type', caret);
+    input.value = value.slice(0, start) + text + value.slice(end);
     entry.caret = caret;
     entry.selStart = caret;
     entry.selEnd = caret;
@@ -676,26 +681,55 @@
   // the textarea's own undo stack, so the app keeps one. A step records the text before
   // the change. Consecutive typing merges into one step.
 
-  var UNDO_LIMIT = 30;
+  // Undo is per entry and per word: a step is one identifier, number or operator, or one
+  // structural edit (a chip, a skeleton, a bracket pair). Continuous typing joins the
+  // current step until a separator, a pause, a caret jump or a kind change ends it - so
+  // `Sin[x] + 1` undoes as `1`, `Sin[x]`, `[]`, `Sin`, not as the whole entry at once.
+  var UNDO_LIMIT = 100;
   var COALESCE_MS = 700;
+  // Characters that end a step. Identifier characters (`_`, `$`, `` ` ``) are not here, so
+  // `x_`, `$Name` and `Ctx`Name` stay whole.
+  var STEP_BREAK = ' \t\n,;[](){}<>+-*/^=!&|@#:\'"~?%';
+
+  function isStepBreak(ch) {
+    return !!ch && STEP_BREAK.indexOf(ch) >= 0;
+  }
 
   function historyOf(entry) {
     if (!entry.history) entry.history = { undo: [], redo: [] };
     return entry.history;
   }
 
-  function recordEdit(entry, kind) {
+  // `after` is the caret the edit will leave. It lets the next keystroke decide whether
+  // it continues this step or starts a new one. A structural edit passes nothing, which
+  // ends the step.
+  function recordEdit(entry, kind, after) {
     if (!entry || !entry.dom) return;
     var history = historyOf(entry);
     var now = Date.now();
-    var coalesce = kind === 'type' && entry.lastKind === 'type' && now - (entry.lastEditAt || 0) < COALESCE_MS;
-    if (!coalesce) {
-      history.undo.push({ text: entry.dom.input.value, caret: entry.caret });
+    var selection = selectionOf(entry);
+    var text = entry.dom.input.value;
+    var typed = kind === 'type' || kind === 'delete';
+    var joins = typed &&
+      selection.selStart === selection.selEnd &&
+      entry.lastKind === kind &&
+      entry.lastCaret !== null && entry.lastCaret !== undefined &&
+      selection.caret === entry.lastCaret &&
+      !isStepBreak(text.charAt(selection.caret - 1)) &&
+      now - (entry.lastEditAt || 0) < COALESCE_MS;
+    if (!joins) {
+      history.undo.push({
+        text: text,
+        caret: selection.caret,
+        selStart: selection.selStart,
+        selEnd: selection.selEnd,
+      });
       if (history.undo.length > UNDO_LIMIT) history.undo.shift();
     }
     history.redo.length = 0;
     entry.lastEditAt = now;
     entry.lastKind = kind;
+    entry.lastCaret = after === undefined ? null : after;
     refreshUndoKeys();
   }
 
@@ -711,14 +745,22 @@
     var input = entry.dom.input;
     input.value = snapshot.text;
     entry.input = snapshot.text;
+    var length = snapshot.text.length;
     var caret = snapshot.caret;
-    if (caret === null || caret === undefined) caret = snapshot.text.length;
-    caret = Math.max(0, Math.min(caret, snapshot.text.length));
+    if (caret === null || caret === undefined) caret = length;
+    caret = Math.max(0, Math.min(caret, length));
+    // The step remembers the selection it replaced, so undo puts the selection back.
+    var selStart = snapshot.selStart;
+    var selEnd = snapshot.selEnd;
+    if (selStart === null || selStart === undefined) selStart = caret;
+    if (selEnd === null || selEnd === undefined) selEnd = caret;
+    selStart = Math.max(0, Math.min(selStart, length));
+    selEnd = Math.max(selStart, Math.min(selEnd, length));
     entry.caret = caret;
-    entry.selStart = caret;
-    entry.selEnd = caret;
+    entry.selStart = selStart;
+    entry.selEnd = selEnd;
     input.focus();
-    input.setSelectionRange(caret, caret);
+    input.setSelectionRange(selStart, selEnd);
     autoGrow(input);
     state.dirty = true;
     updateTitle();
@@ -730,9 +772,16 @@
     var entry = activeEntry();
     if (!canUndo(entry)) return;
     var history = historyOf(entry);
-    history.redo.push({ text: entry.dom.input.value, caret: entry.caret });
+    var selection = selectionOf(entry);
+    history.redo.push({
+      text: entry.dom.input.value,
+      caret: selection.caret,
+      selStart: selection.selStart,
+      selEnd: selection.selEnd,
+    });
     applyHistory(entry, history.undo.pop());
     entry.lastKind = null;
+    entry.lastCaret = null;
     refreshUndoKeys();
   }
 
@@ -740,9 +789,16 @@
     var entry = activeEntry();
     if (!canRedo(entry)) return;
     var history = historyOf(entry);
-    history.undo.push({ text: entry.dom.input.value, caret: entry.caret });
+    var selection = selectionOf(entry);
+    history.undo.push({
+      text: entry.dom.input.value,
+      caret: selection.caret,
+      selStart: selection.selStart,
+      selEnd: selection.selEnd,
+    });
     applyHistory(entry, history.redo.pop());
     entry.lastKind = null;
+    entry.lastCaret = null;
     refreshUndoKeys();
   }
 
@@ -834,7 +890,6 @@
   function backspace() {
     var entry = activeEntry();
     if (!entry || !entry.dom) return;
-    recordEdit(entry, 'type');
     var input = entry.dom.input;
     var selection = selectionOf(entry);
     var start = selection.selStart;
@@ -851,6 +906,9 @@
         start -= 1;
       }
     }
+    // Deleting a pair is one structural step. Deleting one character joins the previous
+    // deletion of the same word, like typing does.
+    recordEdit(entry, end - start > 1 ? 'edit' : 'delete', start);
     input.value = input.value.slice(0, start) + input.value.slice(end);
     entry.caret = start;
     entry.selStart = start;
@@ -967,6 +1025,7 @@
     if (!selection) { toast('Nothing to copy'); return; }
     nativeCall('setClipboard', selection);
     if (op === 'copy') { toast('Copied'); return; }
+    recordEdit(entry, 'edit');
     input.value = end > start ? input.value.slice(0, start) + input.value.slice(end) : '';
     entry.input = input.value;
     entry.caret = end > start ? start : 0;

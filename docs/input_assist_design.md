@@ -65,7 +65,18 @@ Requests carry the caret they were computed for, not a fresh read when the answe
 
 ## Undo/redo
 
-Programmatic edits (keys, accepted suggestions, auto-closed brackets, skeletons) are invisible to the textarea's own undo stack, so the app keeps one per entry: 30 steps, consecutive typing coalesced into one step (700 ms), and a multi-character edit (a chip, a skeleton) always its own step. `Undo` and `Redo` live on bar page 2 and are dimmed when there is nothing to undo or redo respectively - the state comes from the app's own stack, which is exact, because every edit on this keyboard goes through it (a hardware keyboard's edits are captured by `beforeinput`).
+Programmatic edits (keys, accepted suggestions, auto-closed brackets, skeletons) are invisible to the textarea's own undo stack, so the app keeps one per entry: 100 steps, and one step is one word of the expression - an identifier, a number, an operator, or one structural edit (a chip, a skeleton, a bracket pair). `Sin[x] + 1` therefore undoes as `1`, `Sin[x]`, `[]`, `Sin`, not as the whole entry at once, and a backspace run undoes word by word.
+
+A step ends at:
+- a separator character (whitespace, `,` `;` brackets, `+ - * / ^ = ! & | @ # : " ~ ? %`), so typing `x+1` gives `x+` and `1` - identifier characters (`_`, `$`, `` ` ``) are not separators, so `x_`, `$Name` and `Ctx`Name` stay whole.
+- a pause (700 ms), which is a new thought.
+- a caret jump: a key pressed somewhere other than where the last step ended starts a new step.
+- a kind change: typing, deleting, and a structural edit never merge with each other.
+- a selection: replacing one is always its own step.
+
+The snapshot also keeps the selection it replaced, so undo puts a replaced selection back (as VSCode does). Redo does the same in reverse. `Undo` and `Redo` live on bar page 2 and are dimmed when there is nothing to undo or redo respectively - the state comes from the app's own stack, which is exact, because every edit on this keyboard goes through it (a hardware keyboard's edits are captured by `beforeinput`).
+
+Why not the editor models? VSCode pushes an undo stop from every cursor-moving command (`pushStackElement` in `coreCommands.ts`), so a typing run between caret moves is one step. Vim groups per typed command (`:help undo-blocks`), which for `i ... Esc` is the whole insert. Both are tuned for a keyboard and a large file. Here every key is an explicit tap on a short expression, and the common repair is "undo the last name/number I tapped", so the step is the word. `Ctrl-G u`-style finer control has no key on this keyboard. A shorter pause is the way to ask for a smaller step.
 
 ## Matching: finding a name without noise
 
