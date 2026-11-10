@@ -241,6 +241,8 @@
     input.addEventListener('input', function () {
       entry.input = input.value;
       entry.caret = input.selectionStart;
+      entry.selStart = input.selectionStart;
+      entry.selEnd = input.selectionEnd;
       autoGrow(input);
       state.dirty = true;
       updateTitle();
@@ -253,14 +255,7 @@
     // The caret must survive taps on the in-app keyboard buttons (which move the
     // focus away from the textarea on some WebView versions).
     ['keyup', 'click', 'select', 'focus'].forEach(function (type) {
-      input.addEventListener(type, function () {
-        if (input.selectionStart !== null && input.selectionStart !== undefined) {
-          entry.caret = input.selectionStart;
-          entry.selStart = input.selectionStart;
-          entry.selEnd = input.selectionEnd;
-        }
-        refreshAssist();
-      });
+      input.addEventListener(type, function () { recordSelection(entry, true); });
     });
     input.addEventListener('keydown', function (event) {
       if (event.key === 'Enter' && !event.shiftKey) {
@@ -539,25 +534,16 @@
     if (!entry || !entry.dom) return;
     recordEdit(entry, 'type');
     var input = entry.dom.input;
-    var focused = global.document.activeElement === input;
-    var start = focused && input.selectionStart !== null ? input.selectionStart : entry.caret;
-    var end = focused && input.selectionEnd !== null ? input.selectionEnd : start;
-    if (start === null || start === undefined) start = input.value.length;
-    if (end === null || end === undefined) end = start;
-    // A tap on a key can blur the field. The selection recorded when it was last set
-    // still applies, which is what makes a skeleton's first slot replaceable by typing.
-    if (!focused && entry.selStart !== null && entry.selStart !== undefined &&
-      entry.selEnd !== null && entry.selEnd !== undefined) {
-      start = entry.selStart;
-      end = entry.selEnd;
-    }
+    var selection = selectionOf(entry);
+    var start = selection.selStart;
+    var end = selection.selEnd;
     var value = input.value;
     input.value = value.slice(0, start) + text + value.slice(end);
     var caret = start + Math.max(0, text.length - (caretOffset || 0));
     entry.caret = caret;
     entry.selStart = caret;
     entry.selEnd = caret;
-    if (focused) input.setSelectionRange(caret, caret);
+    input.setSelectionRange(caret, caret);
     entry.input = input.value;
     autoGrow(input);
     state.dirty = true;
@@ -568,29 +554,58 @@
 
   // typing help
 
+  // The selection to act on. A focused field reports the truth. A blurred one can
+  // report 0 in some WebViews (tapping this keyboard's keys blurs the field), so the
+  // copy recorded on every selection change is what a blurred field acts on.
+  function selectionOf(entry) {
+    var input = entry.dom.input;
+    var length = input.value.length;
+    var caret = entry.caret;
+    var selStart = entry.selStart;
+    var selEnd = entry.selEnd;
+    if (global.document.activeElement === input &&
+      input.selectionStart !== null && input.selectionStart !== undefined) {
+      caret = input.selectionStart;
+      selStart = input.selectionStart;
+      selEnd = input.selectionEnd;
+    }
+    if (caret === null || caret === undefined) caret = length;
+    if (selStart === null || selStart === undefined) selStart = caret;
+    if (selEnd === null || selEnd === undefined) selEnd = caret;
+    caret = Math.max(0, Math.min(caret, length));
+    selStart = Math.max(0, Math.min(selStart, length));
+    selEnd = Math.max(selStart, Math.min(selEnd, length));
+    return { caret: caret, selStart: selStart, selEnd: selEnd };
+  }
+
+  // Records the field's selection on the entry. Android reports a caret drag as
+  // `selectionchange` alone - no click, keyup or select - which is why `boot` also
+  // listens for it on the document.
+  function recordSelection(entry, immediate) {
+    var input = entry.dom.input;
+    if (input.selectionStart === null || input.selectionStart === undefined) return;
+    var end = input.selectionEnd;
+    if (end === null || end === undefined) end = input.selectionStart;
+    entry.caret = input.selectionStart;
+    entry.selStart = input.selectionStart;
+    entry.selEnd = end;
+    if (immediate) refreshAssist();
+    else refreshAssistSoon();
+  }
+
   // The text and caret the bar describes, or null when there is no entry to describe.
   // The entry does not have to hold DOM focus: every key on this keyboard inserts through
   // `entry.caret`, and a tap on a chip must not lose the caret it is about to replace.
   function readActiveText() {
     var entry = activeEntry();
     if (!entry || !entry.dom) return null;
-    var input = entry.dom.input;
-    // Only a focused textarea reports the caret truthfully: some WebViews reset the
-    // selection to 0 when the field blurs, which would move the bar to the start of
-    // the entry every time a key is tapped.
-    var focused = global.document.activeElement === input;
-    var caret = focused ? input.selectionStart : entry.caret;
-    if (caret === null || caret === undefined) caret = entry.caret;
-    if (caret === null || caret === undefined) caret = input.value.length;
-    var selStart = focused ? input.selectionStart : caret;
-    var selEnd = focused ? input.selectionEnd : caret;
-    if (!focused) {
-      if (entry.selStart !== null && entry.selStart !== undefined) selStart = entry.selStart;
-      if (entry.selEnd !== null && entry.selEnd !== undefined) selEnd = entry.selEnd;
-    }
-    if (selStart === null || selStart === undefined) selStart = caret;
-    if (selEnd === null || selEnd === undefined) selEnd = caret;
-    return { code: input.value, caret: caret, selStart: selStart, selEnd: selEnd };
+    var selection = selectionOf(entry);
+    return {
+      code: entry.dom.input.value,
+      caret: selection.caret,
+      selStart: selection.selStart,
+      selEnd: selection.selEnd,
+    };
   }
 
   // Replaces a range of the active entry, which is how a suggestion is accepted: the
@@ -625,6 +640,8 @@
     var at = Math.max(0, Math.min(offset, input.value.length));
     input.setSelectionRange(at, at);
     entry.caret = at;
+    entry.selStart = at;
+    entry.selEnd = at;
     refreshAssist();
   }
 
@@ -741,6 +758,17 @@
     setTimeout(refreshAssist, 0);
   }
 
+  // A caret drag reports dozens of selection changes. One refresh after the last of
+  // them describes where the caret actually came to rest.
+  var selectionRefresh = null;
+  function refreshAssistSoon() {
+    if (selectionRefresh) clearTimeout(selectionRefresh);
+    selectionRefresh = setTimeout(function () {
+      selectionRefresh = null;
+      refreshAssist();
+    }, 40);
+  }
+
   // While the keyboard is up the entry belongs next to it, not half a screen above:
   // the caret, the suggestions and the keys are then within one glance and one thumb.
   function liftEntry(entry) {
@@ -764,6 +792,9 @@
     entry.dom.input.value = text;
     entry.input = text;
     entry.caret = text.length;
+    entry.selStart = text.length;
+    entry.selEnd = text.length;
+    entry.dom.input.setSelectionRange(text.length, text.length);
     autoGrow(entry.dom.input);
     entry.dom.input.focus();
     state.dirty = true;
@@ -790,22 +821,15 @@
     if (!entry || !entry.dom) return;
     recordEdit(entry, 'type');
     var input = entry.dom.input;
-    var focused = global.document.activeElement === input;
-    var start = focused && input.selectionStart !== null ? input.selectionStart : entry.caret;
-    var end = focused && input.selectionEnd !== null ? input.selectionEnd : start;
-    if (start === null || start === undefined) start = input.value.length;
-    if (end === null || end === undefined) end = start;
-    if (!focused && entry.selStart !== null && entry.selStart !== undefined &&
-      entry.selEnd !== null && entry.selEnd !== undefined) {
-      start = entry.selStart;
-      end = entry.selEnd;
-    }
+    var selection = selectionOf(entry);
+    var start = selection.selStart;
+    var end = selection.selEnd;
     if (start === end && start > 0) start -= 1;
     input.value = input.value.slice(0, start) + input.value.slice(end);
     entry.caret = start;
     entry.selStart = start;
     entry.selEnd = start;
-    if (focused) input.setSelectionRange(start, start);
+    input.setSelectionRange(start, start);
     entry.input = input.value;
     autoGrow(input);
     state.dirty = true;
@@ -911,6 +935,9 @@
     entry.output = '';
     entry.items = null;
     entry.caret = 0;
+    entry.selStart = 0;
+    entry.selEnd = 0;
+    entry.dom.input.setSelectionRange(0, 0);
     autoGrow(entry.dom.input);
     focusEntry(entry);
     state.dirty = true;
@@ -931,11 +958,9 @@
       return;
     }
     var input = entry.dom.input;
-    var focused = global.document.activeElement === input;
-    var start = focused && input.selectionStart !== null ? input.selectionStart : entry.caret;
-    var end = focused && input.selectionEnd !== null ? input.selectionEnd : start;
-    if (start === null || start === undefined) start = input.value.length;
-    if (end === null || end === undefined) end = start;
+    var picked = selectionOf(entry);
+    var start = picked.selStart;
+    var end = picked.selEnd;
     var selection = end > start ? input.value.slice(start, end) : input.value;
     if (!selection) { toast('Nothing to copy'); return; }
     nativeCall('setClipboard', selection);
@@ -943,7 +968,9 @@
     input.value = end > start ? input.value.slice(0, start) + input.value.slice(end) : '';
     entry.input = input.value;
     entry.caret = end > start ? start : 0;
-    if (focused) input.setSelectionRange(entry.caret, entry.caret);
+    entry.selStart = entry.caret;
+    entry.selEnd = entry.caret;
+    input.setSelectionRange(entry.caret, entry.caret);
     autoGrow(input);
     state.dirty = true;
     updateTitle();
@@ -1175,6 +1202,21 @@
     });
     // Rotation, keyboard and system-bar changes all change the wrapping width.
     global.addEventListener('resize', function () { autoGrowAll(); });
+    // A caret-handle drag on Android reports only `selectionchange` - no click, keyup or
+    // select - so the bar, and the selection copy used while the field is blurred, have
+    // to follow it from here.
+    document.addEventListener('selectionchange', function () {
+      var focused = document.activeElement;
+      if (!focused) return;
+      for (var i = 0; i < state.entries.length; i += 1) {
+        var entry = state.entries[i];
+        if (entry.dom && entry.dom.input === focused) {
+          if (state.activeId !== entry.id) setActive(entry);
+          recordSelection(entry, false);
+          return;
+        }
+      }
+    });
     document.getElementById('woxi-btn-menu').addEventListener('click', showMenu);
     document.getElementById('woxi-btn-options').addEventListener('click', showOptions);
 
@@ -1359,6 +1401,10 @@
           ' prefix="' + assist.prefix + '"' +
           ' matches=' + assist.matches.names.slice(0, 6).join(',') +
           ' caret=' + assistRead.caret +
+          ' stored=' + (function () {
+            var now = activeEntry();
+            return now ? now.caret + '/' + now.selStart + '/' + now.selEnd : '-';
+          })() +
           ' text="' + assistRead.code.slice(0, 40) + '"' +
           ' issues=' + assist.issues.length +
           ' defs=' + assist.definitions.length +
@@ -1444,11 +1490,15 @@
       case 'caret': {
         var caretEntry = activeEntry();
         if (!caretEntry || !caretEntry.dom) { log('caret: no entry'); break; }
-        var at = parseInt(argument, 10);
-        if (isNaN(at)) at = caretEntry.dom.input.value.length;
-        caretEntry.dom.input.focus();
-        setCaret(at);
-        log('caret: ' + caretEntry.dom.input.selectionStart);
+        // `caret|<at>` puts the caret somewhere. `caret|<start>,<end>` selects a range,
+        // which is how a selection made with the handles is reproduced.
+        var range = String(argument === undefined || argument === null ? '' : argument).split(',');
+        var from = parseInt(range[0], 10);
+        var to = range.length > 1 ? parseInt(range[1], 10) : from;
+        if (isNaN(from)) from = caretEntry.dom.input.value.length;
+        if (isNaN(to)) to = from;
+        selectRange(from, to);
+        log('caret: ' + caretEntry.dom.input.selectionStart + '..' + caretEntry.dom.input.selectionEnd);
         break;
       }
       case 'dump': {

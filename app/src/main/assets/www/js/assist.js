@@ -473,6 +473,8 @@
 
   Assist.prototype.requestMatches = function (prefix) {
     var self = this;
+    // Set here, not in `fetchMatches`: a cached answer is still an answer for this prefix.
+    this.prefix = prefix;
     var limit = this.sheetOpen ? SHEET_LIMIT : MATCH_LIMIT;
     var key = prefix + '@' + limit;
     var cached = this.cache[key];
@@ -484,20 +486,24 @@
       return;
     }
     if (this.timer) global.clearTimeout(this.timer);
+    // The reply must describe the text the prefix came from. A caret drag moves the
+    // caret while the request waits out the debounce, so the caret is captured here
+    // rather than read again when the request finally goes out.
+    var read = this.read || {};
+    var code = read.code || '';
+    var caret = read.caret || 0;
     this.timer = global.setTimeout(function () {
       self.timer = null;
-      self.fetchMatches(prefix, limit);
+      self.fetchMatches(prefix, limit, code, caret);
     }, DEBOUNCE_MS);
   };
 
-  Assist.prototype.fetchMatches = function (prefix, limit) {
+  Assist.prototype.fetchMatches = function (prefix, limit, code, caret) {
     var self = this;
     if (!this.query) return;
-    var read = this.sink.read();
-    if (!read) return;
     var seq = ++this.seq;
     this.prefix = prefix;
-    this.query('complete_request', { code: read.code, cursor_pos: read.caret, limit: limit })
+    this.query('complete_request', { code: code, cursor_pos: caret, limit: limit })
       .then(function (reply) {
         if (seq !== self.seq || !reply || reply.status !== 'ok') return;
         var content = reply.content || {};
@@ -604,20 +610,25 @@
     var code = read.code;
     var caret = read.caret;
     var span = prefixSpan(code, caret);
-    var start = span.start;
-    var end = caret;
+    // A selection is what accepting a suggestion replaces. With a bare caret it is the
+    // identifier being typed. Replacing the selection is what every other text field
+    // does, and it makes "select an expression, tap `Simplify`" work as expected.
+    var selected = read.selStart !== undefined && read.selEnd !== undefined &&
+      read.selStart !== read.selEnd;
+    var start = selected ? read.selStart : span.start;
+    var end = selected ? read.selEnd : caret;
     var insert = name;
     var after = name.length;
     // A call name opens its bracket: on a phone that is two keys the user does not
     // have to find, and the signature bar takes over from there.
-    if (PROTOTYPES[name] && code.charAt(caret) !== '[') {
+    if (PROTOTYPES[name] && code.charAt(end) !== '[') {
       insert = name + '[';
       after = insert.length;
     }
     // The bracket keys insert pairs, so accepting a name inside an empty pair fills it
     // instead of nesting a second one (`{` + `{x, 0, 1}` was becoming `{{x, 0, 1}}`).
     var ctx = scanContext(code, caret);
-    if (ctx.open && start === caret && CLOSER[ctx.open.ch] === code.charAt(caret)) {
+    if (!selected && ctx.open && start === caret && CLOSER[ctx.open.ch] === code.charAt(caret)) {
       if (code.slice(ctx.open.open + 1, caret).trim() === '') {
         start = ctx.open.open;
         end = caret + 1;

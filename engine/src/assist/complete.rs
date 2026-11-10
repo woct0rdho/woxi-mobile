@@ -191,10 +191,10 @@ pub(crate) fn match_segment(
 
 /// The span a fuzzy match covers and how many words it touches, or `None`.
 ///
-/// A fuzzy match is an **abbreviation of whole words**: the query is split at its
+/// A fuzzy match is an abbreviation of whole words: the query is split at its
 /// capitals, and each piece has to match one word of the name, starting with that
 /// word's first letter. `PP` is `PlotPoints`, `PltRng` is `PlotRange`, `Rng` is
-/// `Range`, `PS` is `PlotStyle`. What it does *not* do is pick letters across word
+/// `Range`, `PS` is `PlotStyle`. What it does not do is pick letters across word
 /// middles (`pts` cannot reach `PlotPoints` through `PacletSite`-style skipping),
 /// which is what keeps the list quiet.
 pub(crate) fn abbreviation_span(query: &[char], name: &[char]) -> Option<(usize, usize)> {

@@ -40,7 +40,17 @@ Long-press means "do more than a tap", never "run" or "delete":
 | Suggestion chip | replace the typed prefix | wrap the selection, or the argument under the caret, in that head (`x^2` -> `Simplify[x^2]`) |
 | Anything else | normal key | nothing. The tap still fires |
 
-The keyboard fires the hold after 380 ms, cancels on 10 px of movement (so a flick is still a flick), and suppresses the tap only when the handler actually did something.
+The keyboard fires the hold after 380 ms, cancels on 10 px of movement (so a flick is still a flick), and suppresses the tap only when the handler did something.
+
+## Where the caret is
+
+The bar describes the caret, so the caret has to be known even when the field has no DOM focus. Two facts make that non-obvious on Android:
+- A caret-handle drag fires `selectionchange` and nothing else. No click, no keyup, no `select`. The app therefore listens on the document, records the new selection on the entry and refreshes the bar (coalesced at 40 ms, so a drag is one refresh at the end rather than sixty in flight).
+- Tapping this keyboard's keys blurs the textarea, and some WebViews then report the selection as 0. Every entry therefore keeps its own `caret`/`selStart`/`selEnd`, updated on `selectionchange`, `keyup`, `click`, `select`, `focus`, `input` and every programmatic edit. A focused field is still the source of truth. A blurred one acts on the recorded copy.
+
+One reader (`selectionOf`) serves every path that inserts, deletes, copies or accepts, so those cannot drift apart again. A suggestion accepted while text is selected replaces the selection, like typing would.
+
+Requests carry the caret they were computed for, not a fresh read when the answer is due: a drag can move the caret while a completion waits out its 50 ms debounce, and a reply for another position would describe the wrong text.
 
 ## Undo/redo
 
@@ -65,7 +75,7 @@ Noise rules, each of which came from a query that went wrong:
 - Substrings need three characters. Two letters are everywhere: `pl` appears inside every `...Plot` name, and `pp` inside `Append`.
 - An abbreviation must start words. `pts` reads `...Points` or `Petersen`, but it cannot pick letters across word middles, which is what a plain fuzzy subsequence does and what made `Plo` return 400 names.
 - The weak tiers are a fallback. They appear only when the sharper tiers leave fewer than three candidates, so typing a prefix never grows a fuzzy tail.
-- Rare names need a specific query. Names in the tail of the registry (rank 3000 and beyond), and unranked names longer than 20 characters, are matched only when the fragment is four characters, is the exact name, or abbreviates *every* word (`RngFlt`); or when the document already uses the name. Three letters then stay quiet - `Ran` gives `Range`, `RandomReal`, `RandomColor` without `RangeFilter` - while `Rang` or `RngFlt` still reach it.
+- Rare names need a specific query. Names in the tail of the registry (rank 3000 and beyond), and unranked names longer than 20 characters, are matched only when the fragment is four characters, is the exact name, or abbreviates every word (`RngFlt`), or when the document already uses the name. Three letters then stay quiet - `Ran` gives `Range`, `RandomReal`, `RandomColor` without `RangeFilter` - while `Rang` or `RngFlt` still reach it.
 - "Already used" is remembered by the engine. It collects builtin names with Woxi's tokenizer from every evaluated statement and from the text of each typing-help request, so a name written once in the notebook outranks the prior in every later entry.
 - Package-qualified names and system variables last. `Context`Symbol` and `$Name` are real, but they are not what a phone user is typing. They stay in the sheet, after the plain names of the same tier.
 
@@ -87,7 +97,7 @@ Results on the device, which is how the rules were tuned:
 | `Rng` with `RangeFilter` used earlier in the entry | `RangeFilter`, `Range`, `PlotRange` |
 | `Ran` / `Rang` | `Range`, ... / `Range`, `RangeFilter`, `PlotRange` |
 
-The remaining ambiguity is between neighbours of the same band (`Integer` versus `Integers`, `Contours` versus `ContourPlot`), which alphabetical or length order settles; that is a coin flip, not a wrong answer.
+The remaining ambiguity is between neighbours of the same band (`Integer` versus `Integers`, `Contours` versus `ContourPlot`), which alphabetical or length order settles. That is a coin flip, not a wrong answer.
 
 ## Prototypes, roles and examples
 
@@ -136,6 +146,6 @@ Priorities: NORMAL for everything the user is waiting on, BACKGROUND for the one
 
 ## Test hooks
 
-`assist` (state, prefix, matches, caret, text, issues, definitions, bar key positions in device pixels), `assistaccept`, `assistsheet`/`card` (tab), `assistclose`, `type` (set text without evaluating), `press` (a key by label), `caret`, `skeleton`, `wrap`, `diag`, `undo`, `redo`.
+`assist` (state, prefix, matches, caret, the stored selection, text, issues, definitions, bar key positions in device pixels), `assistaccept`, `assistsheet`/`card` (tab), `assistclose`, `type` (set text without evaluating), `press` (a key by label), `caret` (`<at>` or `<start>,<end>`), `skeleton`, `wrap`, `diag`, `undo`, `redo`.
 
 Device pixels, not CSS: the WebView is inset by the status bar, so a tap coordinate is `inset.top + css * dpr`.
