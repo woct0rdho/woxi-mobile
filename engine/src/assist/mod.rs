@@ -10,12 +10,14 @@
 
 pub(crate) mod complete;
 pub(crate) mod diagnostics;
+pub(crate) mod format;
 pub(crate) mod inspect;
 pub(crate) mod prototypes;
 pub(crate) mod status;
 
 use crate::assist::complete::completion_content;
 use crate::assist::diagnostics::diagnostics_content;
+use crate::assist::format::format_content;
 use crate::assist::inspect::inspect_content;
 use crate::assist::prototypes::{catalog_content, definitions_content, prototypes_content};
 use crate::assist::status::is_complete_content;
@@ -30,6 +32,7 @@ pub(crate) fn query_request(json: &str) -> String {
         "diagnostics_request" => reply_ok(&msg_type, &diagnostics_content(json)),
         "prototypes_request" => reply_ok(&msg_type, &prototypes_content(json)),
         "definitions_request" => reply_ok(&msg_type, &definitions_content(json)),
+        "format_request" => reply_ok(&msg_type, &format_content(json)),
         "catalog_request" => reply_ok(&msg_type, &catalog_content()),
         _ => reply_error(&msg_type, "UnknownMessage", "unknown msg_type"),
     }

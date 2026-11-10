@@ -21,6 +21,28 @@ One row, one state, still 47 dp - it is the action bar's first page, so nothing 
 - Iterator offers `{x, -5, 5}` and `{x, 0, 2 Pi}` when the caret is inside an empty `{}` in an iterator slot.
 - Issues adds one amber chip (`⚠ 2`) when the engine found something in finished input.
 
+## The action bar and the menu
+
+The bar is the keyboard's first two pages, four keys each; the menu is the sheet behind the Menu button. The split follows the notebook apps: the toolbar holds what is used while writing a cell, the menu holds what changes the whole notebook or is rare.
+
+| Bar page | Keys | Why there |
+|---|---|---|
+| 1 (context) | Eval, the function chips / signature, `←` | every keystroke updates it |
+| 2 (cell) | Undo, Redo, Insert, Delete | no keyboard shortcuts on a phone; Insert and Delete are the two cell edits, next to each other |
+| 3 (text) | Cut, Copy, Paste, Format | selection edits, plus normalising the entry |
+
+| Menu | Why not the bar |
+|---|---|
+| New notebook, Open, Save, Save as | file-level, rare |
+| Evaluate notebook | JupyterLab Run▸Run All / Mathematica Evaluation▸Evaluate Notebook: notebook-wide, slow, done once |
+| Format notebook | the notebook-wide counterpart of the bar's Format |
+| Go to definition | navigation, used occasionally; the About card also has a tappable "defined in entry N" |
+| Duplicate entry, Clear entry | they create or wipe a whole cell (JupyterLab has both in Edit, not the toolbar) |
+
+Four keys per page is not a style choice: the bar is a `repeat(4, 1fr)` grid 47 px high, so a fifth key lands in a second row that is clipped. That is how Delete disappeared when Undo/Redo were added.
+
+Every page is defined in `keyboard.js`'s `BARS`; only page 1 is replaced at run time (the assistance chips). Page 2's buttons do not change, only their state: the app answers `handlers.keyState` with `dim` for Undo/Redo when the entry's history is empty, and `refreshKeyStates` rewrites the classes of the buttons on screen without replacing them (a button that disappears under a finger never fires its click).
+
 ## The sheet
 
 Five tabs, opened by `+N`, `n/m ▾`, `⚠`, or the matches button:
@@ -153,7 +175,8 @@ Seven messages, one envelope (`{msg_type, content}` in, `{msg_type, status, cont
 | `is_complete_request` | `complete` / `incomplete` / `invalid` |
 | `diagnostics_request` | `status` plus items with severity, code, message and an optional `fix` |
 | `prototypes_request` | slot roles, names and examples learned from the examples |
-| `definitions_request` | per entry: definitions with ranges and parameters |
+| `definitions_request` | per entry: definitions with name range, full range and parameters |
+| `format_request` | the formatted text of each code, through Woxi's formatter |
 | `catalog_request` | symbol count and version (Woxi extension) |
 
 Priorities: NORMAL for everything the user is waiting on, BACKGROUND for the one-off catalogue. Gesture frames still overtake both.
@@ -161,13 +184,12 @@ Priorities: NORMAL for everything the user is waiting on, BACKGROUND for the one
 ## What is not implemented, and why
 
 - Association keys (`assoc["..."]`). Woxi stores associations in a separate value store. `lookup_env_as_expr` deliberately returns just the symbol for them, so reading the keys would mean evaluating user code while typing. Only a literal `<|...|>` in the same entry could be read safely, which is a narrow enough case to skip for now.
-- Go to definition / find references. `definitions_request` already knows where every symbol is defined, so the jump is a small piece of UI work that was not needed for this pass. The About card only reports the entry number.
-- Formatting (`lsp::format`, 0.8 ms) is available from the same module but has no key yet.
+- Go to definition is in the menu and in the About card; "find references" is still absent (the jump is the useful half).
 - Overlay squiggles, bracket matching and ghost text need a mirrored layer under the textarea. Everything above lives in the bar and the sheet instead.
 - Keyboard layout changes were proposed but not made: the plot pages still carry their 12 keys each, and no new "pattern" page exists. The only keyboard change so far is `Undo`/`Redo` on bar page 2, plus the hold gesture. `?` still inserts `?`, as before.
 
 ## Test hooks
 
-`assist` (state, prefix, matches, caret, the stored selection, text, issues, definitions, bar key positions in device pixels), `assistaccept`, `assistsheet`/`card` (tab), `assistclose`, `type` (set text without evaluating), `press` (a key by label), `caret` (`<at>` or `<start>,<end>`), `skeleton`, `wrap`, `diag`, `undo`, `redo`.
+`assist` (state, prefix, matches, caret, the stored selection, text, issues, definitions, bar key positions in device pixels), `assistaccept`, `assistsheet`/`card` (tab), `assistclose`, `type` (set text without evaluating), `press` (a key by label), `caret` (`<at>` or `<start>,<end>`), `skeleton`, `wrap`, `diag`, `undo`, `redo`, `format`, `formatall`, `godef`.
 
 Device pixels, not CSS: the WebView is inset by the status bar, so a tap coordinate is `inset.top + css * dpr`.

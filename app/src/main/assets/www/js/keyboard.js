@@ -254,17 +254,19 @@
       { l: 'Solve', i: 'Solve[|]', k: 'fn', t: 'Solve[...]' },
       { l: '\u2190', a: 'back', k: 'danger', t: 'Backspace' },
     ],
+    // The state of Undo/Redo (dim when there is nothing to undo or redo) comes from the
+    // app through `handlers.keyState`. The keys themselves live here, like every page.
     [
-      { l: 'Eval all', a: 'evalall', k: 'fn accent', t: 'Restart the session and run every entry' },
+      { l: 'Undo', a: 'undo', k: 'fn', t: 'Undo the last edit' },
+      { l: 'Redo', a: 'redo', k: 'fn', t: 'Redo the undone edit' },
       { l: 'Insert', a: 'new', t: 'New entry below' },
-      { l: 'Duplicate', a: 'duplicate', k: 'fn', t: 'Copy this entry' },
       { l: 'Delete', a: 'delete', k: 'fn danger', t: 'Delete this entry' },
     ],
     [
       { l: 'Cut', a: 'cut', t: 'Cut the selection (or the whole entry)' },
       { l: 'Copy', a: 'copy', t: 'Copy the selection (or the whole entry)' },
       { l: 'Paste', a: 'paste', t: 'Paste from the clipboard' },
-      { l: 'Clear', a: 'clear', k: 'danger', t: 'Clear this entry' },
+      { l: 'Format', a: 'format', t: 'Normalise the spacing of this entry' },
     ],
   ];
 
@@ -529,7 +531,6 @@
     if (slide.surface === 'bar') this.renderBar(); else this.renderPad();
     view.classList.remove('woxi-kb-dragging');
   };
-
   function Keyboard(handlers) {
     this.handlers = handlers || {};
     this.keysEl = document.getElementById('woxi-kb-keys');
@@ -552,13 +553,36 @@
 
   // rendering
 
-  Keyboard.prototype.makeKey = function (key) {
-    var self = this;
+  // The classes of one key: its own (`k`), its span, and the app's state for it. Only
+  // the app knows whether Undo has anything to undo, so it answers through `keyState`.
+  // Splitting the responsibility this way keeps every page defined in this file.
+  Keyboard.prototype.keyClasses = function (key) {
     var classes = 'woxi-key';
     if (key.k) {
       classes += ' ' + key.k.split(' ').map(function (name) { return 'woxi-key-' + name; }).join(' ');
     }
     if (key.s) classes += ' woxi-key-span-' + key.s;
+    var state = this.handlers.keyState ? this.handlers.keyState(key) : '';
+    if (state) {
+      classes += ' ' + state.split(' ').map(function (name) { return 'woxi-key-' + name; }).join(' ');
+    }
+    return classes;
+  };
+
+  // Re-applies the state classes to the bar on screen. The buttons are not replaced: a
+  // button that disappears under a finger never fires its click.
+  Keyboard.prototype.refreshKeyStates = function () {
+    if (!this.barKeys || this.slide) return;
+    var buttons = this.actionsEl.children;
+    for (var i = 0; i < buttons.length && i < this.barKeys.length; i += 1) {
+      var classes = this.keyClasses(this.barKeys[i]);
+      if (buttons[i].className !== classes) buttons[i].className = classes;
+    }
+  };
+
+  Keyboard.prototype.makeKey = function (key) {
+    var self = this;
+    var classes = this.keyClasses(key);
     var btn = el('button', classes);
     // The context bar renders rich labels (the signature highlights the argument the
     // caret is in). Every other key is plain text.
@@ -627,6 +651,9 @@
   Keyboard.prototype.buildBar = function (barPage, into) {
     var self = this;
     var keys = BARS[barPage];
+    // The keys of the page on screen, so `refreshKeyStates` can update their classes
+    // without rebuilding them.
+    if (into === this.actionsEl) this.barKeys = keys;
     into.className = 'woxi-kb-slide woxi-kb-actions';
     into.innerHTML = '';
     into.setAttribute('data-bar', String(barPage + 1));

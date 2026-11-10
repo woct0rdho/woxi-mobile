@@ -374,6 +374,15 @@ mod tests {
     }
 
     #[test]
+    fn format_request_normalises_spacing() {
+        let reply = query("format_request", "{\"codes\":[\"a=1+2\",\"\"]}");
+        assert!(reply.contains("\"status\":\"ok\""), "{reply}");
+        assert!(reply.contains("\"a = 1 + 2\""), "{reply}");
+        // An empty entry stays empty.
+        assert!(reply.contains("[\"a = 1 + 2\",\"\"]"), "{reply}");
+    }
+
+    #[test]
     fn completion_reports_arity_so_a_leaf_call_is_not_wrapped() {
         reset_used();
         // The client decides between "wraps its argument" and "takes no argument" from
@@ -598,5 +607,9 @@ mod tests {
         assert!(reply.contains("\"name\":\"f\""), "{reply}");
         assert!(reply.contains("\"params\":[\"x\",\"y\"]"), "{reply}");
         assert!(reply.contains("\"name\":\"g\""), "{reply}");
+        // `start`/`end` are the name itself (the go-to-definition target), `full` the
+        // whole assignment.
+        assert!(reply.contains("\"start\":0,\"end\":1"), "{reply}");
+        assert!(reply.contains("\"full\":[0,20]"), "{reply}");
     }
 }

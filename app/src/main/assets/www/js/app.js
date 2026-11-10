@@ -160,7 +160,7 @@
     state.activeId = entry ? entry.id : null;
     refreshClasses();
     refreshAssist();
-    refreshUndoKeys();
+    refreshBarState();
   }
 
   function refreshClasses() {
@@ -730,7 +730,7 @@
     entry.lastEditAt = now;
     entry.lastKind = kind;
     entry.lastCaret = after === undefined ? null : after;
-    refreshUndoKeys();
+    refreshBarState();
   }
 
   function canUndo(entry) {
@@ -782,7 +782,7 @@
     applyHistory(entry, history.undo.pop());
     entry.lastKind = null;
     entry.lastCaret = null;
-    refreshUndoKeys();
+    refreshBarState();
   }
 
   function redoEntry() {
@@ -799,21 +799,13 @@
     applyHistory(entry, history.redo.pop());
     entry.lastKind = null;
     entry.lastCaret = null;
-    refreshUndoKeys();
+    refreshBarState();
   }
 
-  // The bar's second page shows at a glance whether there is anything to undo or redo.
-  function refreshUndoKeys() {
-    if (!keyboard) return;
-    var entry = activeEntry();
-    keyboard.setBarKeys(1, [
-      { l: 'Eval all', a: 'evalall', k: 'fn accent', t: 'Restart the session and run every entry' },
-      { l: 'Undo', a: 'undo', k: canUndo(entry) ? 'fn' : 'fn dim', t: 'Undo the last edit' },
-      { l: 'Redo', a: 'redo', k: canRedo(entry) ? 'fn' : 'fn dim', t: 'Redo the undone edit' },
-      { l: 'Insert', a: 'new', t: 'New entry below' },
-      { l: 'Duplicate', a: 'duplicate', k: 'fn', t: 'Copy this entry' },
-      { l: 'Delete', a: 'delete', k: 'fn danger', t: 'Delete this entry' },
-    ]);
+  // The bar's second page dims Undo/Redo when the entry has nothing to undo or redo.
+  // Only the classes change. The buttons are not replaced (see refreshKeyStates).
+  function refreshBarState() {
+    if (keyboard) keyboard.refreshKeyStates();
   }
 
   function refreshAssist() {
@@ -1039,6 +1031,127 @@
     toast('Cut');
   }
 
+  // formatting
+  //
+  // Woxi's own formatter only moves horizontal whitespace and indentation, so the code
+  // is unchanged and the result can replace the text as is. The caret is mapped through
+  // the whitespace by counting the non-space characters before it.
+
+  function mapCaret(before, after, caret) {
+    var wanted = 0;
+    var i;
+    for (i = 0; i < caret && i < before.length; i += 1) {
+      if (!/\s/.test(before.charAt(i))) wanted += 1;
+    }
+    var seen = 0;
+    for (i = 0; i < after.length; i += 1) {
+      if (/\s/.test(after.charAt(i))) continue;
+      if (seen === wanted) return i;
+      seen += 1;
+    }
+    return after.length;
+  }
+
+  // The formatted text of each code, or the codes themselves when the engine cannot help.
+  function formatCodes(codes) {
+    if (!engine) return Promise.resolve(codes);
+    return engine.query('format_request', { codes: codes }).then(function (reply) {
+      var formatted = reply && reply.status === 'ok' && reply.content && reply.content.codes;
+      if (!formatted || formatted.length !== codes.length) return codes;
+      return formatted;
+    }, function () {
+      return codes;
+    });
+  }
+
+  function rewriteEntry(entry, text) {
+    var before = entry.dom.input.value;
+    var selection = selectionOf(entry);
+    var caret = mapCaret(before, text, selection.caret);
+    recordEdit(entry, 'edit');
+    entry.dom.input.value = text;
+    entry.input = text;
+    entry.caret = caret;
+    entry.selStart = caret;
+    entry.selEnd = caret;
+    entry.dom.input.setSelectionRange(caret, caret);
+    autoGrow(entry.dom.input);
+    state.dirty = true;
+    updateTitle();
+    persist();
+  }
+
+  function formatEntry() {
+    var entry = activeEntry();
+    if (!entry || !entry.dom || !entry.dom.input.value.trim()) return;
+    var text = entry.dom.input.value;
+    formatCodes([text]).then(function (codes) {
+      if (!codes[0] || codes[0] === text) {
+        toast('Already formatted');
+        return;
+      }
+      rewriteEntry(entry, codes[0]);
+      refreshAssist();
+      toast('Formatted');
+    });
+  }
+
+  function formatNotebook() {
+    var entries = state.entries.filter(function (entry) {
+      return entry.dom && entry.dom.input.value.trim();
+    });
+    if (!entries.length) return;
+    var codes = entries.map(function (entry) { return entry.dom.input.value; });
+    formatCodes(codes).then(function (formatted) {
+      var changed = 0;
+      for (var i = 0; i < entries.length; i += 1) {
+        if (!formatted[i] || formatted[i] === entries[i].dom.input.value) continue;
+        rewriteEntry(entries[i], formatted[i]);
+        changed += 1;
+      }
+      refreshAssist();
+      toast(changed ? 'Formatted ' + changed + (changed === 1 ? ' entry' : ' entries') : 'Already formatted');
+    });
+  }
+
+  // navigation
+
+  // Where `name` is defined: the entry and the range of the defining name.
+  function jumpToDefinition(name) {
+    if (!assist || !assist.definitions) return;
+    var found = null;
+    for (var i = 0; i < assist.definitions.length; i += 1) {
+      var definition = assist.definitions[i];
+      if (definition.name !== name) continue;
+      if (!found || definition.kind === 'function') found = definition;
+      if (found.kind === 'function') break;
+    }
+    if (!found) {
+      toast('No definition of ' + name);
+      return;
+    }
+    var entry = state.entries[found.entry];
+    if (!entry || !entry.dom) {
+      toast('No definition of ' + name);
+      return;
+    }
+    closeSheet();
+    focusEntry(entry);
+    selectRange(found.start, found.end);
+    scrollEntryIntoView(entry);
+    toast('Defined in entry ' + (found.entry + 1));
+  }
+
+  function goToDefinition() {
+    if (!assist) return;
+    var name = assist.symbolAtCaret();
+    if (!name) {
+      toast('No symbol under the caret');
+      return;
+    }
+    jumpToDefinition(name);
+  }
+
   function handleKeyAction(action, data) {
     if (action === 'assist') {
       if (assist) assist.action(data);
@@ -1055,14 +1168,9 @@
     if (action === 'enter') submitActive();
     else if (action === 'back') backspace();
     else if (action === 'new') newEntryBelow();
-    else if (action === 'duplicate') duplicateActive();
     else if (action === 'delete') deleteActive();
-    else if (action === 'clear') clearActive();
     else if (action === 'cut' || action === 'copy' || action === 'paste') clipboardOp(action);
-    else if (action === 'evalall') {
-      toast('Evaluating...');
-      evaluateAll().then(function () { toast('Done'); });
-    }
+    else if (action === 'format') formatEntry();
   }
 
   // menu / sheets
@@ -1099,10 +1207,15 @@
       body.appendChild(sheetButton('Save', state.fileName ? state.fileName : 'JSON document', function () { saveDocument(false); }));
       body.appendChild(sheetButton('Save as...', 'choose a location', function () { saveDocument(true); }));
       body.appendChild(el('div', 'woxi-sheet-sep'));
-      body.appendChild(sheetButton('Evaluate all entries', 'restart the session and re-run everything', function () {
+      body.appendChild(sheetButton('Evaluate notebook', 'restart the session and re-run every entry', function () {
         toast('Evaluating...');
         evaluateAll().then(function () { toast('Done'); });
       }));
+      body.appendChild(sheetButton('Format notebook', 'normalise the spacing of every entry', formatNotebook));
+      body.appendChild(el('div', 'woxi-sheet-sep'));
+      body.appendChild(sheetButton('Go to definition', 'jump to where the symbol under the caret is defined', goToDefinition));
+      body.appendChild(sheetButton('Duplicate this entry', 'copy the text and its result', duplicateActive));
+      body.appendChild(sheetButton('Clear this entry', 'empty the text and the result', clearActive));
     });
   }
 
@@ -1283,6 +1396,14 @@
       onInsert: function (text, caret, key) { insertText(text, caret, key); },
       onAction: handleKeyAction,
       onLongPress: handleKeyLongPress,
+      // The bar pages are defined in keyboard.js. Only their state (Undo/Redo dim when
+      // there is nothing to undo or redo) depends on the document, so it is answered here.
+      keyState: function (key) {
+        var entry = activeEntry();
+        if (key.a === 'undo') return canUndo(entry) ? '' : 'dim';
+        if (key.a === 'redo') return canRedo(entry) ? '' : 'dim';
+        return '';
+      },
     });
 
     assist = new global.WoxiAssist.Assist({
@@ -1292,6 +1413,7 @@
       select: selectRange,
       evaluate: runTemplate,
       templates: gatherTemplates,
+      gotoDefinition: jumpToDefinition,
       entryId: function () {
         var entry = activeEntry();
         return entry ? state.entries.indexOf(entry) : 0;
@@ -1304,7 +1426,7 @@
       if (!engine) return Promise.resolve(null);
       return engine.query(msgType, content);
     });
-    refreshUndoKeys();
+    refreshBarState();
 
     var restored = restore();
     if (!restored) state.entries = [];
@@ -1458,9 +1580,9 @@
         }
         log('assist: state=' + assist.state +
           ' prefix="' + assist.prefix + '"' +
-          ' matches=' + assist.matches.names.slice(0, 6).join(',') +
+          ' matches=' + (assist.matches && assist.matches.names ? assist.matches.names.slice(0, 6).join(',') : '') +
           ' caret=' + assistRead.caret +
-          ' chips=' + assist.details.slice(0, 3).map(function (detail) {
+          ' chips=' + (assist.details || []).slice(0, 3).map(function (detail) {
             return (detail.type || '?') + (detail.arity ? '/' + JSON.stringify(detail.arity) : '');
           }).join(',') +
           ' stored=' + (function () {
@@ -1534,6 +1656,21 @@
         if (!assist) { log('skeleton: none'); break; }
         var skeletonDone = assist.applySkeleton(argument || 'Plot');
         log('skeleton: ' + (argument || 'Plot') + ' done=' + skeletonDone);
+        break;
+      }
+      case 'format': {
+        formatEntry();
+        log('format: cell');
+        break;
+      }
+      case 'formatall': {
+        formatNotebook();
+        log('formatall: notebook');
+        break;
+      }
+      case 'godef': {
+        goToDefinition();
+        log('godef');
         break;
       }
       case 'wrap': {

@@ -706,6 +706,18 @@
     ]);
   };
 
+  // The symbol the caret is on or right after, which is what go to definition acts on.
+  Assist.prototype.symbolAtCaret = function () {
+    var read = this.sink.read();
+    if (!read) return '';
+    var code = read.code;
+    var start = prefixSpan(code, read.caret).start;
+    var end = read.caret;
+    while (end < code.length && /[A-Za-z0-9$`]/.test(code.charAt(end))) end += 1;
+    var name = code.slice(start, end);
+    return /^[A-Za-z$`][A-Za-z0-9$`]*$/.test(name) ? name : '';
+  };
+
   // Whether a session symbol is a function definition rather than a variable: those wrap
   // like builtins do, a plain variable is a value.
   Assist.prototype.isDefinedFunction = function (name) {
@@ -1107,7 +1119,7 @@
       var target = event.target;
       if (!target || !target.closest) return;
       var row = target.closest('[data-assist-insert],[data-assist-template],[data-assist-option],' +
-        '[data-assist-example],[data-assist-skeleton],[data-assist-variant],[data-assist-fix]');
+        '[data-assist-example],[data-assist-skeleton],[data-assist-variant],[data-assist-fix],[data-assist-goto]');
       if (!row) return;
       if (row.hasAttribute('data-assist-template')) {
         self.sink.evaluate(row.getAttribute('data-assist-template'));
@@ -1127,6 +1139,9 @@
         self.variantChoice[parts[0]] = Number(parts[1]);
         self.refresh();
         self.renderSheet();
+      } else if (row.hasAttribute('data-assist-goto')) {
+        if (self.sink.gotoDefinition) self.sink.gotoDefinition(row.getAttribute('data-assist-goto'));
+        self.closeSheet();
       } else if (row.hasAttribute('data-assist-fix')) {
         // The payload is JSON in one attribute: the insert text can contain anything.
         var fix = null;
@@ -1367,7 +1382,9 @@
         var rows = ['<div class="woxi-assist-about">'];
         rows.push('<div class="woxi-assist-about-name">' + escapeHtml(name) + '</div>');
         if (defined) {
-          rows.push('<div class="woxi-assist-about-line">defined in entry ' + (defined.entry + 1) + '</div>');
+          rows.push('<button type="button" class="woxi-assist-row" tabindex="-1" data-assist-goto="' +
+            escapeHtml(name) + '"><span class="woxi-assist-name">defined in entry ' + (defined.entry + 1) +
+            '</span><span class="woxi-assist-desc">go to definition</span></button>');
           if (defined.params && defined.params.length) {
             rows.push('<div class="woxi-assist-about-line">parameters: ' +
               escapeHtml(defined.params.join(', ')) + '</div>');

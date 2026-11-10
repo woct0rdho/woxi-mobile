@@ -326,12 +326,14 @@ pub(crate) fn definitions_content(json: &str) -> String {
                     .map(|name| format!("\"{}\"", json_escape(name)))
                     .collect();
                 format!(
-                    "{{\"name\":\"{}\",\"kind\":\"{}\",\"start\":{},\"end\":{},\"params\":[{}]}}",
+                    "{{\"name\":\"{}\",\"kind\":\"{}\",\"start\":{},\"end\":{},\"full\":[{},{}],\"params\":[{}]}}",
                     json_escape(&definition.name),
                     match definition.kind {
                         analysis::DefinitionKind::Function => "function",
                         analysis::DefinitionKind::Variable => "variable",
                     },
+                    definition.name_range.0,
+                    definition.name_range.1,
                     definition.full_range.0,
                     definition.full_range.1,
                     parameters.join(",")
