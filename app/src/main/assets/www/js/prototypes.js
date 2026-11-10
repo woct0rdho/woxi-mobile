@@ -88,6 +88,23 @@
     unknown: '',
   };
 
+  // Symbols that stand for a value rather than a call. Accepting one inserts just the
+  // name: `Pi[` or `False[` would be nonsense. System variables (`$Name`) are values too.
+  var CONSTANTS = [
+    'All', 'Automatic', 'Catalan', 'ComplexInfinity', 'Degree', 'E', 'EulerGamma',
+    'False', 'Glaisher', 'GoldenRatio', 'I', 'Indeterminate', 'Infinity', 'Khinchin',
+    'MachinePrecision', 'None', 'Null', 'Pi', 'True',
+  ];
+
+  // Whether accepting `name` should open a call (`Sin[`) or insert the name alone
+  // (`Pi`, a session variable, `$Failed`).
+  function isCallName(name, type) {
+    if (!name) return false;
+    if (type === 'variable') return false;
+    if (name.charAt(0) === '$') return false;
+    return CONSTANTS.indexOf(name) < 0;
+  }
+
   // Splits a prototype into its top-level slots (`f, {x, a, b}` -> two slots).
   function slotsOf(prototype) {
     var slots = [];
@@ -172,5 +189,6 @@
     examplesFor: examplesFor,
     curatedVariant: curatedVariant,
     roleLabel: roleLabel,
+    isCallName: isCallName,
   };
 })(window);

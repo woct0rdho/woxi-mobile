@@ -16,7 +16,7 @@ One row, one state, still 47 dp - it is the action bar's first page, so nothing 
 ```
 
 - Signature shows the chosen variant's slots with the current one highlighted. Tapping it moves to the next argument. The `n/m ▾` key opens the call card.
-- Candidates show up to three names. `+N` opens the sheet. Names that are not implemented are dimmed, and a parameter of the definition the caret is in comes first with "parameter of this definition".
+- Candidates show up to three names. `+N` opens the sheet. Names that are not implemented are dimmed, and a parameter of the definition the caret is in comes first with "parameter of this definition". When completion applies but has no answer, the bar shows the default action row instead of an empty one.
 - Options are the call's own `Options[...]`, with names already written in the call filtered out.
 - Iterator offers `{x, -5, 5}` and `{x, 0, 2 Pi}` when the caret is inside an empty `{}` in an iterator slot.
 - Issues adds one amber chip (`⚠ 2`) when the engine found something in finished input.
@@ -30,17 +30,28 @@ Five tabs, opened by `+N`, `n/m ▾`, `⚠`, or the matches button:
 - About - the symbol's home: status (`implemented`, `partial`, `not implemented`, `not supported`), description, attributes spelled out (`HoldAll` -> "arguments are not evaluated"), arity when Woxi has it, insert skeleton, every option with its declared default (tap inserts `Name -> `), the documentation URL, and the entry that defines a user symbol.
 - Issues - spelling (`Replace with Plot`), unsupported built-ins, and syntax errors with a byte range. Nothing is shown while the entry is unfinished.
 
-## Long-press, one meaning
+## Function buttons: one meaning, everywhere
 
-Long-press means "do more than a tap", never "run" or "delete":
+Every key and chip whose label is a Wolfram function does the same two things, whether it sits on a pad page, in the action bar or in the completion row:
 
-| Target | Tap | Hold |
+| | No selection | Selection |
 |---|---|---|
-| Symbol key (plot pages, idle `Plot`/`Solve`) | the name, e.g. `Plot[` | the call with its slots spelled out: `Plot[f, {x, -5, 5}]`, first slot selected |
-| Suggestion chip | replace the typed prefix | wrap the selection, or the argument under the caret, in that head (`x^2` -> `Simplify[x^2]`) |
-| Anything else | normal key | nothing. The tap still fires |
+| Tap | insert the call with empty brackets, caret inside (`Integrate[]`) | replace the selection with the same |
+| Hold | insert the call with every slot named, wrapping the operand to the right of the caret (`Plot[Sin[x], {x, -5, 5}]`) | wrap the selection (`Plot[x^2, {x, -5, 5}]`) |
 
-The keyboard fires the hold after 380 ms, cancels on 10 px of movement (so a flick is still a flick), and suppresses the tap only when the handler did something.
+Details that keep it predictable:
+- Chips also replace the name being typed on both presses. A pad key leaves the text before the caret alone. With a selection, the chip replaces the typed name and the selection.
+- "The operand to the right" is a function call, an identifier, a number, a string or a bracketed group, measured by bracket matching. Nothing to the right means the placeholders stay and the first one is selected. The left side is never guessed: selecting it is the way to wrap it (`x + 1 // N` is the usual composition).
+- No call shape lives in a key. The tap always inserts `Name[]`. The arguments a function needs come from the assist's prototypes (`prototypes.js`), so a chip, a pad key and the sheet's insert skeleton cannot disagree. The old `D[|, x]`, `If[|, , ]` key shapes moved there.
+- A function whose arity is exactly zero (`NotebookDirectory`, the Mathieu group symbols) cannot wrap anything: the hold falls back to the tap, so `NotebookDirectory[]` is inserted and the text to the right is left alone.
+- Constants and literals keep the tap meaning on hold. `Pi`, `E`, `Infinity`, `$Name`, a session variable or an iterator chip such as `{x, -5, 5}` are values, not calls. Holding them does nothing extra. `Break[]`-style keys have no argument to spell out, so they behave the same way.
+- Letters, digits and operators are not function buttons. They insert their label. A delimiter pair (`( )`, `[ ]`, `{ }`, `" "`) wraps a selection - `(x + 1)` from a selected `x + 1` - which is what a bracket key is for.
+
+The keyboard fires the hold after 380 ms, cancels on 10 px of movement (so a flick is still a flick), and suppresses the tap only when the handler actually did something.
+
+## Backspace
+
+Backspace deletes one character, or a whole empty pair (`()`, `[]`, `{}`, `""`, `<||>`) when the caret sits inside it: `Integrate[]` collapses to `Integrate` in one tap, so a call key doubles as a name key.
 
 ## Where the caret is
 
@@ -48,7 +59,7 @@ The bar describes the caret, so the caret has to be known even when the field ha
 - A caret-handle drag fires `selectionchange` and nothing else. No click, no keyup, no `select`. The app therefore listens on the document, records the new selection on the entry and refreshes the bar (coalesced at 40 ms, so a drag is one refresh at the end rather than sixty in flight).
 - Tapping this keyboard's keys blurs the textarea, and some WebViews then report the selection as 0. Every entry therefore keeps its own `caret`/`selStart`/`selEnd`, updated on `selectionchange`, `keyup`, `click`, `select`, `focus`, `input` and every programmatic edit. A focused field is still the source of truth. A blurred one acts on the recorded copy.
 
-One reader (`selectionOf`) serves every path that inserts, deletes, copies or accepts, so those cannot drift apart again. A suggestion accepted while text is selected replaces the selection, like typing would.
+One reader (`selectionOf`) serves every path that inserts, deletes, copies or accepts, so those cannot drift apart again. A function key or a suggestion replaces a selection on a tap and wraps it on a hold, which is why the bar can happily show completion for the text before a selection (`sxyz` with `xyz` selected completes `s`).
 
 Requests carry the caret they were computed for, not a fresh read when the answer is due: a drag can move the caret while a completion waits out its 50 ms debounce, and a reply for another position would describe the wrong text.
 
@@ -126,7 +137,7 @@ Seven messages, one envelope (`{msg_type, content}` in, `{msg_type, status, cont
 
 | Message | Answer |
 |---|---|
-| `complete_request` | matches, cursor span, per-item `status` and `kind` |
+| `complete_request` | matches, cursor span, per-item `status`, `kind`, `type` (`function`/`variable`) and `arity` when Woxi knows it |
 | `inspect_request` | description, `status`, attributes, arity, `options` and `optionDefaults`, docs URL |
 | `is_complete_request` | `complete` / `incomplete` / `invalid` |
 | `diagnostics_request` | `status` plus items with severity, code, message and an optional `fix` |

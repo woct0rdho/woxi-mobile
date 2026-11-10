@@ -529,7 +529,7 @@
     }, 30);
   }
 
-  function insertText(text, caretOffset) {
+  function insertText(text, caretOffset, key) {
     var entry = activeEntry();
     if (!entry || !entry.dom) return;
     recordEdit(entry, 'type');
@@ -538,8 +538,19 @@
     var start = selection.selStart;
     var end = selection.selEnd;
     var value = input.value;
+    var after = Math.max(0, caretOffset || 0);
+    // A function key replaces a selection: the call is what the user wants there.
+    var call = key && key.k && key.k.indexOf('fn') >= 0;
+    // A key that leaves the caret before text - a delimiter pair - wraps the selection:
+    // `( )` around a selected `x^2` gives `(x^2)`. Keys with nothing after the caret
+    // replace the selection, the way typing does.
+    if (start !== end && after > 0 && !call) {
+      var at = text.length - after;
+      text = text.slice(0, at) + value.slice(start, end) + text.slice(at);
+      after = 0;
+    }
     input.value = value.slice(0, start) + text + value.slice(end);
-    var caret = start + Math.max(0, text.length - (caretOffset || 0));
+    var caret = start + Math.max(0, text.length - after);
     entry.caret = caret;
     entry.selStart = caret;
     entry.selEnd = caret;
@@ -816,6 +827,10 @@
     return list;
   }
 
+  // Backspace deletes one character, or a whole empty pair (`[]`, `()`, `{}`, `""`,
+  // `<||>`), so a call inserted with empty brackets can be reduced to its name in one tap.
+  var EMPTY_PAIRS = ['()', '[]', '{}', '""'];
+
   function backspace() {
     var entry = activeEntry();
     if (!entry || !entry.dom) return;
@@ -824,7 +839,18 @@
     var selection = selectionOf(entry);
     var start = selection.selStart;
     var end = selection.selEnd;
-    if (start === end && start > 0) start -= 1;
+    if (start === end) {
+      var pair = input.value.slice(start - 2, start + 2);
+      if (pair === '<||>') {
+        start -= 2;
+        end += 2;
+      } else if (start > 0 && EMPTY_PAIRS.indexOf(input.value.slice(start - 1, start + 1)) >= 0) {
+        start -= 1;
+        end += 1;
+      } else if (start > 0) {
+        start -= 1;
+      }
+    }
     input.value = input.value.slice(0, start) + input.value.slice(end);
     entry.caret = start;
     entry.selStart = start;
@@ -838,18 +864,6 @@
     refreshAssist();
   }
 
-  // Replaces an entry's source, re-evaluates it and keeps the UI in sync.
-  function applySource(entry, text) {
-    recordEdit(entry, 'edit');
-    entry.dom.input.value = text;
-    entry.input = text;
-    autoGrow(entry.dom.input);
-    focusEntry(entry);
-    evaluateEntry(entry);
-    state.dirty = true;
-    updateTitle();
-    persist();
-  }
 
   // Long-press is "more than a tap", consistently: a symbol key inserts the call with
   // its arguments spelled out (a skeleton), and a suggestion chip wraps the selection
@@ -857,34 +871,22 @@
   // destructively, and it never runs anything.
   function handleKeyLongPress(key) {
     if (!key || !assist) return false;
+    // A suggestion chip carries its name and what the engine knows about it.
     if (key.a === 'assist' && key.d && key.d.kind === 'accept') {
-      assist.wrap(key.d.name);
-      return true;
+      return assist.wrap(key.d.name, key.d.arity, key.d.type) === true;
     }
-    if (key.a === 'plot') return assist.applySkeleton('Plot');
-    if (key.a === 'solve') return assist.applySkeleton('Solve');
-    if (!key.a && key.l) return assist.applySkeleton(key.l);
+    // A symbol key whose insert has no caret marker is a complete call (`Break[]`): it
+    // has no argument to spell out or wrap, so the hold is a plain tap.
+    if (!key.a && key.k && key.k.indexOf('fn') >= 0 && key.l &&
+      (key.i === undefined || key.i.indexOf('|') >= 0)) {
+      return assist.applySkeleton(key.l) === true;
+    }
     return false;
   }
 
   // Plot / Solve action keys. A filled entry is wrapped unless it already is such a call.
   // An empty one just opens the call: the bar names its arguments, so there is no
   // example to delete first (the sheet's Examples tab has the ready-made versions).
-  function wrapActive(kind) {
-    var entry = activeEntry();
-    if (!entry || !entry.dom) return;
-    var text = entry.dom.input.value.trim();
-    if (!text) {
-      insertText(kind === 'plot' ? 'Plot[' : 'Solve[', 0);
-      return;
-    }
-    if (kind === 'plot') {
-      applySource(entry, /^\s*Plot\s*\[/i.test(text) ? text : 'Plot[' + text + ', {x, -10, 10}]');
-    } else {
-      applySource(entry, /^\s*Solve\s*\[/i.test(text) ? text : 'Solve[' + text + ', x]');
-    }
-  }
-
   // Action bar: add an empty entry after the active one and focus it.
   function newEntryBelow() {
     var entry = activeEntry();
@@ -993,8 +995,6 @@
     }
     if (action === 'enter') submitActive();
     else if (action === 'back') backspace();
-    else if (action === 'plot') wrapActive('plot');
-    else if (action === 'solve') wrapActive('solve');
     else if (action === 'new') newEntryBelow();
     else if (action === 'duplicate') duplicateActive();
     else if (action === 'delete') deleteActive();
@@ -1221,7 +1221,7 @@
     document.getElementById('woxi-btn-options').addEventListener('click', showOptions);
 
     keyboard = new global.WoxiKeyboard.Keyboard({
-      onInsert: function (text, caret) { insertText(text, caret); },
+      onInsert: function (text, caret, key) { insertText(text, caret, key); },
       onAction: handleKeyAction,
       onLongPress: handleKeyLongPress,
     });
@@ -1401,6 +1401,9 @@
           ' prefix="' + assist.prefix + '"' +
           ' matches=' + assist.matches.names.slice(0, 6).join(',') +
           ' caret=' + assistRead.caret +
+          ' chips=' + assist.details.slice(0, 3).map(function (detail) {
+            return (detail.type || '?') + (detail.arity ? '/' + JSON.stringify(detail.arity) : '');
+          }).join(',') +
           ' stored=' + (function () {
             var now = activeEntry();
             return now ? now.caret + '/' + now.selStart + '/' + now.selEnd : '-';

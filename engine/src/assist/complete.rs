@@ -612,12 +612,19 @@ pub(crate) fn completion_content(json: &str) -> String {
             if row.session { "variable" } else { "function" },
             json_escape(&row.description)
         ));
+        let arity_json = match woxi::evaluator::dispatch::arg_count::get_arg_count_range(&row.name)
+        {
+            Some((min, max)) if max == usize::MAX => format!("[{min},null]"),
+            Some((min, max)) => format!("[{min},{max}]"),
+            None => "null".to_string(),
+        };
         extra.push(format!(
-            "{{\"implemented\":{},\"status\":\"{}\",\"category\":\"{}\",\"doc\":\"{}\"}}",
+            "{{\"implemented\":{},\"status\":\"{}\",\"category\":\"{}\",\"doc\":\"{}\",\"arity\":{}}}",
             if row.implemented { 1 } else { 0 },
             status_name(&row.name),
             json_escape(row.category),
-            json_escape(row.doc.unwrap_or(""))
+            json_escape(row.doc.unwrap_or("")),
+            arity_json
         ));
     }
 

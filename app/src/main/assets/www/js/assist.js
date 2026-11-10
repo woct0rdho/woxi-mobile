@@ -33,6 +33,7 @@
   var iteratorVariable = curated.iteratorVariable;
   var curatedVariant = curated.curatedVariant;
   var roleLabel = curated.roleLabel;
+  var isCallName = curated.isCallName;
 
   // text scanning
 
@@ -172,6 +173,91 @@
     return code.length;
   }
 
+  // The index of the closer that matches the opener at `at`, or -1. Strings and
+  // `(* comments *)` are skipped, so a bracket inside them does not count.
+  function matchForward(code, at) {
+    var open = code.charAt(at);
+    var closer = open === '<' ? '>' : CLOSER[open];
+    if (!closer) return -1;
+    var depth = 0;
+    for (var i = at; i < code.length; i += 1) {
+      var ch = code.charAt(i);
+      if (ch === '"') {
+        i += 1;
+        while (i < code.length && code.charAt(i) !== '"') {
+          if (code.charAt(i) === '\\') i += 1;
+          i += 1;
+        }
+        continue;
+      }
+      if (ch === '(' && code.charAt(i + 1) === '*') {
+        var comment = 1;
+        i += 2;
+        while (i < code.length && comment) {
+          if (code.charAt(i) === '(' && code.charAt(i + 1) === '*') { comment += 1; i += 2; continue; }
+          if (code.charAt(i) === '*' && code.charAt(i + 1) === ')') { comment -= 1; i += 2; continue; }
+          i += 1;
+        }
+        continue;
+      }
+      if (open === '<') {
+        if (ch === '<' && code.charAt(i + 1) === '|') depth += 1;
+        else if (ch === '|' && code.charAt(i + 1) === '>') {
+          depth -= 1;
+          if (depth === 0) return i;
+        }
+        continue;
+      }
+      if (ch === open) depth += 1;
+      else if (ch === closer) {
+        depth -= 1;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  // The operand that starts at `at`, after spaces: a function call, an identifier, a
+  // number, a string or a bracketed group. An operator or a delimiter is not an operand,
+  // so there is nothing to wrap there. Only one operand is measured - an expression such
+  // as `x + 1` is wrapped by selecting it.
+  function operandAt(code, at) {
+    var i = at;
+    while (i < code.length && /\s/.test(code.charAt(i))) i += 1;
+    if (i >= code.length) return null;
+    var start = i;
+    var ch = code.charAt(i);
+    if (/[A-Za-z$`]/.test(ch)) {
+      while (i < code.length && /[A-Za-z0-9$`]/.test(code.charAt(i))) i += 1;
+      var afterName = i;
+      while (afterName < code.length && /\s/.test(code.charAt(afterName))) afterName += 1;
+      if (code.charAt(afterName) === '[') {
+        var close = matchForward(code, afterName);
+        if (close >= 0) return { start: start, end: close + 1 };
+      }
+      return { start: start, end: i };
+    }
+    if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(code.charAt(i + 1)))) {
+      while (i < code.length && /[0-9.]/.test(code.charAt(i))) i += 1;
+      return { start: start, end: i };
+    }
+    if (ch === '"') {
+      i += 1;
+      while (i < code.length) {
+        if (code.charAt(i) === '\\') i += 1;
+        else if (code.charAt(i) === '"') { i += 1; break; }
+        i += 1;
+      }
+      return { start: start, end: i };
+    }
+    if (ch === '(' || ch === '{' || (ch === '<' && code.charAt(i + 1) === '|')) {
+      var matched = matchForward(code, i);
+      if (matched < 0) return null;
+      return { start: start, end: ch === '<' ? matched + 2 : matched + 1 };
+    }
+    return null;
+  }
+
   function nextSlotCaret(code, caret) {
     var end = argumentEnd(code, caret);
     if (end >= code.length) return null;
@@ -245,8 +331,8 @@
   Assist.prototype.idleKeys = function (extra) {
     var keys = [
       { l: 'Eval', a: 'enter', k: 'ok', g: 1.2, t: 'Evaluate this entry' },
-      { l: 'Plot', a: 'plot', k: 'fn', t: 'Wrap the entry in Plot[...] - hold for a skeleton' },
-      { l: 'Solve', a: 'solve', k: 'fn', t: 'Wrap the entry in Solve[...] - hold for a skeleton' },
+      { l: 'Plot', i: 'Plot[|]', k: 'fn', t: 'Plot[...] - hold for a skeleton' },
+      { l: 'Solve', i: 'Solve[|]', k: 'fn', t: 'Solve[...] - hold for a skeleton' },
     ];
     return keys.concat(extra || [], [
       { l: '\u2190', a: 'back', k: 'danger', g: 0.9, t: 'Backspace' },
@@ -289,6 +375,12 @@
     this.setKeys(this.idleKeys(extra));
   };
 
+  // Completion applies here but has nothing to offer: the bar shows the default action
+  // keys, the same ones the idle state uses.
+  Assist.prototype.renderNoMatches = function () {
+    this.renderIdle(this.issueKeys());
+  };
+
   Assist.prototype.renderSignature = function (variant, active, extra) {
     this.state = 'signature';
     this.prefix = '';
@@ -301,7 +393,7 @@
     var number = Math.min(active + 1, variant.length);
     this.setKeys([
       { l: 'Eval', a: 'enter', k: 'ok', g: 1.1, t: 'Evaluate this entry' },
-      { l: 'signature', h: html, a: 'assist', d: { kind: 'next' }, k: 'sig', g: 3, t: 'Tap for the call card, hold to advance' },
+      { l: 'signature', h: html, a: 'assist', d: { kind: 'next' }, k: 'sig', g: 3, t: 'Tap to move to the next argument' },
     ].concat(extra || [], [
       {
         l: number + '/' + variant.length + ' \u25BE',
@@ -479,6 +571,10 @@
     var key = prefix + '@' + limit;
     var cached = this.cache[key];
     if (cached) {
+      if (!cached.names.length) {
+        this.renderNoMatches();
+        return;
+      }
       this.matches = cached;
       this.state = 'candidates';
       if (this.sheetOpen) this.renderSheet();
@@ -518,6 +614,8 @@
             status: (extra[i] && extra[i].status) || 'unknown',
             category: (extra[i] && extra[i].category) || '',
             doc: (extra[i] && extra[i].doc) || '',
+            type: (types[i] && types[i].type) || 'function',
+            arity: (extra[i] && extra[i].arity) || null,
           });
         }
         self.details = details;
@@ -530,6 +628,10 @@
           end: content.cursor_end || 0,
         };
         self.cache[prefix + '@' + limit] = result;
+        if (!result.names.length) {
+          self.renderNoMatches();
+          return;
+        }
         self.matches = result;
         self.state = 'candidates';
         if (self.sheetOpen) self.renderSheet();
@@ -582,7 +684,7 @@
       keys.push({
         l: names[i],
         a: 'assist',
-        d: { kind: 'accept', name: names[i] },
+        d: { kind: 'accept', name: names[i], type: detail.type, arity: detail.arity },
         k: dimmed ? 'fn chip dim' : 'fn chip',
         g: 1.25,
         t: (detail.description || names[i]) + (dimmed ? ' (' + STATUS_LABEL[detail.status] + ')' : ''),
@@ -604,100 +706,149 @@
     ]);
   };
 
-  Assist.prototype.apply = function (name) {
+  // Whether a session symbol is a function definition rather than a variable: those wrap
+  // like builtins do, a plain variable is a value.
+  Assist.prototype.isDefinedFunction = function (name) {
+    for (var i = 0; i < this.definitions.length; i += 1) {
+      var definition = this.definitions[i];
+      if (definition.name === name && definition.kind === 'function') return true;
+    }
+    return false;
+  };
+
+  // Whether `text` is a plain symbol name, the only thing that can become a call. A
+  // literal (an iterator chip such as `{x, -5, 5}`) is inserted as it is.
+  function isIdentifier(text) {
+    return /^[A-Za-z$`][A-Za-z0-9$`]*$/.test(text || '');
+  }
+
+  // Short press on a function button: the call with an empty argument list and the caret
+  // inside (`Integrate[]`, caret between the brackets). Accepting a chip replaces the
+  // name being typed, and the selection when there is one. A pad key only replaces the
+  // selection. A name that stands for a value (`Pi`, a session variable, `$Name`)
+  // arrives as just itself.
+  Assist.prototype.apply = function (name, type) {
     var read = this.sink.read();
     if (!read) return;
     var code = read.code;
-    var caret = read.caret;
-    var span = prefixSpan(code, caret);
-    // A selection is what accepting a suggestion replaces. With a bare caret it is the
-    // identifier being typed. Replacing the selection is what every other text field
-    // does, and it makes "select an expression, tap `Simplify`" work as expected.
     var selected = read.selStart !== undefined && read.selEnd !== undefined &&
       read.selStart !== read.selEnd;
-    var start = selected ? read.selStart : span.start;
-    var end = selected ? read.selEnd : caret;
-    var insert = name;
-    var after = name.length;
-    // A call name opens its bracket: on a phone that is two keys the user does not
-    // have to find, and the signature bar takes over from there.
-    if (PROTOTYPES[name] && code.charAt(end) !== '[') {
-      insert = name + '[';
-      after = insert.length;
-    }
-    // The bracket keys insert pairs, so accepting a name inside an empty pair fills it
-    // instead of nesting a second one (`{` + `{x, 0, 1}` was becoming `{{x, 0, 1}}`).
-    var ctx = scanContext(code, caret);
-    if (!selected && ctx.open && start === caret && CLOSER[ctx.open.ch] === code.charAt(caret)) {
-      if (code.slice(ctx.open.open + 1, caret).trim() === '') {
-        start = ctx.open.open;
-        end = caret + 1;
-        insert = name;
-        after = name.length;
-      }
-    }
-    this.sink.replace(start, end, insert, after);
+    var start = prefixSpan(code, read.caret).start;
+    var end = selected ? read.selEnd : read.caret;
+    var info = this.infoOf(name);
+    if (type === undefined) type = info ? info.type : undefined;
+    if (type === 'variable' && this.isDefinedFunction(name)) type = 'function';
+    var call = isIdentifier(name) && isCallName(name, type);
+    var insert = call ? name + '[]' : name;
+    this.sink.replace(start, end, insert, insert.length - (call ? 1 : 0));
     if (this.sheetOpen) this.closeSheet();
   };
 
-  // Long-press on a suggestion: wrap the selection, or the argument the caret is in,
-  // so `x^2` becomes `Simplify[x^2]`.
-  Assist.prototype.wrap = function (name) {
-    var read = this.sink.read();
-    if (!read) return;
-    var code = read.code;
-    var start = read.selStart !== undefined && read.selStart !== read.selEnd ? read.selStart : argumentStart(code, read.caret);
-    var end = read.selStart !== undefined && read.selStart !== read.selEnd ? read.selEnd : argumentEnd(code, read.caret);
-    if (end <= start) {
-      this.apply(name);
-      return;
-    }
-    var inner = code.slice(start, end).trim();
-    if (!inner) {
-      this.apply(name);
-      return;
-    }
-    this.sink.replace(start, end, name + '[' + inner + ']', name.length + 1 + inner.length + 1);
+  // What the current match list knows about a name (`function`/`variable`, arity), or
+  // null when it is not in the list (a pad key, an example, the sheet).
+  Assist.prototype.infoOf = function (name) {
+    var names = this.matches && this.matches.names ? this.matches.names : [];
+    var at = names.indexOf(name);
+    if (at < 0 || !this.details[at]) return null;
+    return this.details[at];
   };
 
-  // Long-press on a key that inserts a symbol: the call with its slots spelled out, in
-  // the same shape the signature bar shows. Iterator slots get a concrete range, which
-  // is the part nobody wants to type. The first slot is selected so typing replaces it.
-  Assist.prototype.skeletonFor = function (head) {
+  // Long press on a function button: the call with every slot spelled out
+  // (`Plot[f, {x, -5, 5}]`). A selection is the first argument and overrides the
+  // analysed target. Otherwise the operand that starts at the caret is. With neither,
+  // the placeholders stay and the first one is selected, so typing replaces it.
+  //
+  // A function that takes no arguments cannot wrap anything: the hold falls back to the
+  // tap (the call itself). Options: `chip` also replaces the partial name before the
+  // caret. `arity` is what the match list knows. `wrap: false` inserts the placeholders
+  // only (the sheet's insert skeleton button).
+  Assist.prototype.applySkeleton = function (head, options) {
+    options = options || {};
+    var chip = options.chip === true;
+    var arity = options.arity;
+    var wrap = options.wrap !== false;
+    var read = this.sink.read();
+    if (!read) return false;
+    // Only a function can be wrapped: a constant, a literal chip or a session variable
+    // keeps its tap meaning. A user-defined function wraps like a builtin.
+    if (!isIdentifier(head) || !isCallName(head)) return false;
+    var info = this.infoOf(head);
+    var type = options.type !== undefined ? options.type : (info ? info.type : undefined);
+    if (type === 'variable' && !this.isDefinedFunction(head)) return false;
+    if (arity === undefined && info) arity = info.arity;
+    if (arity && arity[1] === 0) {
+      this.apply(head, 'function');
+      return true;
+    }
+    var code = read.code;
+    var selected = read.selStart !== undefined && read.selEnd !== undefined &&
+      read.selStart !== read.selEnd;
+    // A chip always replaces the partial name before the caret, with or without a
+    // selection. A pad key leaves the typed text alone.
+    var prefix = prefixSpan(code, read.caret);
+    var from = chip ? prefix.start : read.caret;
+    var to = read.caret;
+    var inner = null;
+    if (wrap && selected) {
+      if (!chip) from = read.selStart;
+      to = read.selEnd;
+      inner = code.slice(read.selStart, read.selEnd);
+    } else if (wrap) {
+      var operand = operandAt(code, read.caret);
+      if (operand) {
+        to = operand.end;
+        inner = code.slice(operand.start, operand.end);
+      }
+    }
+    var skeleton = this.skeletonFor(head, inner);
+    if (!skeleton) {
+      // No slots are known for this head: the call alone still wraps what it was given.
+      if (inner === null) return false;
+      skeleton = { text: head + '[' + inner + ']', select: null };
+    }
+    this.sink.replace(from, to, skeleton.text, skeleton.text.length);
+    if (skeleton.select) {
+      this.sink.select(from + skeleton.select[0], from + skeleton.select[1]);
+    }
+    return true;
+  };
+
+  // Long press on a suggestion chip: the skeleton, with the partial name replaced.
+  Assist.prototype.wrap = function (name, arity, type) {
+    return this.applySkeleton(name, { chip: true, arity: arity, type: type });
+  };
+
+  // The skeleton of a call: every non-option slot spelled out. Iterator slots get the
+  // concrete range the gallery uses, which is the part nobody wants to type. `inner`
+  // (a selection or the operand at the caret) becomes the first slot, and the call is
+  // left without a selection because nothing is missing any more.
+  Assist.prototype.skeletonFor = function (head, inner) {
     var variant = this.variantFor(head, 1);
     if (!variant) return null;
+    var slots = [];
+    var i;
+    for (i = 0; i < variant.length; i += 1) {
+      var slot = variant[i];
+      if (slot.role === 'option' || slot.role === 'options') continue;
+      slots.push(slot);
+    }
+    if (!slots.length) return null;
+    var filled = inner !== null && inner !== undefined;
     var parts = [];
     var offset = head.length + 1;
     var select = null;
-    for (var i = 0; i < variant.length; i += 1) {
-      var slot = variant[i];
-      if (slot.role === 'option' || slot.role === 'options') continue;
-      var text = slot.text;
-      if (slot.role === 'iterator' && slot.examples.length) text = slot.examples[0];
+    for (i = 0; i < slots.length; i += 1) {
+      slot = slots[i];
+      var text;
+      if (i === 0 && filled) text = inner;
+      else if (slot.role === 'iterator' && slot.examples.length) text = slot.examples[0];
+      else text = slot.text;
       if (i > 0) offset += 2;
-      if (!select) select = [offset, offset + text.length];
+      if (i === 0 && !filled) select = [offset, offset + text.length];
       parts.push(text);
       offset += text.length;
     }
-    if (!parts.length) return null;
-    return {
-      text: head + '[' + parts.join(', ') + ']',
-      select: select,
-    };
-  };
-
-  Assist.prototype.applySkeleton = function (head) {
-    var skeleton = this.skeletonFor(head);
-    if (!skeleton) return false;
-    var read = this.sink.read();
-    if (!read) return false;
-    var span = prefixSpan(read.code, read.caret);
-    var start = span.start;
-    this.sink.replace(start, read.caret, skeleton.text, skeleton.text.length);
-    if (skeleton.select) {
-      this.sink.select(start + skeleton.select[0], start + skeleton.select[1]);
-    }
-    return true;
+    return { text: head + '[' + parts.join(', ') + ']', select: select };
   };
 
   Assist.prototype.nextSlot = function () {
@@ -969,7 +1120,7 @@
       } else if (row.hasAttribute('data-assist-example')) {
         self.applyExample(row.getAttribute('data-assist-example'));
       } else if (row.hasAttribute('data-assist-skeleton')) {
-        self.applySkeleton(row.getAttribute('data-assist-skeleton'));
+        self.applySkeleton(row.getAttribute('data-assist-skeleton'), { wrap: false });
         self.closeSheet();
       } else if (row.hasAttribute('data-assist-variant')) {
         var parts = row.getAttribute('data-assist-variant').split(':');
@@ -1305,7 +1456,7 @@
 
   Assist.prototype.action = function (data) {
     if (!data) return;
-    if (data.kind === 'accept') this.apply(data.name);
+    if (data.kind === 'accept') this.apply(data.name, data.type);
     else if (data.kind === 'option') {
       var read = this.sink.read();
       if (read) this.sink.replace(read.caret, read.caret, data.name + ' -> ', data.name.length + 4);

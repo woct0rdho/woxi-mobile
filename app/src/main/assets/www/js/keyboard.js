@@ -1,13 +1,17 @@
 // In-app math keyboard.
 //
-// Labels show the Wolfram Language text a key inserts.
-// Function keys insert the call and put the caret inside the brackets.
-// Their tooltip names the exact insert when it carries fixed parts
-// (`D` -> `D[..., x]`). Plot keys insert a runnable example, described in the tooltip.
+// Labels show the Wolfram Language text a key inserts. A key whose label is a Wolfram
+// function inserts that call with empty brackets and the caret inside (`Sin` -> `Sin[|]`).
+// Holding such a key inserts the call with every slot named (`Plot[f, {x, -5, 5}]`),
+// wrapping the selection, or the operand at the caret, as the first argument. With a
+// selection, a short press replaces it with the call. The extra structure a call needs
+// lives in the input assist (`prototypes.js`), not in the key.
 //
-// Vertical swipes change the level (letters / math / plot 2D / plot 3D). Sideways
-// swipes move inside a level - left shows the functions page, right the scripting
-// page - and every page keeps four key rows, so the keyboard height never changes.
+// Keys that are letters, digits, operators or constants insert exactly their label, and
+// action keys (Eval, Backspace, the bar commands) act on the entry. Vertical swipes
+// change the level (letters / math / plot 2D / plot 3D). Sideways swipes move inside a
+// level - left shows the functions page, right the scripting page - and every page keeps
+// four key rows, so the keyboard height never changes.
 //
 // Key shape: { l: label, i: insert ('|' marks the caret), a: action, k: class,
 //              s: column span, t: tooltip }
@@ -40,22 +44,22 @@
         { l: 'Abs', i: 'Abs[|]', k: 'fn', t: 'Abs[...]' },
         { l: 'Exp', i: 'Exp[|]', k: 'fn', t: 'Exp[...]' },
         { l: '*Degree', i: '*Degree', t: 'Degrees: 30*Degree' },
-        { l: 'D', i: 'D[|, x]', k: 'fn', t: 'D[..., x]' },
+        { l: 'D', i: 'D[|]', k: 'fn', t: 'D[...]' },
         { l: 'ArcCos', i: 'ArcCos[|]', k: 'fn', t: 'ArcCos[...]' },
         { l: 'I', i: 'I', t: 'Imaginary unit' },
         { l: 'Re', i: 'Re[|]', k: 'fn', t: 'Re[...]' },
         { l: 'Im', i: 'Im[|]', k: 'fn', t: 'Im[...]' },
         { l: '!', i: '!', t: 'Factorial' },
-        { l: 'Integrate', i: 'Integrate[|, x]', k: 'fn', t: 'Integrate[..., x]' },
+        { l: 'Integrate', i: 'Integrate[|]', k: 'fn', t: 'Integrate[...]' },
         { l: 'ArcTan', i: 'ArcTan[|]', k: 'fn', t: 'ArcTan[...]' },
         { l: 'E', i: 'E', t: 'Euler number' },
         { l: 'Floor', i: 'Floor[|]', k: 'fn', t: 'Floor[...]' },
         { l: 'Ceiling', i: 'Ceiling[|]', k: 'fn', t: 'Ceiling[...]' },
         { l: '*^', i: '*^', t: 'Scientific notation: 1.5*^3' },
-        { l: 'Limit', i: 'Limit[|, x -> 0]', k: 'fn', t: 'Limit[..., x -> 0]' },
+        { l: 'Limit', i: 'Limit[|]', k: 'fn', t: 'Limit[...]' },
         { l: 'Log10', i: 'Log10[|]', k: 'fn', t: 'Log10[...]' },
-        { l: 'EulerGamma', i: 'EulerGamma', k: 'fn xs', t: 'EulerGamma' },
-        { l: 'Manipulate', i: 'Manipulate[|, {a, 1, 5}]', k: 'fn', s: 2, t: 'Manipulate[..., {a, 1, 5}]' },
+        { l: 'EulerGamma', i: 'EulerGamma', t: 'Euler-Mascheroni constant' },
+        { l: 'Manipulate', i: 'Manipulate[|]', k: 'fn', s: 2, t: 'Manipulate[...]' },
         { l: 'Infinity', i: 'Infinity', t: 'Infinity' },
         { l: 'Out', i: 'Out[|]', k: 'fn', t: 'Result of the previous entry' },
       ],
@@ -98,24 +102,24 @@
       id: 'script',
       cols: 6,
       keys: [
-        { l: 'Do', i: 'Do[|, {5}]', k: 'fn', t: 'Repeat: Do[..., {n}]' },
-        { l: 'Mod', i: 'Mod[|, 2]', k: 'fn', t: 'Mod[x, 2]' },
+        { l: 'Do', i: 'Do[|]', k: 'fn', t: 'Do[...]' },
+        { l: 'Mod', i: 'Mod[|]', k: 'fn', t: 'Mod[...]' },
         { l: '<' },
         { l: '>' },
         { l: '#' },
-        { l: 'If', i: 'If[|, , ]', k: 'fn', t: 'If[cond, then, else]' },
-        { l: 'While', i: 'While[|, ]', k: 'fn', t: 'While[test, body]' },
+        { l: 'If', i: 'If[|]', k: 'fn', t: 'If[cond, then, else]' },
+        { l: 'While', i: 'While[|]', k: 'fn', t: 'While[test, body]' },
         { l: '$' },
         { l: '<=' },
         { l: '>=' },
         { l: "'", t: 'Derivative' },
-        { l: 'Which', i: 'Which[|, , ]', k: 'fn', t: 'Which[c1, v1, c2, v2]' },
+        { l: 'Which', i: 'Which[|]', k: 'fn', t: 'Which[c1, v1, c2, v2]' },
         { l: 'Break', i: 'Break[]', k: 'fn', t: 'Break[]' },
         { l: '!' },
         { l: '!=' },
         { l: '==' },
         { l: ':' },
-        { l: 'Switch', i: 'Switch[|, , ]', k: 'fn', t: 'Switch[expr, form, value]' },
+        { l: 'Switch', i: 'Switch[|]', k: 'fn', t: 'Switch[expr, form, value]' },
         { l: 'Return', i: 'Return[|]', k: 'fn', t: 'Return[...]' },
         { l: '" "', i: '"|"', t: 'String' },
         { l: '&', t: 'Pure function' },
@@ -246,8 +250,8 @@
   var BARS = [
     [
       { l: 'Eval', a: 'enter', k: 'ok', t: 'Evaluate this entry' },
-      { l: 'Plot', a: 'plot', k: 'fn', t: 'Wrap the entry in Plot[...]' },
-      { l: 'Solve', a: 'solve', k: 'fn', t: 'Wrap the entry in Solve[...]' },
+      { l: 'Plot', i: 'Plot[|]', k: 'fn', t: 'Plot[...]' },
+      { l: 'Solve', i: 'Solve[|]', k: 'fn', t: 'Solve[...]' },
       { l: '\u2190', a: 'back', k: 'danger', t: 'Backspace' },
     ],
     [
@@ -739,7 +743,7 @@
     }
     var spec = insertFor(key, this.shiftApplies());
     var insert = parseInsert(spec);
-    if (this.handlers.onInsert) this.handlers.onInsert(insert.text, insert.caret);
+    if (this.handlers.onInsert) this.handlers.onInsert(insert.text, insert.caret, key);
     if (this.shift === SHIFT_ONESHOT) {    // the key just consumed it
       this.shift = SHIFT_OFF;
       this.renderPad();

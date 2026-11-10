@@ -374,6 +374,17 @@ mod tests {
     }
 
     #[test]
+    fn completion_reports_arity_so_a_leaf_call_is_not_wrapped() {
+        reset_used();
+        // The client decides between "wraps its argument" and "takes no argument" from
+        // this, so it must agree with the registry.
+        let reply = completion("Sin", 3);
+        assert!(reply.contains("\"arity\":[1,1]"), "{reply}");
+        let reply = completion("NotebookD", 9);
+        assert!(reply.contains("\"arity\":[0,0]"), "{reply}");
+    }
+
+    #[test]
     fn completion_prefers_frequent_names() {
         reset_used();
         // `pts` abbreviates several names. The registry's frequency order picks the
