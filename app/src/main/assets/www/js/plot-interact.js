@@ -96,7 +96,7 @@
   // The rectangle the data is actually drawn in, in screen pixels.
 
   // A straight segment as `{x1, y1, x2, y2}`. Woxi 0.4 draws the axes as `<line>`
-  // elements; earlier versions used two-point polylines, and framed plots draw a
+  // elements. Earlier versions used two-point polylines, and framed plots draw a
   // `<rect>` instead. Anything that is not a single straight segment is ignored, which
   // is what keeps the curve itself (a polyline with hundreds of points) out of this.
   function segmentOf(element) {

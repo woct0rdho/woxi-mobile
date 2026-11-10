@@ -21,6 +21,8 @@
   var FLICK_SPEED = 0.4;       // px/ms that commits a short, fast drag
   var RUBBER = 0.35;           // how far the pages follow a swipe at the end of an axis
   var SHIFT_DOUBLE_TAP = 450;  // ms, two taps within this window lock shift
+  var LONG_PRESS_MS = 380;     // ms before a held key fires its second action
+  var LONG_PRESS_SLOP = 10;    // px of movement that turns a hold into a swipe
   var SHIFT_GLYPH = '\u21E7';        // hollow arrow: arms one capital
   var SHIFT_GLYPH_LOCKED = '\u2B06'; // filled arrow: caps lock
   var SHIFT_OFF = 0;
@@ -562,6 +564,45 @@
     if (key.t) btn.title = key.t;
     btn.setAttribute('data-key', key.l);
     if (key.a === 'shift') btn.setAttribute('data-base', classes);
+
+    // Holding a key is "more than a tap": a symbol key inserts the call's skeleton, a
+    // suggestion chip wraps the selection. The handler says whether it did anything, so
+    // a hold with no second action still ends as a normal tap.
+    var holdTimer = null;
+    var holdX = 0;
+    var holdY = 0;
+    var cancelHold = function () {
+      if (holdTimer) {
+        clearTimeout(holdTimer);
+        holdTimer = null;
+      }
+    };
+    btn.addEventListener('touchstart', function (event) {
+      if (event.touches.length !== 1 || !self.handlers.onLongPress) return;
+      var touch = event.touches[0];
+      holdX = touch.clientX;
+      holdY = touch.clientY;
+      cancelHold();
+      holdTimer = setTimeout(function () {
+        holdTimer = null;
+        if (self.handlers.onLongPress(key)) suppressClicksUntil = Date.now() + 400;
+      }, LONG_PRESS_MS);
+    }, { passive: true });
+    btn.addEventListener('touchmove', function (event) {
+      if (!holdTimer) return;
+      var touch = event.touches.length ? event.touches[0] : null;
+      if (!touch) {
+        cancelHold();
+        return;
+      }
+      if (Math.abs(touch.clientX - holdX) > LONG_PRESS_SLOP ||
+        Math.abs(touch.clientY - holdY) > LONG_PRESS_SLOP) {
+        cancelHold();
+      }
+    }, { passive: true });
+    btn.addEventListener('touchend', cancelHold, { passive: true });
+    btn.addEventListener('touchcancel', cancelHold, { passive: true });
+
     btn.addEventListener('click', function (event) {
       event.preventDefault();
       // A drag or a running slide owns the surface. A stray tap (often a second finger)

@@ -568,3 +568,76 @@ html, body {
 .woxi-assist-about-line { font-size: 13px; line-height: 1.5; margin: 3px 0; }
 .woxi-assist-warn { color: var(--woxi-warning); }
 .woxi-assist-doc { color: var(--woxi-accent); font-size: 12px; word-break: break-all; }
+/* typing help: status badges, the call card and the issue list */
+
+.woxi-key.woxi-key-warn { color: var(--woxi-warning); }
+
+/* The sheet's tabs share one row; they scroll instead of wrapping when there are more
+   of them than a phone can show. */
+#woxi-assist-tabs { overflow-x: auto; scrollbar-width: none; }
+#woxi-assist-tabs::-webkit-scrollbar { display: none; }
+.woxi-assist-tab { white-space: nowrap; }
+
+.woxi-assist-slot {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 8px 2px 8px;
+}
+.woxi-assist-slot-on { background: var(--woxi-surface-2); border-radius: 8px; }
+.woxi-assist-slot-name { font-family: monospace; font-size: 14px; }
+.woxi-assist-slot-role { color: var(--woxi-text-dim); font-size: 11.5px; }
+
+.woxi-assist-examples { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px 8px 8px; }
+.woxi-assist-chip {
+  background: var(--woxi-surface-3);
+  border: none;
+  border-radius: 999px;
+  color: var(--woxi-text);
+  font: inherit;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 7px 12px;
+  min-height: 32px;
+}
+.woxi-assist-chip:active { background: var(--woxi-accent-dim); color: var(--woxi-on-accent); }
+
+.woxi-assist-actions { padding: 4px 8px 10px 8px; }
+.woxi-assist-action {
+  background: var(--woxi-accent-dim);
+  border: none;
+  border-radius: 8px;
+  color: var(--woxi-on-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 14px;
+}
+.woxi-assist-action:active { background: var(--woxi-accent); color: var(--woxi-on-accent-strong); }
+
+.woxi-assist-issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 8px;
+  min-height: 44px;
+}
+.woxi-assist-issue-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--woxi-text-dim);
+}
+.woxi-assist-issue-error .woxi-assist-issue-dot { background: var(--woxi-danger); }
+.woxi-assist-issue-warning .woxi-assist-issue-dot { background: var(--woxi-warning); }
+.woxi-assist-issue-info .woxi-assist-issue-dot { background: var(--woxi-accent); }
+/* Issue text wraps: it is a sentence, not a symbol name. */
+.woxi-assist-issue .woxi-assist-desc {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.4;
+}
+.woxi-assist-issue .woxi-assist-chip { flex: 0 0 auto; align-self: center; }

@@ -19,6 +19,7 @@ app/src/main/assets/www/
   js/render-output.js    interpreter output items -> notebook HTML, plot margin trim
   js/plot-interact.js    drag to pan and pinch to zoom a 2D plot
 engine/                  Rust crate `woxi-jni`: the JNI wrapper around the Woxi core
+  data/functions.csv     Woxi's symbol registry, vendored for its frequency order
 app/src/main/jniLibs/arm64-v8a/libwoxi_jni.so   built by tools/build-engine.ps1
 tools/                   build, deploy and test scripts, plus the three that own the artwork:
   trace-woxi-mark.py     traces Woxi's W out of their logo bitmap into clean geometry

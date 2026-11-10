@@ -1,32 +1,35 @@
 // Typing assistance: the context bar above the keys, and the sheet it expands into.
 //
-// The bar has one state at a time (idle, signature, candidates, options) and never
-// covers the entry or the plot: it is the first page of the action bar that used to
-// hold only Eval/Plot/Solve/backspace, so it costs no vertical space at all.
+// One row, one state. The bar answers "what can go here" while the caret is in a call
+// (signature, iterator, options), "what is this name" while a name is being typed
+// (candidates, with implementation status), and "what is wrong" when the engine found
+// something (issues). Everything else lives in the sheet.
 //
-// Everything about symbols comes from the engine, over Jupyter-shaped messages:
-// `complete_request` ranks the names that match the prefix (including the session's
-// own variables), `inspect_request` says what a symbol is and which options it takes,
-// and `is_complete_request` tells whether the entry is finished. Nothing here evaluates
-// the entry: asking a question about the text is not running it.
+// The engine answers over Jupyter-shaped messages: `complete_request`,
+// `inspect_request`, `is_complete_request`, `diagnostics_request`,
+// `prototypes_request`, `definitions_request`, plus the `catalog_request` extension.
+// None of them evaluates the entry. Slot names and roles are the one thing the engine
+// cannot know (Wolfram has no usage patterns in Woxi's registry), so they are curated
+// here and enriched with what `prototypes_request` learns from the shipped examples.
 (function (global) {
   'use strict';
 
-  var BAR_PAGE = 0;            // the context page of the action bar
+  var BAR_PAGE = 0;
   var MAX_CHIPS = 3;
-  var MATCH_LIMIT = 24;        // bar suggestions per request
-  var SHEET_LIMIT = 200;       // the sheet shows more of the same list
+  var MATCH_LIMIT = 24;
+  var SHEET_LIMIT = 200;
   var DEBOUNCE_MS = 50;
+  var DEFINITIONS_MS = 400;
+  var DIAGNOSTICS_MS = 350;
   var OPTION_CACHE_MAX = 40;
 
-  // Slot names for the functions the keyboard puts in front of the user. Woxi's data
-  // has a description and an argument count per symbol but no parameter names, so
-  // these are presentation only: the caret is placed by counting commas in what the
-  // user typed, and nothing is ever validated against this table.
+  // Curated argument names, one or more variants per head. Woxi's data has a
+  // description and sometimes an arity, but no parameter names, so these are
+  // presentation only: the caret is placed by counting commas, nothing is validated.
   var PROTOTYPES = {
-    Plot: 'f, {x, xmin, xmax}',
-    Plot3D: 'f, {x, xmin, xmax}, {y, ymin, ymax}',
-    ContourPlot: 'f, {x, xmin, xmax}, {y, ymin, ymax}',
+    Plot: ['f, {x, xmin, xmax}', '{f1, f2, ...}, {x, xmin, xmax}'],
+    Plot3D: ['f, {x, xmin, xmax}, {y, ymin, ymax}', '{f1, f2, ...}, {x, xmin, xmax}, {y, ymin, ymax}'],
+    ContourPlot: ['f, {x, xmin, xmax}, {y, ymin, ymax}', '{eqns, vars}'],
     DensityPlot: 'f, {x, xmin, xmax}, {y, ymin, ymax}',
     RegionPlot: 'cond, {x, xmin, xmax}, {y, ymin, ymax}',
     VectorPlot: '{vx, vy}, {x, xmin, xmax}, {y, ymin, ymax}',
@@ -39,19 +42,19 @@
     ComplexPlot: 'f, {z, zmin, zmax}',
     ComplexPlot3D: 'f, {z, zmin, zmax}',
     DiscretePlot3D: 'f, {x, xmin, xmax}, {y, ymin, ymax}',
-    ListPlot: 'data',
-    ListLinePlot: 'data',
-    ListPlot3D: 'data',
+    ListPlot: 'data, opts',
+    ListLinePlot: 'data, opts',
+    ListPlot3D: 'data, opts',
     ArrayPlot: 'array',
-    Histogram: 'data',
-    BoxWhiskerChart: 'data',
+    Histogram: 'data, opts',
+    BoxWhiskerChart: 'data, opts',
     Table: 'expr, {i, imax}',
     Sum: 'expr, {i, imax}',
     Product: 'expr, {i, imax}',
     NSum: 'expr, {i, imax}',
     Integrate: 'f, x',
     D: 'f, x',
-    Solve: 'eqns, vars',
+    Solve: ['eqns, vars', 'eqns, vars, domain'],
     NSolve: 'eqns, vars',
     NDSolve: 'eqns, y, {x, xmin, xmax}',
     FindRoot: 'eqns, {x, x0}',
@@ -65,6 +68,38 @@
     Show: 'graphics',
     Graphics: 'primitives',
     Piecewise: 'pairs, x',
+    Simplify: 'expr',
+    Expand: 'expr',
+    Factor: 'expr',
+    Length: 'expr',
+    Total: 'list',
+    Map: 'f, list',
+    Select: 'list, test',
+    Cases: 'list, pattern',
+    NestList: 'f, x0, n',
+    Range: 'n',
+    RandomReal: 'n',
+    Print: 'expr',
+  };
+
+  // Example values per slot shape. The engine adds the concrete values it learns from
+  // the gallery, which is why these are only a starting point.
+  var ROLE_EXAMPLES = {
+    expression: ['Sin[x]', 'x^2', '1/(1 + x)'],
+    number: ['10', '0.5'],
+    data: ['{1, 4, 9, 16}', '{{1, 2}, {2, 5}, {3, 7}}'],
+    list: ['{1, 2, 3}', '{Sin[x], Cos[x]}'],
+    symbol: ['x'],
+    options: ['PlotRange -> All'],
+    option: ['Automatic'],
+  };
+
+  var STATUS_LABEL = {
+    implemented: 'implemented',
+    partial: 'partially implemented',
+    not_implemented: 'not implemented',
+    not_planned: 'not supported',
+    unknown: '',
   };
 
   // text scanning
@@ -89,7 +124,6 @@
   }
 
   var CLOSER = { '[': ']', '{': '}', '(': ')' };
-  var MAP_CLOSER = CLOSER;
 
   // The calls the caret is inside, innermost last. Strings and comments are skipped
   // so a `[` inside `"..."` never opens a call.
@@ -149,8 +183,7 @@
     };
   }
 
-  // The brackets (and quote) that would close the input, outermost last. Used when
-  // Eval is pressed on an unfinished call.
+  // The brackets (and quote) that would close the input, outermost last.
   function closersFor(code, caret) {
     var ctx = scanContext(code, caret);
     if (ctx.commentDepth > 0) return '';
@@ -186,7 +219,7 @@
 
   // Where the argument the caret is in starts: after the previous top-level comma, or
   // after the bracket that opened it.
-  function argumentStart(code, caret, open) {
+  function argumentStart(code, caret) {
     var depth = 0;
     for (var i = caret - 1; i >= 0; i -= 1) {
       var ch = code.charAt(i);
@@ -198,12 +231,12 @@
         return i + 1;
       }
     }
-    return open ? open.open + 1 : 0;
+    return 0;
   }
 
-  // Where the next argument starts: after the next top-level comma, or just before
-  // the bracket that closes the call.
-  function nextSlotCaret(code, caret, open) {
+  // Where the argument the caret is in ends: the next top-level comma or closing
+  // bracket of the enclosing call.
+  function argumentEnd(code, caret) {
     var depth = 0;
     for (var i = caret; i < code.length; i += 1) {
       var ch = code.charAt(i);
@@ -220,29 +253,92 @@
         if (depth === 0) return i;
         depth -= 1;
       } else if (ch === ',' && depth === 0) {
-        var next = i + 1;
-        while (next < code.length && code.charAt(next) === ' ') next += 1;
-        return next;
+        return i;
       }
     }
-    return null;
+    return code.length;
+  }
+
+  function nextSlotCaret(code, caret) {
+    var end = argumentEnd(code, caret);
+    if (end >= code.length) return null;
+    if (code.charAt(end) === ',') {
+      var next = end + 1;
+      while (next < code.length && code.charAt(next) === ' ') next += 1;
+      return next;
+    }
+    return end;
+  }
+
+  // slot shapes
+
+  function roleOf(text) {
+    if (/->|:>/.test(text)) return 'option';
+    if (text.charAt(0) === '{') {
+      if (/^\{[^}]*->/.test(text)) return 'options';
+      // An iterator names a variable and a bound: `{x, xmin, xmax}`, `{i, imax}`,
+      // `{x, x0, n}`. `{f1, f2, ...}`, `{vx, vy}` and `{eqns, vars}` are lists.
+      if (/^\{\s*[A-Za-z][A-Za-z0-9]*\s*,\s*(?:[A-Za-z][A-Za-z0-9]*(?:min|max)|[A-Za-z][A-Za-z0-9]*0|-?[0-9.]+|Pi|Infinity)\s*[,}]/.test(text)) {
+        return 'iterator';
+      }
+      return 'list';
+    }
+    if (text === 'n') return 'number';
+    if (text === 'vars' || text === 'vars?' || text === 'sym') return 'symbol';
+    if (text === 'data' || text === 'array') return 'data';
+    if (text === 'list') return 'list';
+    if (text === 'opts') return 'options';
+    return 'expression';
+  }
+
+  function iteratorVariable(text) {
+    var match = /^\{\s*([A-Za-z][A-Za-z0-9]*)/.exec(text);
+    return match ? match[1] : '';
+  }
+
+  function examplesFor(slot) {
+    if (slot.role === 'iterator') {
+      var variable = iteratorVariable(slot.text) || 'x';
+      return ['{' + variable + ', -5, 5}', '{' + variable + ', 0, 2 Pi}'];
+    }
+    if (slot.role === 'option') return [slot.text + ' -> Automatic'];
+    return (ROLE_EXAMPLES[slot.role] || ROLE_EXAMPLES.expression).slice();
+  }
+
+  function curatedVariant(text) {
+    return slotsOf(text).map(function (slotText) {
+      var slot = { text: slotText, role: roleOf(slotText), examples: [] };
+      slot.examples = examplesFor(slot);
+      return slot;
+    });
+  }
+
+  function roleLabel(role) {
+    if (role === 'iterator') return 'iterator';
+    if (role === 'option') return 'option';
+    if (role === 'options') return 'options';
+    if (role === 'number') return 'number';
+    if (role === 'data') return 'data';
+    if (role === 'list') return 'list';
+    if (role === 'symbol') return 'symbol';
+    return 'expression';
   }
 
   // the assist controller
 
   function Assist(sink) {
-    this.sink = sink;            // { read, replace, setCaret, evaluate, templates, insert }
+    this.sink = sink; // {read, replace, setCaret, select, evaluate, templates, entryId, codes}
     this.keyboard = null;
-    this.query = null;           // (msgType, content) -> Promise of the reply
+    this.query = null;
     this.seq = 0;
     this.timer = null;
     this.prefix = '';
     this.matches = { names: [], details: [], total: 0, start: 0, end: 0 };
     this.state = 'idle';
-    this.options = {};           // call head -> option names
+    this.options = {}; // call head -> [{name, default}]
     this.optionOrder = [];
     this.optionHead = '';
-    this.sheetTab = 'all';
+    this.sheetTab = 'matches';
     this.sheetOpen = false;
     this.cache = {};
     this.about = null;
@@ -250,12 +346,24 @@
     this.catalogAsked = false;
     this.dom = null;
     this.keysSignature = '';
+    this.learned = {}; // head -> [variant] from the engine
+    this.learnedAsked = false;
+    this.definitions = []; // [{entry, name, params, start, end}]
+    this.definitionsAsked = '';
+    this.definitionsTimer = null;
+    this.issues = [];
+    this.issuesText = '';
+    this.diagnosticsTimer = null;
+    this.variantChoice = {}; // head -> index chosen in the call card
+    this.errors = 0;
   }
 
   Assist.prototype.bind = function (keyboard, query) {
     this.keyboard = keyboard;
     this.query = query;
     this.buildSheet();
+    this.ensureCatalog();
+    this.ensurePrototypes();
   };
 
   // How much is indexed, for the empty sheet. One request per session, and only when
@@ -274,13 +382,15 @@
 
   // bar
 
-  Assist.prototype.idleKeys = function () {
-    return [
+  Assist.prototype.idleKeys = function (extra) {
+    var keys = [
       { l: 'Eval', a: 'enter', k: 'ok', g: 1.2, t: 'Evaluate this entry' },
-      { l: 'Plot', a: 'plot', k: 'fn', t: 'Wrap the entry in Plot[...]' },
-      { l: 'Solve', a: 'solve', k: 'fn', t: 'Wrap the entry in Solve[...]' },
-      { l: '\u2190', a: 'back', k: 'danger', g: 0.9, t: 'Backspace' },
+      { l: 'Plot', a: 'plot', k: 'fn', t: 'Wrap the entry in Plot[...] - hold for a skeleton' },
+      { l: 'Solve', a: 'solve', k: 'fn', t: 'Wrap the entry in Solve[...] - hold for a skeleton' },
     ];
+    return keys.concat(extra || [], [
+      { l: '\u2190', a: 'back', k: 'danger', g: 0.9, t: 'Backspace' },
+    ]);
   };
 
   Assist.prototype.setKeys = function (keys) {
@@ -289,148 +399,214 @@
     // never fires its click. Refreshes happen on every keystroke and caret move, so
     // identical key lists must leave the bar alone.
     var signature = keys
-      .map(function (key) { return key.l + '|' + (key.h || '') + '|' + (key.d ? key.d.name || key.d.kind : ''); })
+      .map(function (key) {
+        return key.l + '|' + (key.h || '') + '|' + (key.d ? key.d.name || key.d.kind : '') + '|' + (key.k || '');
+      })
       .join(';');
     if (signature === this.keysSignature) return;
     this.keysSignature = signature;
     this.keyboard.setBarKeys(BAR_PAGE, keys);
   };
 
-  Assist.prototype.renderIdle = function () {
-    if (this.state === 'idle') return;
+  // The warning chip is the only thing that turns amber, and it is offered only when
+  // the engine found something in finished input.
+  Assist.prototype.issueKeys = function () {
+    if (!this.issues.length) return [];
+    return [{
+      l: '\u26A0 ' + this.issues.length,
+      a: 'assist',
+      d: { kind: 'issues' },
+      k: 'fn warn',
+      g: 0.9,
+      t: this.issues.length === 1 ? '1 problem' : this.issues.length + ' problems',
+    }];
+  };
+
+  Assist.prototype.renderIdle = function (extra) {
     this.state = 'idle';
     this.prefix = '';
     this.matches = { names: [], details: [], total: 0, start: 0, end: 0 };
-    this.setKeys(this.idleKeys());
+    this.setKeys(this.idleKeys(extra));
   };
 
-  Assist.prototype.chipKeys = function (names, details, total) {
-    var keys = [{ l: 'Eval', a: 'enter', k: 'ok', g: 1.1, t: 'Evaluate this entry' }];
-    for (var i = 0; i < names.length && i < MAX_CHIPS; i += 1) {
-      var detail = details[i] || {};
-      keys.push({
-        l: names[i],
-        a: 'assist',
-        d: { kind: 'accept', name: names[i] },
-        k: detail.implemented === 0 ? 'fn dim' : 'fn chip',
-        g: 1.25,
-        t: detail.description || names[i],
-      });
-    }
-    if (total > names.length) {
-      var hidden = total - names.length;
-      keys.push({
-        l: '+' + hidden,
-        a: 'assist',
-        d: { kind: 'more' },
-        k: 'fn',
-        g: 0.95,
-        t: hidden + ' more matches',
-      });
-    }
-    keys.push({ l: '\u2190', a: 'back', k: 'danger', g: 0.8, t: 'Backspace' });
-    return keys;
-  };
-
-  Assist.prototype.renderSignature = function (slots, active) {
+  Assist.prototype.renderSignature = function (variant, active, extra) {
     this.state = 'signature';
     this.prefix = '';
     var html = '';
-    for (var i = 0; i < slots.length; i += 1) {
+    for (var i = 0; i < variant.length; i += 1) {
       if (i > 0) html += '<span class="woxi-sig-sep">, </span>';
       html += '<span class="woxi-sig' + (i === active ? ' woxi-sig-on' : '') + '">' +
-        escapeHtml(slots[i]) + '</span>';
+        escapeHtml(variant[i].text) + '</span>';
     }
+    var number = Math.min(active + 1, variant.length);
     this.setKeys([
       { l: 'Eval', a: 'enter', k: 'ok', g: 1.1, t: 'Evaluate this entry' },
-      { l: 'signature', h: html, a: 'assist', d: { kind: 'next' }, k: 'sig', g: 3.1, t: 'Tap to move to the next argument' },
-      { l: '\u2304', a: 'assist', d: { kind: 'more' }, k: 'fn', g: 0.8, t: 'All matches' },
+      { l: 'signature', h: html, a: 'assist', d: { kind: 'next' }, k: 'sig', g: 3, t: 'Tap for the call card, hold to advance' },
+    ].concat(extra || [], [
+      {
+        l: number + '/' + variant.length + ' \u25BE',
+        a: 'assist',
+        d: { kind: 'call' },
+        k: 'fn',
+        g: 0.9,
+        t: 'Argument ' + number + ' of ' + variant.length + ': the call card',
+      },
       { l: '\u2190', a: 'back', k: 'danger', g: 0.8, t: 'Backspace' },
-    ]);
+    ]));
   };
 
-  // What the caret is in the middle of, and the bar state that answers it.
-  Assist.prototype.refresh = function () {
-    var read = this.sink.read();
-    if (!read) {
-      this.renderIdle();
-      if (this.sheetOpen) this.closeSheet();
-      return;
-    }
-    var code = read.code;
-    var caret = read.caret;
-    var ctx = scanContext(code, caret);
-    var span = prefixSpan(code, caret);
-    var head = ctx.head;
-    var slots = PROTOTYPES[head] ? slotsOf(PROTOTYPES[head]) : null;
-    var before = code.slice(0, caret);
-
-    // Inside a string or a comment there is nothing to complete.
-    if (ctx.inString || ctx.commentDepth > 0) {
-      this.renderIdle();
-      return;
-    }
-
-    // A value after `->` is data, not a symbol name.
-    if (/->\s*$/.test(before)) {
-      this.renderIdle();
-      return;
-    }
-
-    var optionPosition = !!head && !!slots && ctx.argIndex >= slots.length;
-    if (optionPosition) {
-      this.showOptions(head);
-      return;
-    }
-
-    // Only a name prefix is worth completing: a digit is an argument, and inside a
-    // string or a comment there is nothing to complete.
-    if (/^[A-Za-z$`]/.test(span.text)) {
-      this.requestMatches(span.text);
-      return;
-    }
-
-    if (head && slots) {
-      var slot = slots[Math.min(ctx.argIndex, slots.length - 1)];
-      // An empty iterator argument (`{`) is the other thing a keyboard key cannot spell
-      // in one tap, so it gets chips of its own. Once it has content the caret is just
-      // editing that argument, and a chip would splice a second `{x, ...}` into it.
-      var emptyIterator = slot && slot.charAt(0) === '{' && ctx.open && ctx.open.ch === '{' &&
-        code.slice(ctx.open.open + 1, caret).trim() === '';
-      if (emptyIterator) {
-        this.showIterator(slot);
-        return;
-      }
-      this.prefix = '';
-      this.renderSignature(slots, Math.min(ctx.argIndex, slots.length - 1));
-      return;
-    }
-    this.renderIdle();
-  };
-
-  // Domains a plot or table iterates over, with the variable the prototype names.
-  var ITERATOR_RANGES = ['-5, 5', '0, 2 Pi', '0, 1'];
-
-  Assist.prototype.showIterator = function (slot) {
-    var match = /^\{\s*([A-Za-z][A-Za-z0-9]*)/.exec(slot);
-    var variable = match ? match[1] : 'x';
+  Assist.prototype.showIterator = function (slot, extra) {
+    var variable = iteratorVariable(slot.text) || 'x';
     this.state = 'iterator';
     this.prefix = '';
     var keys = [{ l: 'Eval', a: 'enter', k: 'ok', g: 1.1, t: 'Evaluate this entry' }];
-    for (var i = 0; i < ITERATOR_RANGES.length - 1; i += 1) {
-      var text = '{' + variable + ', ' + ITERATOR_RANGES[i] + '}';
+    for (var i = 0; i < 2; i += 1) {
+      var text = '{' + variable + ', ' + (i === 0 ? '-5, 5' : '0, 2 Pi') + '}';
       keys.push({
         l: text,
         a: 'assist',
         d: { kind: 'accept', name: text },
         k: 'fn chip',
-        g: 1.7,
-        t: 'Iterate ' + variable + ' over ' + ITERATOR_RANGES[i],
+        g: 1.6,
+        t: 'Iterate ' + variable + ' over ' + (i === 0 ? '-5 to 5' : '0 to 2 Pi'),
       });
     }
-    keys.push({ l: '\u2304', a: 'assist', d: { kind: 'more' }, k: 'fn', g: 0.8, t: 'All matches' });
-    keys.push({ l: '\u2190', a: 'back', k: 'danger', g: 0.8, t: 'Backspace' });
-    this.setKeys(keys);
+    this.setKeys(keys.concat(extra || [], [{ l: '\u2190', a: 'back', k: 'danger', g: 0.8, t: 'Backspace' }]));
+  };
+
+  // refresh
+
+  Assist.prototype.refresh = function () {
+    var read = this.sink.read();
+    if (!read) {
+      if (this.sheetOpen) this.closeSheet();
+      this.renderIdle([]);
+      return;
+    }
+    this.read = read;
+    var code = read.code;
+    var caret = read.caret;
+    var ctx = scanContext(code, caret);
+    var span = prefixSpan(code, caret);
+    var head = ctx.head;
+    var args = ctx.argIndex + 1;
+    var variant = this.variantFor(head, args);
+    var before = code.slice(0, caret);
+
+    this.scheduleDefinitions();
+    this.scheduleDiagnostics(code);
+    var extra = this.issueKeys();
+
+    // Inside a string or a comment there is nothing to complete.
+    if (ctx.inString || ctx.commentDepth > 0) {
+      this.renderIdle(extra);
+      return;
+    }
+    // A value after `->` is data, not a symbol name.
+    if (/->\s*$/.test(before)) {
+      this.renderIdle(extra);
+      return;
+    }
+
+    if (head && variant && ctx.argIndex >= variant.length) {
+      this.showOptions(head, extra);
+      return;
+    }
+    if (/^[A-Za-z$`]/.test(span.text)) {
+      this.requestMatches(span.text);
+      return;
+    }
+    if (head && variant) {
+      var slot = variant[Math.min(ctx.argIndex, variant.length - 1)];
+      // An empty iterator argument (`{`) is the other thing a keyboard key cannot spell
+      // in one tap. Once it has content the caret is editing that argument, and a chip
+      // would splice a second `{x, ...}` into it.
+      var emptyIterator = slot && slot.role === 'iterator' && ctx.open && ctx.open.ch === '{' &&
+        code.slice(ctx.open.open + 1, caret).trim() === '';
+      if (emptyIterator) {
+        this.showIterator(slot, extra);
+        return;
+      }
+      this.renderSignature(variant, Math.min(ctx.argIndex, variant.length - 1), extra);
+      return;
+    }
+    this.renderIdle(extra);
+  };
+
+  // prototypes
+
+  Assist.prototype.ensurePrototypes = function () {
+    var self = this;
+    if (this.learnedAsked || !this.query) return;
+    this.learnedAsked = true;
+    var examples = (this.sink.templates ? this.sink.templates() : []).map(function (template) {
+      return template.insert;
+    });
+    if (!examples.length) return;
+    this.query('prototypes_request', { examples: examples }).then(function (reply) {
+      if (reply && reply.status === 'ok' && reply.content && reply.content.heads) {
+        self.learned = reply.content.heads;
+      }
+    }, function () {
+      self.learnedAsked = false;
+    });
+  };
+
+  Assist.prototype.variantsOf = function (head) {
+    if (!head) return null;
+    var variants = PROTOTYPES[head]
+      ? (typeof PROTOTYPES[head] === 'string' ? [PROTOTYPES[head]] : PROTOTYPES[head]).map(curatedVariant)
+      : [];
+    var learned = this.learned[head] || [];
+    for (var i = 0; i < learned.length; i += 1) {
+      var slots = (learned[i].slots || []).map(function (slot) {
+        return {
+          text: slot.name,
+          role: slot.role,
+          examples: (slot.examples || []).slice(),
+        };
+      });
+      if (!slots.length) continue;
+      var match = null;
+      for (var j = 0; j < variants.length; j += 1) {
+        if (variants[j].length !== slots.length) continue;
+        var same = true;
+        for (var k = 0; k < slots.length; k += 1) {
+          if (variants[j][k].role !== slots[k].role) { same = false; break; }
+        }
+        if (same) { match = variants[j]; break; }
+      }
+      if (match) {
+        // Keep the curated names, take the examples the examples actually use.
+        for (var s = 0; s < slots.length; s += 1) {
+          if (!slots[s].examples.length) continue;
+          var merged = slots[s].examples.concat(match[s].examples.filter(function (example) {
+            return slots[s].examples.indexOf(example) < 0;
+          }));
+          match[s].examples = merged.slice(0, 4);
+        }
+      } else if (variants.length < 3) {
+        variants.push(slots);
+      }
+    }
+    return variants.length ? variants : null;
+  };
+
+  Assist.prototype.variantFor = function (head, args) {
+    var variants = this.variantsOf(head);
+    if (!variants) return null;
+    var chosen = this.variantChoice[head];
+    if (chosen !== undefined && variants[chosen]) return variants[chosen];
+    // The variant whose slots the call has reached: the largest one that still fits,
+    // else the smallest. Extra arguments are options, so they do not pick a variant.
+    var best = null;
+    var smallest = null;
+    for (var i = 0; i < variants.length; i += 1) {
+      var size = variants[i].length;
+      if (size <= args && (!best || size > best.length)) best = variants[i];
+      if (!smallest || size < smallest.length) smallest = variants[i];
+    }
+    return best || smallest;
   };
 
   // suggestions
@@ -473,11 +649,13 @@
         for (var i = 0; i < names.length; i += 1) {
           details.push({
             description: (types[i] && types[i].docstring) || '',
-            implemented: (extra[i] && extra[i].implemented) || 0,
+            status: (extra[i] && extra[i].status) || 'unknown',
             category: (extra[i] && extra[i].category) || '',
             doc: (extra[i] && extra[i].doc) || '',
           });
         }
+        self.details = details;
+        self.rankParameters(names, details, prefix);
         var result = {
           names: names,
           details: details,
@@ -491,6 +669,73 @@
         if (self.sheetOpen) self.renderSheet();
         self.setKeys(self.chipKeys(result.names, result.details, result.total));
       });
+  };
+
+  // Parameters of the definition the caret is in are the names an expert types most
+  // often inside a body, so they lead the list - even when the engine does not know
+  // them, since `x` is not a builtin.
+  Assist.prototype.rankParameters = function (names, details, prefix) {
+    var params = this.activeParameters();
+    if (!params.length) return;
+    var wanted = (prefix || '').toLowerCase();
+    for (var i = params.length - 1; i >= 0; i -= 1) {
+      var name = params[i];
+      if (wanted && name.toLowerCase().indexOf(wanted) !== 0) continue;
+      var at = names.indexOf(name);
+      var detail = at >= 0 ? details[at] : { description: '', status: 'implemented', category: '', doc: '' };
+      if (at >= 0) {
+        names.splice(at, 1);
+        details.splice(at, 1);
+      }
+      detail.description = 'parameter of this definition';
+      detail.status = 'implemented';
+      names.unshift(name);
+      details.unshift(detail);
+    }
+  };
+
+  Assist.prototype.activeParameters = function () {
+    var read = this.read;
+    if (!read || !this.definitions.length) return [];
+    var entry = this.sink.entryId ? this.sink.entryId() : 0;
+    for (var i = 0; i < this.definitions.length; i += 1) {
+      var definition = this.definitions[i];
+      if (definition.entry !== entry) continue;
+      if (read.caret >= definition.start && read.caret <= definition.end) {
+        return definition.params || [];
+      }
+    }
+    return [];
+  };
+
+  Assist.prototype.chipKeys = function (names, details, total) {
+    var keys = [{ l: 'Eval', a: 'enter', k: 'ok', g: 1.1, t: 'Evaluate this entry' }];
+    for (var i = 0; i < names.length && i < MAX_CHIPS; i += 1) {
+      var detail = details[i] || {};
+      var dimmed = detail.status === 'not_implemented' || detail.status === 'not_planned';
+      keys.push({
+        l: names[i],
+        a: 'assist',
+        d: { kind: 'accept', name: names[i] },
+        k: dimmed ? 'fn chip dim' : 'fn chip',
+        g: 1.25,
+        t: (detail.description || names[i]) + (dimmed ? ' (' + STATUS_LABEL[detail.status] + ')' : ''),
+      });
+    }
+    if (total > names.length) {
+      var hidden = total - names.length;
+      keys.push({
+        l: '+' + hidden,
+        a: 'assist',
+        d: { kind: 'more' },
+        k: 'fn',
+        g: 0.95,
+        t: hidden + ' more matches',
+      });
+    }
+    return keys.concat(this.issueKeys(), [
+      { l: '\u2190', a: 'back', k: 'danger', g: 0.8, t: 'Backspace' },
+    ]);
   };
 
   Assist.prototype.apply = function (name) {
@@ -512,7 +757,7 @@
     // The bracket keys insert pairs, so accepting a name inside an empty pair fills it
     // instead of nesting a second one (`{` + `{x, 0, 1}` was becoming `{{x, 0, 1}}`).
     var ctx = scanContext(code, caret);
-    if (ctx.open && start === caret && MAP_CLOSER[ctx.open.ch] === code.charAt(caret)) {
+    if (ctx.open && start === caret && CLOSER[ctx.open.ch] === code.charAt(caret)) {
       if (code.slice(ctx.open.open + 1, caret).trim() === '') {
         start = ctx.open.open;
         end = caret + 1;
@@ -524,33 +769,107 @@
     if (this.sheetOpen) this.closeSheet();
   };
 
+  // Long-press on a suggestion: wrap the selection, or the argument the caret is in,
+  // so `x^2` becomes `Simplify[x^2]`.
+  Assist.prototype.wrap = function (name) {
+    var read = this.sink.read();
+    if (!read) return;
+    var code = read.code;
+    var start = read.selStart !== undefined && read.selStart !== read.selEnd ? read.selStart : argumentStart(code, read.caret);
+    var end = read.selStart !== undefined && read.selStart !== read.selEnd ? read.selEnd : argumentEnd(code, read.caret);
+    if (end <= start) {
+      this.apply(name);
+      return;
+    }
+    var inner = code.slice(start, end).trim();
+    if (!inner) {
+      this.apply(name);
+      return;
+    }
+    this.sink.replace(start, end, name + '[' + inner + ']', name.length + 1 + inner.length + 1);
+  };
+
+  // Long-press on a key that inserts a symbol: the call with its slots spelled out, in
+  // the same shape the signature bar shows. Iterator slots get a concrete range, which
+  // is the part nobody wants to type. The first slot is selected so typing replaces it.
+  Assist.prototype.skeletonFor = function (head) {
+    var variant = this.variantFor(head, 1);
+    if (!variant) return null;
+    var parts = [];
+    var offset = head.length + 1;
+    var select = null;
+    for (var i = 0; i < variant.length; i += 1) {
+      var slot = variant[i];
+      if (slot.role === 'option' || slot.role === 'options') continue;
+      var text = slot.text;
+      if (slot.role === 'iterator' && slot.examples.length) text = slot.examples[0];
+      if (i > 0) offset += 2;
+      if (!select) select = [offset, offset + text.length];
+      parts.push(text);
+      offset += text.length;
+    }
+    if (!parts.length) return null;
+    return {
+      text: head + '[' + parts.join(', ') + ']',
+      select: select,
+    };
+  };
+
+  Assist.prototype.applySkeleton = function (head) {
+    var skeleton = this.skeletonFor(head);
+    if (!skeleton) return false;
+    var read = this.sink.read();
+    if (!read) return false;
+    var span = prefixSpan(read.code, read.caret);
+    var start = span.start;
+    this.sink.replace(start, read.caret, skeleton.text, skeleton.text.length);
+    if (skeleton.select) {
+      this.sink.select(start + skeleton.select[0], start + skeleton.select[1]);
+    }
+    return true;
+  };
+
   Assist.prototype.nextSlot = function () {
     var read = this.sink.read();
     if (!read) return;
     var ctx = scanContext(read.code, read.caret);
     if (!ctx.open) return;
-    var at = nextSlotCaret(read.code, read.caret, ctx.open);
+    var at = nextSlotCaret(read.code, read.caret);
     if (at !== null) {
       this.sink.setCaret(at);
       return;
     }
     // The call is not closed yet and there is no comma ahead: start the next argument
-    // with one, which is the edit the user would have made by hand. An empty argument
-    // gets no comma: there is nothing to move past.
+    // with one, which is the edit the user would have made by hand.
     var before = read.code.slice(0, read.caret);
-    var argument = read.code.slice(argumentStart(read.code, read.caret, ctx.open), read.caret);
+    var argument = read.code.slice(argumentStart(read.code, read.caret), read.caret);
     if (argument.trim() !== '' && /[^,\s]$/.test(before)) {
       this.sink.replace(read.caret, read.caret, ', ', 2);
     }
   };
 
+  // Options already written in the call, so the chips do not offer them twice.
+  Assist.prototype.optionsInCall = function (code, ctx) {
+    var used = {};
+    if (!ctx.call) return used;
+    var end = code.length;
+    for (var i = ctx.call.open; i < code.length; i += 1) {
+      if (code.charAt(i) === ']' && scanContext(code, i).stack.length === 1) { end = i; break; }
+    }
+    var text = code.slice(ctx.call.open, end);
+    var pattern = /([A-Za-z][A-Za-z0-9$]*)\s*->/g;
+    var match;
+    while ((match = pattern.exec(text))) used[match[1]] = true;
+    return used;
+  };
+
   // options
 
-  Assist.prototype.showOptions = function (head) {
+  Assist.prototype.showOptions = function (head, extra) {
     var self = this;
     var cached = this.options[head];
     if (cached) {
-      this.renderOptions(head, cached);
+      this.renderOptions(head, cached, extra);
       return;
     }
     if (!this.query) return;
@@ -560,17 +879,25 @@
         if (seq !== self.seq || !reply || reply.status !== 'ok') return;
         var meta = (reply.content && reply.content.metadata) || {};
         var info = meta._woxi || {};
-        var names = info.options || [];
-        self.rememberOptions(head, names);
+        var options = [];
+        var defaults = info.optionDefaults || [];
+        for (var i = 0; i < defaults.length; i += 1) {
+          options.push({ name: defaults[i][0], value: defaults[i][1] });
+        }
+        if (!options.length) {
+          var names = info.options || [];
+          for (var n = 0; n < names.length; n += 1) options.push({ name: names[n], value: '' });
+        }
+        self.rememberOptions(head, options);
         var read = self.sink.read();
         if (!read) return;
         var ctx = scanContext(read.code, read.caret);
-        if (ctx.head === head) self.renderOptions(head, names);
+        if (ctx.head === head) self.renderOptions(head, options, self.issueKeys());
       });
   };
 
-  Assist.prototype.rememberOptions = function (head, names) {
-    this.options[head] = names;
+  Assist.prototype.rememberOptions = function (head, options) {
+    this.options[head] = options;
     this.optionOrder.push(head);
     if (this.optionOrder.length > OPTION_CACHE_MAX) {
       var dropped = this.optionOrder.shift();
@@ -578,18 +905,20 @@
     }
   };
 
-  Assist.prototype.renderOptions = function (head, names) {
+  Assist.prototype.renderOptions = function (head, options, extra) {
     var read = this.sink.read();
     if (!read) return;
     var span = prefixSpan(read.code, read.caret);
+    var used = this.optionsInCall(read.code, scanContext(read.code, read.caret));
     var shown = [];
-    for (var i = 0; i < names.length; i += 1) {
-      if (span.text && names[i].toLowerCase().indexOf(span.text.toLowerCase()) !== 0) continue;
-      shown.push(names[i]);
+    for (var i = 0; i < options.length; i += 1) {
+      if (used[options[i].name]) continue;
+      if (span.text && options[i].name.toLowerCase().indexOf(span.text.toLowerCase()) !== 0) continue;
+      shown.push(options[i]);
       if (shown.length === MAX_CHIPS) break;
     }
     if (!shown.length && !span.text) {
-      this.renderIdle();
+      this.renderIdle(extra);
       return;
     }
     this.state = 'options';
@@ -597,17 +926,119 @@
     var keys = [{ l: 'Eval', a: 'enter', k: 'ok', g: 1.1, t: 'Evaluate this entry' }];
     for (var k = 0; k < shown.length; k += 1) {
       keys.push({
-        l: shown[k],
+        l: shown[k].name,
         a: 'assist',
-        d: { kind: 'accept', name: shown[k] },
+        d: { kind: 'option', name: shown[k].name },
         k: 'fn chip',
         g: 1.25,
-        t: 'Option of ' + head,
+        t: shown[k].name + (shown[k].value ? ' \u2192 ' + shown[k].value : '') + ' (of ' + head + ')',
       });
     }
-    keys.push({ l: '\u2304', a: 'assist', d: { kind: 'more' }, k: 'fn', g: 0.8, t: 'Options of ' + head });
-    keys.push({ l: '\u2190', a: 'back', k: 'danger', g: 0.8, t: 'Backspace' });
-    this.setKeys(keys);
+    keys.push({
+      l: '\u2304',
+      a: 'assist',
+      d: { kind: 'more' },
+      k: 'fn',
+      g: 0.8,
+      t: 'Options of ' + head,
+    });
+    this.setKeys(keys.concat(extra || [], [{ l: '\u2190', a: 'back', k: 'danger', g: 0.8, t: 'Backspace' }]));
+  };
+
+  // diagnostics
+
+  Assist.prototype.scheduleDiagnostics = function (code) {
+    var self = this;
+    if (!this.query) return;
+    if (code === this.issuesText && this.issuesText !== '') return;
+    if (this.diagnosticsTimer) global.clearTimeout(this.diagnosticsTimer);
+    if (!code.trim()) {
+      this.setIssues('', []);
+      return;
+    }
+    this.diagnosticsTimer = global.setTimeout(function () {
+      self.diagnosticsTimer = null;
+      var read = self.sink.read();
+      if (!read || read.code !== code) return;
+      self.query('diagnostics_request', { code: code }).then(function (reply) {
+        if (!reply || reply.status !== 'ok' || !reply.content) return;
+        var content = reply.content;
+        // Unfinished input has no diagnostics: the engine says so explicitly.
+        if (content.status === 'incomplete') return;
+        self.setIssues(code, content.items || []);
+      });
+    }, DIAGNOSTICS_MS);
+  };
+
+  Assist.prototype.setIssues = function (text, items) {
+    var changed = this.issues.length !== items.length;
+    var before = this.issuesText;
+    this.issuesText = text;
+    this.issues = items;
+    if (!changed && before === text) return;
+    this.keysSignature = ''; // force a repaint, the warning chip is part of the bar
+    this.refreshBar();
+    if (this.sheetOpen && this.sheetTab === 'issues') this.renderSheet();
+  };
+
+  // Repaint only the bar, without re-running the (debounced) analysis.
+  Assist.prototype.refreshBar = function () {
+    var read = this.sink.read();
+    if (!read) return;
+    var ctx = scanContext(read.code, read.caret);
+    var variant = this.variantFor(ctx.head, ctx.argIndex + 1);
+    var extra = this.issueKeys();
+    if (ctx.head && variant) {
+      this.renderSignature(variant, Math.min(ctx.argIndex, variant.length - 1), extra);
+    } else if (this.state === 'candidates') {
+      this.setKeys(this.chipKeys(this.matches.names, this.matches.details, this.matches.total));
+    } else {
+      this.renderIdle(extra);
+    }
+  };
+
+  // definitions
+
+  Assist.prototype.scheduleDefinitions = function () {
+    var self = this;
+    if (!this.query || !this.sink.codes) return;
+    var codes = this.sink.codes();
+    var joined = codes.join('\u0000');
+    if (joined === this.definitionsAsked) return;
+    if (this.definitionsTimer) global.clearTimeout(this.definitionsTimer);
+    this.definitionsTimer = global.setTimeout(function () {
+      self.definitionsTimer = null;
+      self.definitionsAsked = joined;
+      self.query('definitions_request', { codes: codes }).then(function (reply) {
+        if (!reply || reply.status !== 'ok' || !reply.content) return;
+        var entries = reply.content.entries || [];
+        var flat = [];
+        for (var index = 0; index < entries.length; index += 1) {
+          for (var d = 0; d < entries[index].length; d += 1) {
+            var definition = entries[index][d];
+            flat.push({
+              entry: index,
+              name: definition.name,
+              params: definition.params || [],
+              start: definition.start,
+              end: definition.end,
+              kind: definition.kind,
+            });
+          }
+        }
+        self.definitions = flat;
+        // The candidates were ranked before the definitions arrived. Rank them again
+        // now, so a parameter of the definition leads the list as soon as it is known.
+        if (self.state === 'candidates' && self.matches.names.length) {
+          var read = self.sink.read();
+          if (read) {
+            self.rankParameters(self.matches.names, self.matches.details, prefixSpan(read.code, read.caret).text);
+            self.setKeys(self.chipKeys(self.matches.names, self.matches.details, self.matches.total));
+            if (self.sheetOpen) self.renderSheet();
+          }
+        }
+      });
+    }, DEFINITIONS_MS);
   };
 
   // sheet
@@ -621,9 +1052,11 @@
       '<div id="woxi-assist-panel">' +
       '<div id="woxi-assist-head">' +
       '<div id="woxi-assist-tabs">' +
-      '<button type="button" class="woxi-assist-tab" data-tab="all" tabindex="-1">Matches</button>' +
+      '<button type="button" class="woxi-assist-tab" data-tab="matches" tabindex="-1">Matches</button>' +
       '<button type="button" class="woxi-assist-tab" data-tab="examples" tabindex="-1">Examples</button>' +
+      '<button type="button" class="woxi-assist-tab" data-tab="call" tabindex="-1">Call</button>' +
       '<button type="button" class="woxi-assist-tab" data-tab="about" tabindex="-1">About</button>' +
+      '<button type="button" class="woxi-assist-tab" data-tab="issues" tabindex="-1">Issues</button>' +
       '</div>' +
       '<button type="button" id="woxi-assist-close" tabindex="-1">Close</button>' +
       '</div>' +
@@ -649,19 +1082,61 @@
       });
     }
     root.querySelector('#woxi-assist-body').addEventListener('click', function (event) {
-      var row = event.target.closest
-        ? event.target.closest('[data-assist-insert],[data-assist-template]')
-        : null;
+      var target = event.target;
+      if (!target || !target.closest) return;
+      var row = target.closest('[data-assist-insert],[data-assist-template],[data-assist-option],' +
+        '[data-assist-example],[data-assist-skeleton],[data-assist-variant],[data-assist-fix]');
       if (!row) return;
-      var value = row.getAttribute('data-assist-insert');
-      var template = row.getAttribute('data-assist-template');
-      if (template) {
-        self.sink.evaluate(template);
+      if (row.hasAttribute('data-assist-template')) {
+        self.sink.evaluate(row.getAttribute('data-assist-template'));
         self.closeSheet();
-        return;
+      } else if (row.hasAttribute('data-assist-option')) {
+        var option = row.getAttribute('data-assist-option');
+        var read = self.sink.read();
+        if (read) self.sink.replace(read.caret, read.caret, option + ' -> ', option.length + 4);
+        self.closeSheet();
+      } else if (row.hasAttribute('data-assist-example')) {
+        self.applyExample(row.getAttribute('data-assist-example'));
+      } else if (row.hasAttribute('data-assist-skeleton')) {
+        self.applySkeleton(row.getAttribute('data-assist-skeleton'));
+        self.closeSheet();
+      } else if (row.hasAttribute('data-assist-variant')) {
+        var parts = row.getAttribute('data-assist-variant').split(':');
+        self.variantChoice[parts[0]] = Number(parts[1]);
+        self.refresh();
+        self.renderSheet();
+      } else if (row.hasAttribute('data-assist-fix')) {
+        // The payload is JSON in one attribute: the insert text can contain anything.
+        var fix = null;
+        try {
+          fix = JSON.parse(row.getAttribute('data-assist-fix'));
+        } catch (err) {
+          fix = null;
+        }
+        if (fix) self.sink.replace(Number(fix.start), Number(fix.end), fix.insert, fix.insert.length);
+        self.closeSheet();
+      } else {
+        self.apply(row.getAttribute('data-assist-insert'));
       }
-      self.apply(value);
     });
+  };
+
+  // Replaces the argument the caret is in with an example value.
+  Assist.prototype.applyExample = function (example) {
+    var read = this.sink.read();
+    if (!read) return;
+    var start = argumentStart(read.code, read.caret);
+    var end = argumentEnd(read.code, read.caret);
+    var head = start;
+    while (head > 0 && read.code.charAt(head - 1) !== ',' && read.code.charAt(head - 1) !== '[') head -= 1;
+    var prefixSpace = '';
+    if (read.code.charAt(start) === ' ') {
+      start += 1;
+    } else if (head > 0 && read.code.charAt(head - 1) === ',') {
+      prefixSpace = ' ';
+    }
+    var text = prefixSpace + example;
+    this.sink.replace(start, end, text, text.length);
   };
 
   Assist.prototype.openSheet = function (tab) {
@@ -676,8 +1151,6 @@
     this.dom.classList.remove('woxi-hidden');
     this.ensureCatalog();
     this.renderSheet();
-    // The sheet lists more than the bar: ask again with the larger limit.
-    if (this.sheetTab === 'all') this.refresh();
   };
 
   Assist.prototype.closeSheet = function () {
@@ -687,29 +1160,34 @@
   };
 
   Assist.prototype.renderSheet = function () {
-    if (!this.dom) return;
-    if (!this.sheetOpen) return;
+    if (!this.dom || !this.sheetOpen) return;
     var body = this.dom.querySelector('#woxi-assist-body');
     var tabs = this.dom.querySelectorAll('.woxi-assist-tab');
+    var self = this;
     for (var i = 0; i < tabs.length; i += 1) {
-      var on = tabs[i].getAttribute('data-tab') === this.sheetTab;
-      tabs[i].classList.toggle('woxi-on', on);
+      var tab = tabs[i];
+      var name = tab.getAttribute('data-tab');
+      tab.classList.toggle('woxi-on', name === this.sheetTab);
+      if (name === 'issues') {
+        tab.textContent = this.issues.length ? 'Issues (' + this.issues.length + ')' : 'Issues';
+      }
     }
-    var rows = [];
-    if (this.sheetTab === 'examples') {
-      rows = this.exampleRows();
-    } else if (this.sheetTab === 'about') {
-      rows = this.aboutRows();
-    } else {
-      rows = this.matchRows();
-    }
+    var rows;
+    if (this.sheetTab === 'examples') rows = this.exampleRows();
+    else if (this.sheetTab === 'about') rows = this.aboutRows();
+    else if (this.sheetTab === 'call') rows = this.callRows();
+    else if (this.sheetTab === 'issues') rows = this.issueRows();
+    else rows = this.matchRows();
     body.innerHTML = rows.length ? rows.join('') : '<div class="woxi-assist-empty">' +
       escapeHtml(this.emptyHint()) + '</div>';
+    void self;
   };
 
   Assist.prototype.emptyHint = function () {
     if (this.sheetTab === 'about') return 'Put the caret on a name to see what it is.';
     if (this.sheetTab === 'examples') return 'No examples here.';
+    if (this.sheetTab === 'call') return 'Put the caret in a call to see its arguments.';
+    if (this.sheetTab === 'issues') return this.read && this.read.code.trim() ? 'No problems found.' : 'Nothing to check yet.';
     if (this.prefix) return 'No match for "' + this.prefix + '".';
     if (this.catalog && this.catalog.total) {
       return this.catalog.total + ' symbols from Woxi ' + this.catalog.version + ' \u2014 type a name.';
@@ -717,21 +1195,26 @@
     return 'Type a name to see matches.';
   };
 
+  function statusBadge(status, category) {
+    var label = STATUS_LABEL[status] || '';
+    var parts = [];
+    if (label) parts.push(label);
+    if (category) parts.push(category);
+    return parts.length ? '<span class="woxi-assist-meta">' + escapeHtml(parts.join(' \u00b7 ')) + '</span>' : '';
+  }
+
   Assist.prototype.matchRows = function () {
     var names = this.matches.names || [];
     var details = this.matches.details || [];
     var rows = [];
     for (var i = 0; i < names.length; i += 1) {
       var detail = details[i] || {};
-      var meta = [];
-      if (detail.category) meta.push(detail.category);
-      if (detail.implemented === 0) meta.push('not implemented');
       rows.push(
         '<button type="button" class="woxi-assist-row" tabindex="-1" data-assist-insert="' +
         escapeHtml(names[i]) + '">' +
         '<span class="woxi-assist-name">' + escapeHtml(names[i]) + '</span>' +
         '<span class="woxi-assist-desc">' + escapeHtml(detail.description || '') + '</span>' +
-        (meta.length ? '<span class="woxi-assist-meta">' + escapeHtml(meta.join(' \u00b7 ')) + '</span>' : '') +
+        statusBadge(detail.status, detail.category) +
         '</button>'
       );
     }
@@ -753,6 +1236,98 @@
     return rows;
   };
 
+  // The call being edited: the variant in use, one row per slot with its shape and the
+  // example values the gallery actually uses, the head's options, and the skeleton.
+  Assist.prototype.callRows = function () {
+    var read = this.sink.read();
+    if (!read) return [];
+    var ctx = scanContext(read.code, read.caret);
+    var head = ctx.head;
+    if (!head) return [];
+    var variants = this.variantsOf(head);
+    if (!variants) return [];
+    var active = this.variantFor(head, ctx.argIndex + 1);
+    var activeIndex = variants.indexOf(active);
+    var used = this.optionsInCall(read.code, ctx);
+    var rows = ['<div class="woxi-assist-about">'];
+    rows.push('<div class="woxi-assist-about-name">' + escapeHtml(head) + ' \u2014 ' +
+      Math.min(ctx.argIndex + 1, active.length) + ' of ' + active.length +
+      (ctx.argIndex + 1 > active.length ? ' (options)' : '') + '</div>');
+    for (var i = 0; i < active.length; i += 1) {
+      var slot = active[i];
+      rows.push(
+        '<div class="woxi-assist-slot' + (i === ctx.argIndex ? ' woxi-assist-slot-on' : '') + '">' +
+        '<span class="woxi-assist-slot-name">' + escapeHtml(slot.text) + '</span>' +
+        '<span class="woxi-assist-slot-role">' + escapeHtml(roleLabel(slot.role)) + '</span>' +
+        '</div>'
+      );
+      var examples = (slot.examples || []).slice(0, 3);
+      if (examples.length) {
+        rows.push('<div class="woxi-assist-examples">');
+        for (var e = 0; e < examples.length; e += 1) {
+          rows.push('<button type="button" class="woxi-assist-chip" tabindex="-1" data-assist-example="' +
+            escapeHtml(examples[e]) + '">' + escapeHtml(examples[e]) + '</button>');
+        }
+        rows.push('</div>');
+      }
+    }
+    rows.push('<div class="woxi-assist-actions">');
+    rows.push('<button type="button" class="woxi-assist-action" tabindex="-1" data-assist-skeleton="' +
+      escapeHtml(head) + '">insert skeleton</button>');
+    rows.push('</div>');
+    if (variants.length > 1) {
+      rows.push('<div class="woxi-assist-about-line">Other forms:</div>');
+      for (var v = 0; v < variants.length; v += 1) {
+        if (v === activeIndex) continue;
+        var text = variants[v].map(function (part) { return part.text; }).join(', ');
+        rows.push('<button type="button" class="woxi-assist-row" tabindex="-1" data-assist-variant="' +
+          escapeHtml(head) + ':' + v + '">' +
+          '<span class="woxi-assist-name">' + escapeHtml(head) + '[' + escapeHtml(text) + ']</span>' +
+          '</button>');
+      }
+    }
+    var options = this.options[head];
+    if (options && options.length) {
+      rows.push('<div class="woxi-assist-about-line">Options (' + options.length + '):</div>');
+      for (var o = 0; o < options.length && o < 40; o += 1) {
+        var set = used[options[o].name] ? ' \u2713' : '';
+        rows.push('<button type="button" class="woxi-assist-row" tabindex="-1" data-assist-option="' +
+          escapeHtml(options[o].name) + '">' +
+          '<span class="woxi-assist-name">' + escapeHtml(options[o].name) + escapeHtml(set) + '</span>' +
+          '<span class="woxi-assist-desc">' + escapeHtml(options[o].value || '') + '</span>' +
+          '</button>');
+      }
+    }
+    rows.push('</div>');
+    return rows;
+  };
+
+  Assist.prototype.issueRows = function () {
+    var rows = [];
+    for (var i = 0; i < this.issues.length; i += 1) {
+      var issue = this.issues[i];
+      var message = issue.message;
+      if (issue.code === 'syntax') {
+        // The grammar's own wording names parser rules. Say what a reader can act on.
+        message = 'Syntax error here';
+      }
+      var fix = '';
+      if (issue.fix) {
+        fix = '<button type="button" class="woxi-assist-chip" tabindex="-1" data-assist-fix="' +
+          escapeHtml(JSON.stringify(issue.fix)) + '">' +
+          escapeHtml(issue.fix.label) + '</button>';
+      }
+      rows.push(
+        '<div class="woxi-assist-issue woxi-assist-issue-' + escapeHtml(issue.severity) + '">' +
+        '<span class="woxi-assist-issue-dot"></span>' +
+        '<span class="woxi-assist-desc">' + escapeHtml(message) + '</span>' +
+        fix +
+        '</div>'
+      );
+    }
+    return rows;
+  };
+
   Assist.prototype.aboutRows = function () {
     var read = this.sink.read();
     if (!read) return [];
@@ -765,27 +1340,69 @@
     var self = this;
     if (!this.query) return [];
     this.query('inspect_request', { code: name + '[', cursor_pos: name.length }).then(function (reply) {
+      var defined = self.definitions.find(function (definition) { return definition.name === name; });
       if (!reply || reply.status !== 'ok' || !reply.content || !reply.content.found) {
-        self.about = { name: name, rows: ['<div class="woxi-assist-empty">Nothing known about ' + escapeHtml(name) + '.</div>'] };
+        var rows = ['<div class="woxi-assist-about">'];
+        rows.push('<div class="woxi-assist-about-name">' + escapeHtml(name) + '</div>');
+        if (defined) {
+          rows.push('<div class="woxi-assist-about-line">defined in entry ' + (defined.entry + 1) + '</div>');
+          if (defined.params && defined.params.length) {
+            rows.push('<div class="woxi-assist-about-line">parameters: ' +
+              escapeHtml(defined.params.join(', ')) + '</div>');
+          }
+        } else {
+          rows.push('<div class="woxi-assist-about-line">Nothing known about this name yet.</div>');
+        }
+        rows.push('</div>');
+        self.about = { name: name, rows: rows };
       } else {
         var meta = (reply.content.metadata && reply.content.metadata._woxi) || {};
-        var lines = ['<div class="woxi-assist-about"><div class="woxi-assist-about-name">' +
-          escapeHtml(meta.name || name) + '</div>'];
-        if (meta.description) lines.push('<div class="woxi-assist-about-line">' + escapeHtml(meta.description) + '</div>');
+        var lines = ['<div class="woxi-assist-about">'];
+        lines.push('<div class="woxi-assist-about-name">' + escapeHtml(meta.name || name) + '</div>');
+        lines.push('<div class="woxi-assist-about-line">' + statusBadge(meta.status, meta.category) + '</div>');
+        if (meta.description) {
+          lines.push('<div class="woxi-assist-about-line">' + escapeHtml(meta.description) + '</div>');
+        }
+        if (meta.attributes && meta.attributes.length) {
+          lines.push('<div class="woxi-assist-about-line">' +
+            escapeHtml(attributeText(meta.attributes)) + '</div>');
+        }
         if (meta.arity) {
           var arity = meta.arity[1] === null ? meta.arity[0] + ' or more arguments'
             : meta.arity[0] === meta.arity[1] ? meta.arity[0] + ' argument(s)'
               : meta.arity[0] + ' to ' + meta.arity[1] + ' arguments';
           lines.push('<div class="woxi-assist-about-line">' + escapeHtml(arity) + '</div>');
         }
-        if (meta.implemented === 0) lines.push('<div class="woxi-assist-about-line woxi-assist-warn">Not implemented in Woxi yet.</div>');
-        if (meta.options && meta.options.length) {
-          var shown = meta.options.slice(0, 12).join(', ');
-          var rest = meta.options.length - Math.min(12, meta.options.length);
-          lines.push('<div class="woxi-assist-about-line">Options: ' + escapeHtml(shown) +
-            (rest > 0 ? ' \u2026 and ' + rest + ' more' : '') + '</div>');
+        if (meta.status === 'not_planned') {
+          lines.push('<div class="woxi-assist-about-line woxi-assist-warn">Woxi does not plan to support this.</div>');
+        } else if (meta.status === 'not_implemented') {
+          lines.push('<div class="woxi-assist-about-line woxi-assist-warn">Not implemented in Woxi yet.</div>');
         }
-        if (meta.doc) lines.push('<div class="woxi-assist-about-line woxi-assist-doc">' + escapeHtml(meta.doc) + '</div>');
+        lines.push('<div class="woxi-assist-actions">' +
+          '<button type="button" class="woxi-assist-action" tabindex="-1" data-assist-skeleton="' +
+          escapeHtml(meta.name || name) + '">insert skeleton</button></div>');
+        var defaults = meta.optionDefaults || [];
+        if (defaults.length) {
+          lines.push('<div class="woxi-assist-about-line">Options (' + defaults.length + '), tap to insert:</div>');
+          for (var i = 0; i < defaults.length && i < 40; i += 1) {
+            lines.push('<button type="button" class="woxi-assist-row" tabindex="-1" data-assist-option="' +
+              escapeHtml(defaults[i][0]) + '">' +
+              '<span class="woxi-assist-name">' + escapeHtml(defaults[i][0]) + '</span>' +
+              '<span class="woxi-assist-desc">' + escapeHtml(defaults[i][1]) + '</span>' +
+              '</button>');
+          }
+        }
+        if (meta.doc) {
+          lines.push('<div class="woxi-assist-about-line woxi-assist-doc">' + escapeHtml(meta.doc) + '</div>');
+        }
+        var definedHere = self.definitions.find(function (definition) { return definition.name === name; });
+        if (definedHere) {
+          lines.push('<div class="woxi-assist-about-line">defined in entry ' + (definedHere.entry + 1) + '</div>');
+          if (definedHere.params && definedHere.params.length) {
+            lines.push('<div class="woxi-assist-about-line">parameters: ' +
+              escapeHtml(definedHere.params.join(', ')) + '</div>');
+          }
+        }
         lines.push('</div>');
         self.about = { name: name, rows: lines };
       }
@@ -794,19 +1411,44 @@
     return ['<div class="woxi-assist-empty">Loading\u2026</div>'];
   };
 
+  // Attributes are the one part of a symbol's behaviour an expert reasons about, so
+  // spell out what they change instead of listing the names.
+  function attributeText(attributes) {
+    var notes = [];
+    var rest = [];
+    for (var i = 0; i < attributes.length; i += 1) {
+      var name = attributes[i];
+      if (name === 'HoldAll') notes.push('HoldAll: arguments are not evaluated');
+      else if (name === 'HoldFirst') notes.push('HoldFirst: first argument is not evaluated');
+      else if (name === 'HoldRest') notes.push('HoldRest: arguments after the first are not evaluated');
+      else if (name === 'Listable') notes.push('Listable: applies to each element');
+      else if (name === 'NumericFunction') notes.push('NumericFunction');
+      else if (name === 'Protected' || name === 'ReadProtected') continue;
+      else rest.push(name);
+    }
+    if (rest.length) notes.push(rest.join(', '));
+    return notes.join(' \u00b7 ');
+  }
+
   // keyboard actions
 
   Assist.prototype.action = function (data) {
     if (!data) return;
     if (data.kind === 'accept') this.apply(data.name);
-    else if (data.kind === 'next') this.nextSlot();
-    else if (data.kind === 'more') this.openSheet('all');
+    else if (data.kind === 'option') {
+      var read = this.sink.read();
+      if (read) this.sink.replace(read.caret, read.caret, data.name + ' -> ', data.name.length + 4);
+    } else if (data.kind === 'next') this.nextSlot();
+    else if (data.kind === 'call') this.openSheet('call');
+    else if (data.kind === 'issues') this.openSheet('issues');
+    else if (data.kind === 'more') this.openSheet('matches');
   };
 
   // Session symbols change when an entry runs, so the ranked answers are stale.
   Assist.prototype.invalidate = function () {
     this.cache = {};
     this.about = null;
+    this.definitionsAsked = '';
   };
 
   global.WoxiAssist = {
@@ -816,5 +1458,7 @@
     closersFor: closersFor,
     slotsOf: slotsOf,
     prefixSpan: prefixSpan,
+    argumentStart: argumentStart,
+    argumentEnd: argumentEnd,
   };
 })(window);

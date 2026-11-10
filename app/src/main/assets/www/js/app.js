@@ -73,8 +73,17 @@
     if (global.console) global.console.log('[woxi] ' + message);
   }
 
-  var toastTimer = null;
-  function toast(message) {
+  // A failure while the UI is being built leaves the splash screen up with no other
+  // trace, so it is reported like any other log line.
+  global.addEventListener('error', function (event) {
+    log('error: ' + event.message + ' at ' + (event.filename || '?') + ':' + event.lineno + ':' + event.colno);
+  });
+  global.addEventListener('unhandledrejection', function (event) {
+    var reason = event.reason;
+    log('unhandled rejection: ' + (reason && reason.message ? reason.message : String(reason)));
+  });
+
+  var toastTimer = null;  function toast(message) {
     toastEl.textContent = message;
     toastEl.className = '';
     if (toastTimer) clearTimeout(toastTimer);
@@ -152,6 +161,7 @@
     state.activeId = entry ? entry.id : null;
     refreshClasses();
     refreshAssist();
+    refreshUndoKeys();
   }
 
   function refreshClasses() {
@@ -226,6 +236,9 @@
       liftEntry(entry);
       refreshAssist();
     });
+    // Only real input (a hardware keyboard, a system paste) reaches these. Programmatic
+    // edits are recorded by the helpers that make them.
+    input.addEventListener('beforeinput', function () { recordEdit(entry, 'type'); });
     input.addEventListener('input', function () {
       entry.input = input.value;
       entry.caret = input.selectionStart;
@@ -244,6 +257,8 @@
       input.addEventListener(type, function () {
         if (input.selectionStart !== null && input.selectionStart !== undefined) {
           entry.caret = input.selectionStart;
+          entry.selStart = input.selectionStart;
+          entry.selEnd = input.selectionEnd;
         }
         refreshAssist();
       });
@@ -374,6 +389,7 @@
       if (status !== 'incomplete' || !entry.dom) return;
       var closers = global.WoxiAssist.closersFor(text, text.length);
       if (!closers) return;
+      recordEdit(entry, 'edit');
       entry.dom.input.value = text + closers;
       entry.input = entry.dom.input.value;
       autoGrow(entry.dom.input);
@@ -522,16 +538,26 @@
   function insertText(text, caretOffset) {
     var entry = activeEntry();
     if (!entry || !entry.dom) return;
+    recordEdit(entry, 'type');
     var input = entry.dom.input;
     var focused = global.document.activeElement === input;
     var start = focused && input.selectionStart !== null ? input.selectionStart : entry.caret;
     var end = focused && input.selectionEnd !== null ? input.selectionEnd : start;
     if (start === null || start === undefined) start = input.value.length;
     if (end === null || end === undefined) end = start;
+    // A tap on a key can blur the field. The selection recorded when it was last set
+    // still applies, which is what makes a skeleton's first slot replaceable by typing.
+    if (!focused && entry.selStart !== null && entry.selStart !== undefined &&
+      entry.selEnd !== null && entry.selEnd !== undefined) {
+      start = entry.selStart;
+      end = entry.selEnd;
+    }
     var value = input.value;
     input.value = value.slice(0, start) + text + value.slice(end);
     var caret = start + Math.max(0, text.length - (caretOffset || 0));
     entry.caret = caret;
+    entry.selStart = caret;
+    entry.selEnd = caret;
     if (focused) input.setSelectionRange(caret, caret);
     entry.input = input.value;
     autoGrow(input);
@@ -553,10 +579,19 @@
     // Only a focused textarea reports the caret truthfully: some WebViews reset the
     // selection to 0 when the field blurs, which would move the bar to the start of
     // the entry every time a key is tapped.
-    var caret = global.document.activeElement === input ? input.selectionStart : entry.caret;
+    var focused = global.document.activeElement === input;
+    var caret = focused ? input.selectionStart : entry.caret;
     if (caret === null || caret === undefined) caret = entry.caret;
     if (caret === null || caret === undefined) caret = input.value.length;
-    return { code: input.value, caret: caret };
+    var selStart = focused ? input.selectionStart : caret;
+    var selEnd = focused ? input.selectionEnd : caret;
+    if (!focused) {
+      if (entry.selStart !== null && entry.selStart !== undefined) selStart = entry.selStart;
+      if (entry.selEnd !== null && entry.selEnd !== undefined) selEnd = entry.selEnd;
+    }
+    if (selStart === null || selStart === undefined) selStart = caret;
+    if (selEnd === null || selEnd === undefined) selEnd = caret;
+    return { code: input.value, caret: caret, selStart: selStart, selEnd: selEnd };
   }
 
   // Replaces a range of the active entry, which is how a suggestion is accepted: the
@@ -565,6 +600,7 @@
   function replaceRange(start, end, text, caretAfter) {
     var entry = activeEntry();
     if (!entry || !entry.dom) return;
+    recordEdit(entry, 'edit');
     var input = entry.dom.input;
     var value = input.value;
     start = Math.max(0, Math.min(start, value.length));
@@ -572,6 +608,8 @@
     input.value = value.slice(0, start) + text + value.slice(end);
     var caret = start + (caretAfter === undefined ? text.length : caretAfter);
     entry.caret = caret;
+    entry.selStart = caret;
+    entry.selEnd = caret;
     input.setSelectionRange(caret, caret);
     entry.input = input.value;
     autoGrow(input);
@@ -589,6 +627,110 @@
     input.setSelectionRange(at, at);
     entry.caret = at;
     refreshAssist();
+  }
+
+  function selectRange(start, end) {
+    var entry = activeEntry();
+    if (!entry || !entry.dom) return;
+    var input = entry.dom.input;
+    start = Math.max(0, Math.min(start, input.value.length));
+    end = Math.max(start, Math.min(end, input.value.length));
+    input.focus();
+    input.setSelectionRange(start, end);
+    entry.caret = end;
+    entry.selStart = start;
+    entry.selEnd = end;
+    refreshAssist();
+  }
+
+  // undo / redo
+  //
+  // Programmatic edits - keys, accepted suggestions, closed brackets - are invisible to
+  // the textarea's own undo stack, so the app keeps one. A step records the text before
+  // the change. Consecutive typing merges into one step.
+
+  var UNDO_LIMIT = 30;
+  var COALESCE_MS = 700;
+
+  function historyOf(entry) {
+    if (!entry.history) entry.history = { undo: [], redo: [] };
+    return entry.history;
+  }
+
+  function recordEdit(entry, kind) {
+    if (!entry || !entry.dom) return;
+    var history = historyOf(entry);
+    var now = Date.now();
+    var coalesce = kind === 'type' && entry.lastKind === 'type' && now - (entry.lastEditAt || 0) < COALESCE_MS;
+    if (!coalesce) {
+      history.undo.push({ text: entry.dom.input.value, caret: entry.caret });
+      if (history.undo.length > UNDO_LIMIT) history.undo.shift();
+    }
+    history.redo.length = 0;
+    entry.lastEditAt = now;
+    entry.lastKind = kind;
+    refreshUndoKeys();
+  }
+
+  function canUndo(entry) {
+    return !!(entry && entry.history && entry.history.undo.length);
+  }
+
+  function canRedo(entry) {
+    return !!(entry && entry.history && entry.history.redo.length);
+  }
+
+  function applyHistory(entry, snapshot) {
+    var input = entry.dom.input;
+    input.value = snapshot.text;
+    entry.input = snapshot.text;
+    var caret = snapshot.caret;
+    if (caret === null || caret === undefined) caret = snapshot.text.length;
+    caret = Math.max(0, Math.min(caret, snapshot.text.length));
+    entry.caret = caret;
+    entry.selStart = caret;
+    entry.selEnd = caret;
+    input.focus();
+    input.setSelectionRange(caret, caret);
+    autoGrow(input);
+    state.dirty = true;
+    updateTitle();
+    persist();
+    refreshAssist();
+  }
+
+  function undoEntry() {
+    var entry = activeEntry();
+    if (!canUndo(entry)) return;
+    var history = historyOf(entry);
+    history.redo.push({ text: entry.dom.input.value, caret: entry.caret });
+    applyHistory(entry, history.undo.pop());
+    entry.lastKind = null;
+    refreshUndoKeys();
+  }
+
+  function redoEntry() {
+    var entry = activeEntry();
+    if (!canRedo(entry)) return;
+    var history = historyOf(entry);
+    history.undo.push({ text: entry.dom.input.value, caret: entry.caret });
+    applyHistory(entry, history.redo.pop());
+    entry.lastKind = null;
+    refreshUndoKeys();
+  }
+
+  // The bar's second page shows at a glance whether there is anything to undo or redo.
+  function refreshUndoKeys() {
+    if (!keyboard) return;
+    var entry = activeEntry();
+    keyboard.setBarKeys(1, [
+      { l: 'Eval all', a: 'evalall', k: 'fn accent', t: 'Restart the session and run every entry' },
+      { l: 'Undo', a: 'undo', k: canUndo(entry) ? 'fn' : 'fn dim', t: 'Undo the last edit' },
+      { l: 'Redo', a: 'redo', k: canRedo(entry) ? 'fn' : 'fn dim', t: 'Redo the undone edit' },
+      { l: 'Insert', a: 'new', t: 'New entry below' },
+      { l: 'Duplicate', a: 'duplicate', k: 'fn', t: 'Copy this entry' },
+      { l: 'Delete', a: 'delete', k: 'fn danger', t: 'Delete this entry' },
+    ]);
   }
 
   function refreshAssist() {
@@ -619,6 +761,7 @@
   function runTemplate(text) {
     var entry = activeEntry();
     if (!entry || !entry.dom) return;
+    recordEdit(entry, 'edit');
     entry.dom.input.value = text;
     entry.input = text;
     entry.caret = text.length;
@@ -646,15 +789,23 @@
   function backspace() {
     var entry = activeEntry();
     if (!entry || !entry.dom) return;
+    recordEdit(entry, 'type');
     var input = entry.dom.input;
     var focused = global.document.activeElement === input;
     var start = focused && input.selectionStart !== null ? input.selectionStart : entry.caret;
     var end = focused && input.selectionEnd !== null ? input.selectionEnd : start;
     if (start === null || start === undefined) start = input.value.length;
     if (end === null || end === undefined) end = start;
+    if (!focused && entry.selStart !== null && entry.selStart !== undefined &&
+      entry.selEnd !== null && entry.selEnd !== undefined) {
+      start = entry.selStart;
+      end = entry.selEnd;
+    }
     if (start === end && start > 0) start -= 1;
     input.value = input.value.slice(0, start) + input.value.slice(end);
     entry.caret = start;
+    entry.selStart = start;
+    entry.selEnd = start;
     if (focused) input.setSelectionRange(start, start);
     entry.input = input.value;
     autoGrow(input);
@@ -666,6 +817,7 @@
 
   // Replaces an entry's source, re-evaluates it and keeps the UI in sync.
   function applySource(entry, text) {
+    recordEdit(entry, 'edit');
     entry.dom.input.value = text;
     entry.input = text;
     autoGrow(entry.dom.input);
@@ -674,6 +826,22 @@
     state.dirty = true;
     updateTitle();
     persist();
+  }
+
+  // Long-press is "more than a tap", consistently: a symbol key inserts the call with
+  // its arguments spelled out (a skeleton), and a suggestion chip wraps the selection
+  // (or the argument under the caret) in that head. It never replaces text
+  // destructively, and it never runs anything.
+  function handleKeyLongPress(key) {
+    if (!key || !assist) return false;
+    if (key.a === 'assist' && key.d && key.d.kind === 'accept') {
+      assist.wrap(key.d.name);
+      return true;
+    }
+    if (key.a === 'plot') return assist.applySkeleton('Plot');
+    if (key.a === 'solve') return assist.applySkeleton('Solve');
+    if (!key.a && key.l) return assist.applySkeleton(key.l);
+    return false;
   }
 
   // Plot / Solve action keys. A filled entry is wrapped unless it already is such a call.
@@ -737,6 +905,7 @@
   function clearActive() {
     var entry = activeEntry();
     if (!entry || !entry.dom) return;
+    recordEdit(entry, 'edit');
     entry.dom.input.value = '';
     entry.dom.output.innerHTML = '';
     entry.input = '';
@@ -786,6 +955,14 @@
   function handleKeyAction(action, data) {
     if (action === 'assist') {
       if (assist) assist.action(data);
+      return;
+    }
+    if (action === 'undo') {
+      undoEntry();
+      return;
+    }
+    if (action === 'redo') {
+      redoEntry();
       return;
     }
     if (action === 'enter') submitActive();
@@ -1005,19 +1182,29 @@
     keyboard = new global.WoxiKeyboard.Keyboard({
       onInsert: function (text, caret) { insertText(text, caret); },
       onAction: handleKeyAction,
+      onLongPress: handleKeyLongPress,
     });
 
     assist = new global.WoxiAssist.Assist({
       read: readActiveText,
       replace: replaceRange,
       setCaret: setCaret,
+      select: selectRange,
       evaluate: runTemplate,
       templates: gatherTemplates,
+      entryId: function () {
+        var entry = activeEntry();
+        return entry ? state.entries.indexOf(entry) : 0;
+      },
+      codes: function () {
+        return state.entries.map(function (entry) { return entry.input || ''; });
+      },
     });
     assist.bind(keyboard, function (msgType, content) {
       if (!engine) return Promise.resolve(null);
       return engine.query(msgType, content);
     });
+    refreshUndoKeys();
 
     var restored = restore();
     if (!restored) state.entries = [];
@@ -1174,6 +1361,8 @@
           ' matches=' + assist.matches.names.slice(0, 6).join(',') +
           ' caret=' + assistRead.caret +
           ' text="' + assistRead.code.slice(0, 40) + '"' +
+          ' issues=' + assist.issues.length +
+          ' defs=' + assist.definitions.length +
           ' bar=' + barRects.join(' '));
         var viewport = global.visualViewport;
         var kbdRect = document.getElementById('woxi-keyboard').getBoundingClientRect();
@@ -1210,6 +1399,47 @@
         if (!pressed) { log('press: no key ' + argument); break; }
         keyboard.press(pressed.key);
         log('press: ' + argument + ' page=' + pressed.page);
+        break;
+      }
+      case 'undo': {
+        undoEntry();
+        var undoEntryNow = activeEntry();
+        log('undo: text="' + (undoEntryNow && undoEntryNow.dom ? undoEntryNow.dom.input.value.slice(0, 40) : '') +
+          '" canUndo=' + canUndo(undoEntryNow) + ' canRedo=' + canRedo(undoEntryNow));
+        break;
+      }
+      case 'redo': {
+        redoEntry();
+        var redoEntryNow = activeEntry();
+        log('redo: text="' + (redoEntryNow && redoEntryNow.dom ? redoEntryNow.dom.input.value.slice(0, 40) : '') +
+          '" canUndo=' + canUndo(redoEntryNow) + ' canRedo=' + canRedo(redoEntryNow));
+        break;
+      }
+      case 'diag': {
+        if (!assist) { log('diag: none'); break; }
+        log('diag: items=' + assist.issues.length +
+          ' codes=' + assist.issues.map(function (issue) { return issue.code; }).join(',') +
+          ' fixes=' + assist.issues.filter(function (issue) { return issue.fix; }).length +
+          ' checked="' + assist.issuesText.slice(0, 30) + '"');
+        break;
+      }
+      case 'skeleton': {
+        if (!assist) { log('skeleton: none'); break; }
+        var skeletonDone = assist.applySkeleton(argument || 'Plot');
+        log('skeleton: ' + (argument || 'Plot') + ' done=' + skeletonDone);
+        break;
+      }
+      case 'wrap': {
+        if (!assist) { log('wrap: none'); break; }
+        assist.wrap(argument || 'Simplify');
+        log('wrap: ' + (argument || 'Simplify'));
+        break;
+      }
+      case 'card': {
+        if (!assist) { log('card: none'); break; }
+        assist.openSheet(argument || 'call');
+        log('card: ' + (argument || 'call') + ' rows=' +
+          document.querySelectorAll('#woxi-assist-body [data-assist-example],#woxi-assist-body [data-assist-variant],#woxi-assist-body [data-assist-option]').length);
         break;
       }
       case 'caret': {

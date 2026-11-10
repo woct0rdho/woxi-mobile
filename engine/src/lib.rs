@@ -66,7 +66,7 @@ use jni::sys::{jboolean, jstring};
 use jni::{Env, EnvUnowned};
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use woxi::syntax::Expr;
@@ -1439,6 +1439,48 @@ fn plot_request(json: &str) -> String {
 /// Upper bound on a completion reply, whatever the request asks for.
 const MAX_MATCHES: usize = 200;
 
+/// Woxi's ordering of how fundamental each symbol is: `List` 1, `Rule` 2, `Times` 3,
+/// ... `Plot` 21, `Sin` 22. It is the closest thing the registry has to a usage count,
+/// and it is a better prior than name length: `PlotPoints` (193) is far likelier than
+/// `PetersenGraph` (1620), which is exactly the `pts` case.
+static RANKS: LazyLock<HashMap<&'static str, u32>> = LazyLock::new(|| {
+    let mut table = HashMap::new();
+    for line in include_str!("../data/functions.csv").lines().skip(1) {
+        // name,"description",status,effect_level,version,rank — the name is never
+        // quoted and the rank is the last field, so the middle columns can be skipped.
+        let Some((name, rest)) = line.split_once(',') else {
+            continue;
+        };
+        let Some((_, rank)) = rest.rsplit_once(',') else {
+            continue;
+        };
+        if let Ok(rank) = rank.trim().parse::<u32>() {
+            table.insert(name, rank);
+        }
+    }
+    table
+});
+
+/// A coarse frequency band of a name, or `None` when the registry does not rank it
+/// (user symbols, package contexts). The first hundred names share a band so that
+/// among them length still decides, which is what puts `Plot` before `Power` for `P`.
+fn rank_band(name: &str) -> Option<u32> {
+    let rank = RANKS.get(name)?;
+    Some(if *rank < 100 { 0 } else { 1 + rank / 1000 })
+}
+
+/// Names past this band are offered only when the query is specific (see
+/// [`is_specific`]) or when the document already uses them: about a third of the
+/// registry, the tail that would otherwise crowd the bar while typing three letters.
+const RARE_BAND: u32 = 4;
+
+/// A name the registry does not rank this long is presumed rare: nobody types
+/// `VectorFieldPlots`ListVectorFieldPlot` in full on a phone.
+const LONG_NAME: usize = 20;
+
+/// A typed fragment this long is specific on its own: it names a word, not a letter.
+const SPECIFIC_LEN: usize = 4;
+
 /// Every symbol the interpreter knows, with whether Woxi implements it. Built once
 /// from the `functions.csv` embedded in the interpreter, so a rebuild of the engine
 /// is the only thing that can change it. `is_known_wolfram_function` is the
@@ -1528,43 +1570,215 @@ fn identifier_at_cursor(code: &str, cursor: usize) -> &str {
 /// Whether `needle` is a subsequence of `haystack` that starts at its first character.
 /// A loose subsequence would make a two-letter prefix match hundreds of names (`lo`
 /// would find `Plot`), which is noise on a bar that shows three of them.
-fn is_prefix_subsequence(needle: &str, haystack: &str) -> bool {
-    let mut wanted = needle.chars();
-    let mut chars = haystack.chars();
-    let Some(first) = wanted.next() else {
+/// Whether the character at `index` starts a word of a symbol name: the name's start,
+/// a capital after a lower-case letter or a digit, a digit after a letter, or anything
+/// after `$`. CamelCase names are the only word structure Wolfram names have.
+fn is_word_start(chars: &[char], index: usize) -> bool {
+    if index == 0 {
         return true;
-    };
-    if chars.next() != Some(first) {
-        return false;
     }
-    wanted.all(|wanted| chars.any(|candidate| candidate == wanted))
+    let previous = chars[index - 1];
+    let current = chars[index];
+    if previous == '$' {
+        return true;
+    }
+    if current.is_ascii_uppercase() && (previous.is_ascii_lowercase() || previous.is_ascii_digit())
+    {
+        return true;
+    }
+    current.is_ascii_digit() && previous.is_ascii_alphabetic()
 }
 
-/// How well `name` answers `prefix`: lower is better, `None` means no match. The
-/// levels are exact name, prefix, camel-case initials (`PP` -> `PlotPoints`) and a
-/// subsequence, which is what a half-remembered name looks like.
-fn match_score(prefix: &str, name: &str) -> Option<u8> {
+/// The indices where a word starts in a symbol name (see [`is_word_start`]).
+fn word_starts(chars: &[char]) -> Vec<usize> {
+    (0..chars.len())
+        .filter(|&index| is_word_start(chars, index))
+        .collect()
+}
+
+/// Whether `segment` matches the word `name[word_start..word_end]`, and where its last
+/// character landed. The segment has to start the word. Its remaining characters may
+/// skip letters inside it, which is how `Rng` reads `Range`.
+fn match_segment(
+    segment: &[char],
+    name: &[char],
+    word_start: usize,
+    word_end: usize,
+) -> Option<usize> {
+    let first = segment.first()?;
+    if !name[word_start].eq_ignore_ascii_case(first) {
+        return None;
+    }
+    let mut index = word_start + 1;
+    let mut last = word_start;
+    for wanted in &segment[1..] {
+        let position = (index..word_end).find(|&i| name[i].eq_ignore_ascii_case(wanted))?;
+        last = position;
+        index = position + 1;
+    }
+    Some(last)
+}
+
+/// The span a fuzzy match covers and how many words it touches, or `None`.
+///
+/// A fuzzy match is an **abbreviation of whole words**: the query is split at its
+/// capitals, and each piece has to match one word of the name, starting with that
+/// word's first letter. `PP` is `PlotPoints`, `PltRng` is `PlotRange`, `Rng` is
+/// `Range`, `PS` is `PlotStyle`. What it does *not* do is pick letters across word
+/// middles (`pts` cannot reach `PlotPoints` through `PacletSite`-style skipping),
+/// which is what keeps the list quiet.
+fn abbreviation_span(query: &[char], name: &[char]) -> Option<(usize, usize)> {
+    if query.is_empty() {
+        return None;
+    }
+    let starts = word_starts(name);
+    let mut segment_start = 0;
+    let mut word_index = 0;
+    let mut first_match = None;
+    let mut last_match = 0;
+    let mut words = 0;
+    for index in 1..=query.len() {
+        if index < query.len() && !query[index].is_ascii_uppercase() {
+            continue;
+        }
+        let segment = &query[segment_start..index];
+        let mut matched = None;
+        for (position, &start) in starts.iter().enumerate().skip(word_index) {
+            let end = starts.get(position + 1).copied().unwrap_or(name.len());
+            if let Some(last) = match_segment(segment, name, start, end) {
+                matched = Some((position + 1, start, last));
+                break;
+            }
+        }
+        let (next_word, start, last) = matched?;
+        if first_match.is_none() {
+            first_match = Some(start);
+        }
+        last_match = last;
+        word_index = next_word;
+        segment_start = index;
+        words += 1;
+    }
+    Some((last_match - first_match? + 1, words))
+}
+
+/// The score of an abbreviation: a tighter match is a better one, so `PP` prefers
+/// `PlotPoints` (initials five bytes apart) over `PrimePi` (six).
+fn abbreviation_score(span: usize) -> i32 {
+    -i32::try_from(span).unwrap_or(0)
+}
+
+/// A substring query shorter than this matches too many names to be useful: `pl`
+/// appears inside every `...Plot` name.
+const SUBSTRING_MIN_LEN: usize = 3;
+
+/// How well `name` answers `prefix`. Lower tiers come first: exact name, prefix,
+/// CamelCase initials, substring at a word start (`Range` -> `PlotRange`), substring
+/// anywhere, and only then a fuzzy abbreviation, which the caller asks for when the
+/// sharper tiers are empty.
+struct Quality {
+    tier: u8,
+    /// Higher is better. Only meaningful within a tier.
+    score: i32,
+    /// How many words of the name the query touches. An abbreviation that covers
+    /// every word of a long name is specific even when it is short (`RngFlt`), which
+    /// is how rare names stay reachable.
+    words: usize,
+}
+
+fn match_quality(prefix: &str, name: &str) -> Option<Quality> {
     if prefix.is_empty() {
-        return Some(3);
+        // Browsing: nothing is more relevant than anything else, the caller sorts by
+        // status, frequency and name.
+        return Some(Quality {
+            tier: 9,
+            score: 0,
+            words: 0,
+        });
     }
     let wanted = prefix.to_ascii_lowercase();
     let candidate = name.to_ascii_lowercase();
     if candidate == wanted {
-        return Some(0);
+        return Some(Quality {
+            tier: 0,
+            score: 0,
+            words: 0,
+        });
     }
     if candidate.starts_with(&wanted) {
-        return Some(1);
+        return Some(Quality {
+            tier: 1,
+            score: 0,
+            words: 1,
+        });
     }
+    // CamelCase initials: `PP` is `PlotPoints`, `PS` is `PlotStyle`. The initials that
+    // sit closest together win, so `PP` prefers `PlotPoints` over `PrimePi`.
     if prefix.chars().all(|ch| ch.is_ascii_uppercase()) {
-        let initials: String = name.chars().filter(|ch| ch.is_ascii_uppercase()).collect();
-        if initials.starts_with(prefix) {
-            return Some(2);
+        let initials: Vec<usize> = name
+            .char_indices()
+            .filter(|(_, ch)| ch.is_ascii_uppercase())
+            .map(|(index, _)| index)
+            .collect();
+        if initials.len() >= prefix.chars().count()
+            && initials
+                .iter()
+                .zip(prefix.chars())
+                .all(|(&index, wanted)| name[index..].starts_with(wanted))
+        {
+            let first = initials[0];
+            let last = initials[prefix.chars().count() - 1];
+            return Some(Quality {
+                tier: 2,
+                score: -i32::try_from(last - first + 1).unwrap_or(0),
+                words: prefix.chars().count(),
+            });
         }
     }
-    if is_prefix_subsequence(&wanted, &candidate) {
-        return Some(4);
+    if wanted.chars().count() >= SUBSTRING_MIN_LEN {
+        if let Some(offset) = candidate.find(&wanted) {
+            let start = name[..offset].chars().count();
+            let chars: Vec<char> = name.chars().collect();
+            if is_word_start(&chars, start) {
+                return Some(Quality {
+                    tier: 3,
+                    score: -i32::try_from(start).unwrap_or(0),
+                    words: 1,
+                });
+            }
+            let substring = Quality {
+                tier: 5,
+                score: -i32::try_from(start).unwrap_or(0),
+                words: 1,
+            };
+            // A substring in the middle of a word is the weakest kind of match, but an
+            // abbreviation of that word still counts: `pts` reaches `...Points` rather
+            // than `Script...`, so try the words first and fall back to the substring.
+            if let Some((span, words)) =
+                abbreviation_span(&prefix.chars().collect::<Vec<char>>(), &chars)
+            {
+                return Some(Quality {
+                    tier: 4,
+                    score: abbreviation_score(span),
+                    words,
+                });
+            }
+            return Some(substring);
+        }
     }
-    None
+    // Fuzzy matching for one letter would list half the language.
+    if wanted.chars().count() < 2 {
+        return None;
+    }
+    let chars: Vec<char> = name.chars().collect();
+    // The segments come from the query as typed: a capital starts a word of the name.
+    let query: Vec<char> = prefix.chars().collect();
+    let (span, words) = abbreviation_span(&query, &chars)?;
+    Some(Quality {
+        tier: 4,
+        score: abbreviation_score(span),
+        words,
+    })
 }
 
 /// The documentation category of a symbol (`math`, `plotting`, ...), which is the
@@ -1588,11 +1802,108 @@ struct Candidate {
     session: bool,
     doc: Option<&'static str>,
     category: &'static str,
-    score: u8,
+    tier: u8,
+    /// Higher is better. Only meaningful within a tier.
+    score: i32,
+    /// A package-qualified name (`Context`Symbol`) or a system variable (`$Name`):
+    /// real symbols, but rarely what a phone user is typing, so they sort last.
+    quirk: bool,
+    /// The frequency band of [`rank_band`]. `None` when the registry does not rank it.
+    band: Option<u32>,
+    /// Named somewhere in the document, which lifts a rare name to the front.
+    used: bool,
 }
+
+/// The order the bar and the sheet show: what the user typed, then how often the name
+/// shows up in Wolfram work, then the cheaper tie-breakers.
+fn order(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
+    a.tier
+        .cmp(&b.tier)
+        // Package-qualified names and system variables are real, but they are not what
+        // a phone user is typing: they go after the plain names of a tier.
+        .then_with(|| a.quirk.cmp(&b.quirk))
+        // The document's own vocabulary beats any prior.
+        .then_with(|| b.session.cmp(&a.session))
+        .then_with(|| b.used.cmp(&a.used))
+        .then_with(|| a.band.unwrap_or(u32::MAX).cmp(&b.band.unwrap_or(u32::MAX)))
+        .then_with(|| b.score.cmp(&a.score))
+        .then_with(|| b.implemented.cmp(&a.implemented))
+        .then_with(|| a.name.len().cmp(&b.name.len()))
+        .then_with(|| a.name.cmp(&b.name))
+}
+
+/// Whether a short query is specific enough to name a rare symbol: four characters,
+/// an exact name, or an abbreviation that covers every word (`RngFlt` is specific,
+/// `Rng` is not, even though both are three words' worth of letters).
+fn is_specific(prefix: &str, quality: &Quality, name: &str) -> bool {
+    if prefix.chars().count() >= SPECIFIC_LEN || quality.tier == 0 {
+        return true;
+    }
+    if quality.words < 2 {
+        return false;
+    }
+    let chars: Vec<char> = name.chars().collect();
+    quality.words >= word_starts(&chars).len()
+}
+
+// Symbols the user has already written in this document. The engine is the only place
+// that sees every entry, so it collects them from evaluated statements and from the
+// typing-help requests, which carry the text around the caret.
+thread_local! {
+    static USED_SYMBOLS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+fn is_builtin_name(name: &str) -> bool {
+    symbol_table()
+        .binary_search_by(|(known, _)| (*known).cmp(name))
+        .is_ok()
+}
+
+fn remember_usage(code: &str) {
+    if code.is_empty() {
+        return;
+    }
+    let tokens = woxi::lsp::analysis::tokenize(code);
+    let mut names = Vec::new();
+    for token in &tokens {
+        if token.kind != woxi::lsp::analysis::TokenKind::Symbol {
+            continue;
+        }
+        let name = token.text(code);
+        if is_builtin_name(name) {
+            names.push(name.to_string());
+        }
+    }
+    if names.is_empty() {
+        return;
+    }
+    USED_SYMBOLS.with(|used| {
+        let mut used = used.borrow_mut();
+        for name in names {
+            used.insert(name);
+        }
+    });
+}
+
+fn was_used(name: &str) -> bool {
+    USED_SYMBOLS.with(|used| used.borrow().contains(name))
+}
+
+/// Fuzzy matches are only offered when the sharper tiers leave fewer than this many
+/// candidates. Typing a prefix that already has answers never grows a fuzzy tail.
+const FUZZY_MIN_SHARP: usize = 3;
+
+/// How many of the weakest matches (a substring in the middle of a word) are kept, so
+/// the list stays short even for a two-letter fragment.
+const MAX_WEAK: usize = 20;
 
 /// Ranked suggestions for the prefix before `cursor`, plus the span the frontend
 /// should replace when one is accepted.
+///
+/// Two lists are built in one pass: the sharp matches (exact, prefix, substring) and
+/// the fuzzy ones. Fuzzy matches are appended only when the sharp ones are scarce, so
+/// typing `Plo` shows `Plot...` and nothing else, while `Rng` or `pts` still finds
+/// `PlotRange` and `PlotPoints`.
 fn candidates(
     code: &str,
     cursor: usize,
@@ -1600,27 +1911,60 @@ fn candidates(
     category: &str,
 ) -> (usize, usize, usize, Vec<Candidate>) {
     let (start, prefix) = identifier_before(code, cursor);
-    let mut rows: Vec<Candidate> = Vec::new();
+    let mut sharp: Vec<Candidate> = Vec::new();
+    let mut weak: Vec<Candidate> = Vec::new();
+
+    let mut push = |name: String,
+                    description: String,
+                    implemented: bool,
+                    session: bool,
+                    doc: Option<&'static str>,
+                    symbol_category: &'static str,
+                    quality: Quality| {
+        let quirk = name.contains('`') || name.starts_with('$');
+        let band = rank_band(&name);
+        let used = !session && was_used(&name);
+        let rare = band.is_some_and(|band| band >= RARE_BAND)
+            || (band.is_none() && name.chars().count() > LONG_NAME);
+        // Low-frequency names are matched only when the query is specific or the
+        // document already uses them. That is what keeps three typed letters from
+        // listing the tail of the registry.
+        if rare && !used && !is_specific(prefix, &quality, &name) {
+            return;
+        }
+        let row = Candidate {
+            name,
+            description,
+            implemented,
+            session,
+            doc,
+            category: symbol_category,
+            tier: quality.tier,
+            score: quality.score,
+            quirk,
+            band,
+            used,
+        };
+        if quality.tier >= 5 {
+            if weak.len() < MAX_WEAK {
+                weak.push(row);
+            }
+        } else {
+            sharp.push(row);
+        }
+    };
 
     if category.is_empty() {
         for name in woxi::get_defined_names() {
-            let Some(score) = match_score(prefix, &name) else {
+            let Some(quality) = match_quality(prefix, &name) else {
                 continue;
             };
-            rows.push(Candidate {
-                name,
-                description: String::new(),
-                implemented: true,
-                session: true,
-                doc: None,
-                category: "",
-                score,
-            });
+            push(name, String::new(), true, true, None, "", quality);
         }
     }
 
     for (name, implemented) in symbol_table() {
-        let Some(score) = match_score(prefix, name) else {
+        let Some(quality) = match_quality(prefix, name) else {
             continue;
         };
         let (symbol_category, doc) = category_of(name);
@@ -1630,25 +1974,23 @@ fn candidates(
         let description = woxi::evaluator::functions::get_builtin_function_info(name)
             .map(|info| info.description.to_string())
             .unwrap_or_default();
-        rows.push(Candidate {
-            name: name.to_string(),
+        push(
+            name.to_string(),
             description,
-            implemented: *implemented,
-            session: false,
+            *implemented,
+            false,
             doc,
-            category: symbol_category,
-            score,
-        });
+            symbol_category,
+            quality,
+        );
     }
 
-    rows.sort_by(|a, b| {
-        a.score
-            .cmp(&b.score)
-            .then_with(|| b.session.cmp(&a.session))
-            .then_with(|| b.implemented.cmp(&a.implemented))
-            .then_with(|| a.name.len().cmp(&b.name.len()))
-            .then_with(|| a.name.cmp(&b.name))
-    });
+    sharp.sort_by(order);
+    let mut rows = sharp;
+    if rows.len() < FUZZY_MIN_SHARP {
+        weak.sort_by(order);
+        rows.append(&mut weak);
+    }
     let total = rows.len();
     rows.truncate(limit);
     (start, cursor, total, rows)
@@ -1664,8 +2006,24 @@ fn cursor_of(json: &str, code: &str) -> usize {
     cursor
 }
 
+/// How much of a symbol Woxi implements. The four states matter to a user: "not
+/// implemented yet" may arrive with a release, "not planned" never will.
+fn status_name(name: &str) -> &'static str {
+    use woxi::evaluator::functions::{implementation_status, ImplementationStatus};
+    match implementation_status(name) {
+        Some(ImplementationStatus::Implemented) => "implemented",
+        Some(ImplementationStatus::Partial) => "partial",
+        Some(ImplementationStatus::NotImplemented) => "not_implemented",
+        Some(ImplementationStatus::NotPlanned) => "not_planned",
+        None => "unknown",
+    }
+}
+
 fn completion_content(json: &str) -> String {
     let code = json_field_text(json, "code").unwrap_or_default();
+    // The entry is part of the document: a name written here counts as used, even if
+    // the user has not run it yet.
+    remember_usage(&code);
     let cursor = cursor_of(json, &code);
     let limit = json_field_number(json, "limit")
         .map(|value| (value.max(1.0) as usize).min(MAX_MATCHES))
@@ -1685,8 +2043,9 @@ fn completion_content(json: &str) -> String {
             json_escape(&row.description)
         ));
         extra.push(format!(
-            "{{\"implemented\":{},\"category\":\"{}\",\"doc\":\"{}\"}}",
+            "{{\"implemented\":{},\"status\":\"{}\",\"category\":\"{}\",\"doc\":\"{}\"}}",
             if row.implemented { 1 } else { 0 },
+            status_name(&row.name),
             json_escape(row.category),
             json_escape(row.doc.unwrap_or(""))
         ));
@@ -1703,9 +2062,10 @@ fn completion_content(json: &str) -> String {
     )
 }
 
-/// The options a symbol takes, in declaration order. `Options[f]` is evaluated
-/// through `interpret_to_expr`, which does not record `Out[]` history.
-fn options_of(name: &str) -> Vec<String> {
+/// The options a symbol takes with their declared defaults, in declaration order.
+/// `Options[f]` is evaluated through `interpret_to_expr`, which does not record
+/// `Out[]` history.
+fn options_of(name: &str) -> Vec<(String, String)> {
     if !is_symbol_name(name) {
         return Vec::new();
     }
@@ -1717,17 +2077,48 @@ fn options_of(name: &str) -> Vec<String> {
     };
     let mut options = Vec::new();
     for rule in rules.iter() {
-        // Options may be declared with a delayed rule (`DisplayFunction :> …`), which
+        // Options may be declared with a delayed rule (`DisplayFunction :> ...`), which
         // Woxi 0.4 uses for several of Plot's defaults.
-        let pattern = match rule {
-            Expr::Rule { pattern, .. } | Expr::RuleDelayed { pattern, .. } => pattern,
+        let (pattern, replacement) = match rule {
+            Expr::Rule {
+                pattern,
+                replacement,
+            }
+            | Expr::RuleDelayed {
+                pattern,
+                replacement,
+            } => (pattern, replacement),
             _ => continue,
         };
         if let Expr::Identifier(option) = pattern.as_ref() {
-            options.push(option.clone());
+            let default = woxi::syntax::expr_to_input_form(replacement);
+            options.push((option.clone(), default));
         }
     }
     options
+}
+
+/// The attributes a symbol carries (`HoldAll`, `Listable`, ...). Read through
+/// `Attributes[...]`, which does not record `Out[]` history. They are the part of a
+/// symbol's behaviour an experienced user actually reasons about: whether its
+/// arguments are evaluated is often the whole question.
+fn attributes_of(name: &str) -> Vec<String> {
+    if !is_symbol_name(name) {
+        return Vec::new();
+    }
+    let Ok(value) = woxi::interpret_to_expr(&format!("Attributes[{name}]")) else {
+        return Vec::new();
+    };
+    let Expr::List(items) = &value else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Expr::Identifier(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn inspect_content(json: &str) -> String {
@@ -1756,7 +2147,8 @@ fn inspect_content(json: &str) -> String {
         lines.push(description.clone());
     }
     if !options.is_empty() {
-        lines.push(format!("Options: {}", options.join(", ")));
+        let names: Vec<&str> = options.iter().map(|(option, _)| option.as_str()).collect();
+        lines.push(format!("Options: {}", names.join(", ")));
     }
     if let Some((min, max)) = arity {
         lines.push(if max == usize::MAX {
@@ -1773,18 +2165,31 @@ fn inspect_content(json: &str) -> String {
 
     let option_json: Vec<String> = options
         .iter()
-        .map(|option| format!("\"{}\"", json_escape(option)))
+        .map(|(option, _)| format!("\"{}\"", json_escape(option)))
+        .collect();
+    let default_json: Vec<String> = options
+        .iter()
+        .map(|(option, default)| {
+            format!("[\"{}\",\"{}\"]", json_escape(option), json_escape(default))
+        })
+        .collect();
+    let attribute_json: Vec<String> = attributes_of(name)
+        .iter()
+        .map(|attribute| format!("\"{}\"", json_escape(attribute)))
         .collect();
     format!(
-        "{{\"found\":true,\"data\":{{\"text/plain\":\"{}\"}},\"metadata\":{{\"_woxi\":{{\"name\":\"{}\",\"description\":\"{}\",\"implemented\":{},\"category\":\"{}\",\"doc\":\"{}\",\"arity\":{},\"options\":[{}]}}}}}}",
+        "{{\"found\":true,\"data\":{{\"text/plain\":\"{}\"}},\"metadata\":{{\"_woxi\":{{\"name\":\"{}\",\"description\":\"{}\",\"implemented\":{},\"status\":\"{}\",\"attributes\":[{}],\"category\":\"{}\",\"doc\":\"{}\",\"arity\":{},\"options\":[{}],\"optionDefaults\":[{}]}}}}}}",
         json_escape(&lines.join("\n")),
         json_escape(name),
         json_escape(&description),
         if implemented { 1 } else { 0 },
+        status_name(name),
+        attribute_json.join(","),
         json_escape(category),
         json_escape(doc.unwrap_or("")),
         arity_json,
-        option_json.join(",")
+        option_json.join(","),
+        default_json.join(",")
     )
 }
 
@@ -1857,21 +2262,458 @@ fn ends_with_operator(code: &str) -> bool {
     )
 }
 
+fn is_complete_status(code: &str) -> &'static str {
+    if code.trim().is_empty() {
+        return "complete";
+    }
+    let depth = bracket_depth(code);
+    if depth > 0 || ends_with_operator(code) {
+        "incomplete"
+    } else if depth < 0 || woxi::parse(code).is_err() {
+        "invalid"
+    } else {
+        "complete"
+    }
+}
+
 fn is_complete_content(json: &str) -> String {
     let code = json_field_text(json, "code").unwrap_or_default();
-    let status = if code.trim().is_empty() {
-        "complete"
-    } else {
-        let depth = bracket_depth(&code);
-        if depth > 0 || ends_with_operator(&code) {
-            "incomplete"
-        } else if depth < 0 || woxi::parse(&code).is_err() {
-            "invalid"
-        } else {
-            "complete"
-        }
-    };
+    let status = is_complete_status(&code);
     format!("{{\"status\":\"{status}\",\"indent\":\"\"}}")
+}
+
+/// Syntax, spelling and unsupported-symbol problems in one entry, from Woxi's own
+/// forgiving tokenizer and parser.
+///
+/// Unfinished input has no diagnostics: while a call is still being typed, every
+/// missing bracket would be an error. The reply says so with `status: incomplete`
+/// instead, which the caller can ignore.
+fn diagnostics_content(json: &str) -> String {
+    use woxi::lsp::analysis;
+
+    let code = json_field_text(json, "code").unwrap_or_default();
+    remember_usage(&code);
+    let status = is_complete_status(&code);
+    if status == "incomplete" {
+        return "{\"status\":\"incomplete\",\"items\":[]}".to_string();
+    }
+
+    let tokens = analysis::tokenize(&code);
+    let definitions = analysis::find_definitions(&code, &tokens);
+    let mut rows = Vec::new();
+    for item in analysis::diagnostics(&code, &tokens, &definitions) {
+        let severity = match item.severity {
+            analysis::Severity::Error => "error",
+            analysis::Severity::Warning => "warning",
+            analysis::Severity::Information => "info",
+        };
+        // A spelling hint already carries the name it meant, but as prose. Look the
+        // suggestion up again so the frontend gets an edit instead of a sentence.
+        let mut fix = String::new();
+        if item.code == "spelling" {
+            if let Some(token) = analysis::symbol_at(&tokens, item.range.0) {
+                let name = token.text(&code);
+                if let Some(suggestion) = analysis::spelling_suggestion(name) {
+                    fix = format!(
+                        ",\"fix\":{{\"label\":\"Replace with {}\",\"insert\":\"{}\",\"start\":{},\"end\":{}}}",
+                        json_escape(suggestion),
+                        json_escape(suggestion),
+                        token.start,
+                        token.end
+                    );
+                }
+            }
+        }
+        rows.push(format!(
+            "{{\"start\":{},\"end\":{},\"severity\":\"{severity}\",\"code\":\"{}\",\"message\":\"{}\"{fix}}}",
+            item.range.0,
+            item.range.1,
+            json_escape(item.code),
+            json_escape(&item.message)
+        ));
+    }
+    format!(
+        " {{\"status\":\"{status}\",\"items\":[{}]}}",
+        rows.join(",")
+    )
+    .trim_start()
+    .to_string()
+}
+
+/// A JSON array of strings under `key`. The notebook queries send arrays of entry
+/// texts, which is the only array shape they need.
+fn json_string_array(json: &str, key: &str) -> Vec<String> {
+    let needle = format!("\"{key}\"");
+    let Some(at) = json.find(&needle) else {
+        return Vec::new();
+    };
+    let rest = &json[at + needle.len()..];
+    let Some(start) = rest.find('[') else {
+        return Vec::new();
+    };
+    let mut chars = rest[start + 1..].chars().peekable();
+    let mut out = Vec::new();
+    while let Some(ch) = chars.next() {
+        if ch == ']' {
+            break;
+        }
+        if ch != '"' {
+            continue;
+        }
+        let mut value = String::new();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '"' => break,
+                '\\' => match chars.next() {
+                    Some('n') => value.push('\n'),
+                    Some('t') => value.push('\t'),
+                    Some('r') => value.push('\r'),
+                    Some(other) => value.push(other),
+                    None => break,
+                },
+                other => value.push(other),
+            }
+        }
+        out.push(value);
+    }
+    out
+}
+
+/// One argument of a call, as the shape classifier sees it.
+struct Slot {
+    role: &'static str,
+    name: String,
+    examples: Vec<String>,
+}
+
+fn slot(role: &'static str, name: impl Into<String>, example: String) -> Slot {
+    Slot {
+        role,
+        name: name.into(),
+        examples: vec![example],
+    }
+}
+
+fn is_number(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Integer(_) | Expr::BigInteger(_) | Expr::Real(_) | Expr::Constant(_)
+    )
+}
+
+fn mentions(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::Identifier(id) | Expr::Constant(id) => id == name,
+        Expr::List(items) => items.iter().any(|item| mentions(item, name)),
+        Expr::FunctionCall { args, .. } => args.iter().any(|arg| mentions(arg, name)),
+        Expr::Rule {
+            pattern,
+            replacement,
+        }
+        | Expr::RuleDelayed {
+            pattern,
+            replacement,
+        } => mentions(pattern, name) || mentions(replacement, name),
+        Expr::UnaryOp { operand, .. } => mentions(operand, name),
+        Expr::BinaryOp { left, right, .. } => mentions(left, name) || mentions(right, name),
+        Expr::Comparison { operands, .. } => operands.iter().any(|item| mentions(item, name)),
+        Expr::Part { expr, index } => mentions(expr, name) || mentions(index, name),
+        _ => false,
+    }
+}
+
+/// `{v, ...}` at the start of a list: the iterator form of `Plot`, `Table`, `Sum` and
+/// friends. Returns the slot name and the variable the other arguments refer to.
+fn iterator_of(expr: &Expr) -> Option<(String, String)> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    let list: Vec<&Expr> = items.iter().collect();
+    if list.len() < 2 || list.len() > 4 {
+        return None;
+    }
+    let Expr::Identifier(variable) = list[0] else {
+        return None;
+    };
+    let name = match list.len() {
+        2 => format!("{{{variable}, {variable}max}}"),
+        3 => format!("{{{variable}, {variable}min, {variable}max}}"),
+        _ => format!("{{{variable}, {variable}min, {variable}max, d{variable}}}"),
+    };
+    Some((name, variable.clone()))
+}
+
+fn classify_argument(expr: &Expr, iterators: &[String]) -> Slot {
+    let text = woxi::syntax::expr_to_input_form(expr);
+    if let Some((name, variable)) = iterator_of(expr) {
+        if iterators.iter().any(|known| known == &variable) {
+            return slot("iterator", name, text);
+        }
+    }
+    match expr {
+        Expr::Rule { pattern, .. } | Expr::RuleDelayed { pattern, .. } => {
+            let name = match pattern.as_ref() {
+                Expr::Identifier(name) => name.clone(),
+                _ => "opt".to_string(),
+            };
+            slot("option", name, text)
+        }
+        Expr::List(items) => {
+            let all_rules = !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| matches!(item, Expr::Rule { .. } | Expr::RuleDelayed { .. }));
+            if all_rules {
+                return slot("options", "opts", text);
+            }
+            let all_numbers = !items.is_empty() && items.iter().all(is_number);
+            if all_numbers {
+                return slot("data", "data", text);
+            }
+            if iterators.iter().any(|variable| mentions(expr, variable)) {
+                return slot("expression", "{f1, f2, ...}", text);
+            }
+            slot("list", "list", text)
+        }
+        _ if is_number(expr) => slot("number", "n", text),
+        Expr::Identifier(_) => slot("symbol", "sym", text),
+        _ => {
+            if iterators.iter().any(|variable| mentions(expr, variable)) {
+                slot("expression", "f", text)
+            } else {
+                slot("expression", "expr", text)
+            }
+        }
+    }
+}
+
+/// Every call inside an expression, with its arguments classified by shape.
+fn learn_calls(expr: &Expr, out: &mut Vec<(String, Vec<Slot>)>) {
+    if let Expr::FunctionCall { name, args } = expr {
+        let list: Vec<&Expr> = args.iter().collect();
+        if !list.is_empty() {
+            // Which arguments are iterators: a list starting with a symbol, whose
+            // bounds are numbers or whose variable is used by another argument.
+            let mut iterators: Vec<String> = Vec::new();
+            for (index, arg) in list.iter().enumerate() {
+                let Some((_, variable)) = iterator_of(arg) else {
+                    continue;
+                };
+                let numeric_bounds = match arg {
+                    Expr::List(items) => items.iter().skip(1).all(is_number),
+                    _ => false,
+                };
+                let used_elsewhere = list
+                    .iter()
+                    .enumerate()
+                    .any(|(other, candidate)| other != index && mentions(candidate, &variable));
+                if numeric_bounds || used_elsewhere {
+                    iterators.push(variable);
+                }
+            }
+            let slots: Vec<Slot> = list
+                .iter()
+                .map(|arg| classify_argument(arg, &iterators))
+                .collect();
+            out.push((name.clone(), slots));
+        }
+        for arg in args.iter() {
+            learn_calls(arg, out);
+        }
+    }
+    match expr {
+        Expr::List(items) => {
+            for item in items.iter() {
+                learn_calls(item, out);
+            }
+        }
+        Expr::Rule {
+            pattern,
+            replacement,
+        }
+        | Expr::RuleDelayed {
+            pattern,
+            replacement,
+        } => {
+            learn_calls(pattern, out);
+            learn_calls(replacement, out);
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            learn_calls(left, out);
+            learn_calls(right, out);
+        }
+        _ => {}
+    }
+}
+
+/// Slot names, roles and example arguments learned from the shipped example gallery.
+/// The same examples are what the sheet shows, so a prototype can never disagree with
+/// an example the user can insert.
+fn prototypes_content(json: &str) -> String {
+    let examples = json_string_array(json, "examples");
+    let mut learned: Vec<(String, Vec<Slot>)> = Vec::new();
+    for example in &examples {
+        if let Ok(expr) = woxi::syntax::string_to_expr(example) {
+            learn_calls(&expr, &mut learned);
+        }
+    }
+
+    let mut order: Vec<String> = Vec::new();
+    let mut table: std::collections::HashMap<String, Vec<Vec<Slot>>> =
+        std::collections::HashMap::new();
+    for (head, slots) in learned {
+        let signature: Vec<(&'static str, String)> =
+            slots.iter().map(|s| (s.role, s.name.clone())).collect();
+        if !table.contains_key(&head) {
+            if order.len() >= 80 {
+                continue;
+            }
+            order.push(head.clone());
+            table.insert(head.clone(), Vec::new());
+        }
+        let variants = table.get_mut(&head).expect("inserted above");
+        let existing = variants.iter_mut().find(|variant| {
+            variant
+                .iter()
+                .map(|s| (s.role, s.name.clone()))
+                .collect::<Vec<_>>()
+                == signature
+        });
+        match existing {
+            Some(variant) => {
+                for (target, fresh) in variant.iter_mut().zip(slots) {
+                    if target.examples.len() < 3
+                        && !target
+                            .examples
+                            .iter()
+                            .any(|known| known == &fresh.examples[0])
+                    {
+                        target.examples.push(fresh.examples[0].clone());
+                    }
+                }
+            }
+            None => {
+                if variants.len() < 3 {
+                    variants.push(slots);
+                }
+            }
+        }
+    }
+
+    let heads: Vec<String> = order
+        .iter()
+        .map(|head| {
+            let variants: Vec<String> = table[head]
+                .iter()
+                .map(|slots| {
+                    let slots: Vec<String> = slots
+                        .iter()
+                        .map(|slot| {
+                            let examples: Vec<String> = slot
+                                .examples
+                                .iter()
+                                .map(|example| format!("\"{}\"", json_escape(example)))
+                                .collect();
+                            format!(
+                                "{{\"role\":\"{}\",\"name\":\"{}\",\"examples\":[{}]}}",
+                                slot.role,
+                                json_escape(&slot.name),
+                                examples.join(",")
+                            )
+                        })
+                        .collect();
+                    format!("{{\"slots\":[{}]}}", slots.join(","))
+                })
+                .collect();
+            format!("\"{}\":[{}]", json_escape(head), variants.join(","))
+        })
+        .collect();
+    format!("{{\"heads\":{{{}}}}}", heads.join(","))
+}
+
+fn collect_patterns(expr: &Expr, names: &mut Vec<String>) {
+    match expr {
+        Expr::Pattern { name, .. }
+        | Expr::PatternTest { name, .. }
+        | Expr::PatternOptional { name, .. } => {
+            if !name.is_empty() && !names.iter().any(|known| known == name) {
+                names.push(name.clone());
+            }
+        }
+        Expr::FunctionCall { args, .. } => {
+            for arg in args.iter() {
+                collect_patterns(arg, names);
+            }
+        }
+        Expr::List(items) => {
+            for item in items.iter() {
+                collect_patterns(item, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The pattern names bound by a definition's left-hand side: the parameters that are
+/// in scope in its body, which is what completion should offer first there.
+fn parameters_of(statement: &str) -> Vec<String> {
+    let Ok(expr) = woxi::syntax::string_to_expr(statement) else {
+        return Vec::new();
+    };
+    let target = match &expr {
+        Expr::FunctionCall { name, args }
+            if matches!(
+                name.as_str(),
+                "Set" | "SetDelayed" | "TagSet" | "TagSetDelayed" | "UpSet" | "UpSetDelayed"
+            ) =>
+        {
+            args.first()
+        }
+        _ => Some(&expr),
+    };
+    let mut names = Vec::new();
+    if let Some(target) = target {
+        collect_patterns(target, &mut names);
+    }
+    names
+}
+
+/// Where each symbol of a notebook is defined, per entry, with the definition's byte
+/// range and its parameters. One request for the whole notebook, debounced by the
+/// caller.
+fn definitions_content(json: &str) -> String {
+    use woxi::lsp::analysis;
+
+    let codes = json_string_array(json, "codes");
+    let mut entries = Vec::with_capacity(codes.len());
+    for code in &codes {
+        let tokens = analysis::tokenize(code);
+        let definitions = analysis::find_definitions(code, &tokens);
+        let rows: Vec<String> = definitions
+            .iter()
+            .map(|definition| {
+                let parameters =
+                    parameters_of(&code[definition.full_range.0..definition.full_range.1]);
+                let parameters: Vec<String> = parameters
+                    .iter()
+                    .map(|name| format!("\"{}\"", json_escape(name)))
+                    .collect();
+                format!(
+                    "{{\"name\":\"{}\",\"kind\":\"{}\",\"start\":{},\"end\":{},\"params\":[{}]}}",
+                    json_escape(&definition.name),
+                    match definition.kind {
+                        analysis::DefinitionKind::Function => "function",
+                        analysis::DefinitionKind::Variable => "variable",
+                    },
+                    definition.full_range.0,
+                    definition.full_range.1,
+                    parameters.join(",")
+                )
+            })
+            .collect();
+        entries.push(format!("[{}]", rows.join(",")));
+    }
+    format!("{{\"entries\":[{}]}}", entries.join(","))
 }
 
 fn catalog_content() -> String {
@@ -1888,6 +2730,9 @@ fn query_request(json: &str) -> String {
         "complete_request" => reply_ok(&msg_type, &completion_content(json)),
         "inspect_request" => reply_ok(&msg_type, &inspect_content(json)),
         "is_complete_request" => reply_ok(&msg_type, &is_complete_content(json)),
+        "diagnostics_request" => reply_ok(&msg_type, &diagnostics_content(json)),
+        "prototypes_request" => reply_ok(&msg_type, &prototypes_content(json)),
+        "definitions_request" => reply_ok(&msg_type, &definitions_content(json)),
         "catalog_request" => reply_ok(&msg_type, &catalog_content()),
         _ => reply_error(&msg_type, "UnknownMessage", "unknown msg_type"),
     }
@@ -2300,8 +3145,63 @@ mod tests {
         )
     }
 
+    /// The document's used-name set outlives a request by design, so a test that
+    /// counts names has to start from a clean document.
+    fn reset_used() {
+        USED_SYMBOLS.with(|used| used.borrow_mut().clear());
+    }
+
+    #[test]
+    fn the_frequency_table_matches_the_registry() {
+        // A handful of anchors from Woxi's own ordering, so a stale copy is noticed.
+        assert_eq!(RANKS.get("List"), Some(&1));
+        assert_eq!(RANKS.get("Plot"), Some(&21));
+        assert_eq!(RANKS.get("Sin"), Some(&22));
+        assert!(RANKS.len() > 5000, "{} ranked names", RANKS.len());
+        // Unranked names sort after every ranked one, and the prior separates names
+        // that the tiers cannot (`pts` means `PlotPoints` before `PetersenGraph`).
+        assert_eq!(rank_band("VectorLess"), None);
+        assert!(rank_band("PlotPoints") < rank_band("PetersenGraph"));
+    }
+
+    #[test]
+    fn completion_prefers_frequent_names() {
+        reset_used();
+        // `pts` abbreviates several names. The registry's frequency order picks the
+        // plotting one, which is what the user meant.
+        let reply = completion("pts", 3);
+        assert!(reply.contains("\"matches\":[\"PlotPoints\""), "{reply}");
+        // `ListPlay` and `ListPlot` both answer `ListP`. `ListPlot` is fundamental.
+        let reply = completion("ListP", 5);
+        assert!(reply.contains("\"matches\":[\"ListPlot\""), "{reply}");
+        // An unranked name is still offered for a short query, at the end.
+        let reply = completion("Vec", 3);
+        let vector_plot = reply.find("\"VectorPlot\"").expect("VectorPlot");
+        let vector_less = reply.find("\"VectorLess\"").expect("VectorLess");
+        assert!(vector_plot < vector_less, "{reply}");
+    }
+
+    #[test]
+    fn completion_hides_rare_names_until_the_query_is_specific() {
+        reset_used();
+        // `RangeFilter` sits deep in the tail: three letters are not specific enough.
+        let reply = completion("Ran", 3);
+        assert!(reply.contains("\"Range\""), "{reply}");
+        assert!(!reply.contains("\"RangeFilter\""), "{reply}");
+        // Four are, and so is abbreviating both of its words.
+        let reply = completion("Rang", 4);
+        assert!(reply.contains("\"RangeFilter\""), "{reply}");
+        let reply = completion("RngFlt", 6);
+        assert!(reply.contains("\"RangeFilter\""), "{reply}");
+        // A name the document already uses is matched at any length.
+        remember_usage("RangeFilter[1, 2]");
+        let reply = completion("Rng", 3);
+        assert!(reply.contains("\"RangeFilter\""), "{reply}");
+    }
+
     #[test]
     fn completion_ranks_prefix_before_subsequence() {
+        reset_used();
         let reply = completion("Plo", 3);
         assert!(reply.contains("\"status\":\"ok\""), "{reply}");
         // The prefix matches come first and in alphabetical order.
@@ -2320,6 +3220,33 @@ mod tests {
     }
 
     #[test]
+    fn completion_finds_a_word_from_the_middle() {
+        reset_used();
+        // A complete word in the middle of a CamelCase name.
+        let reply = completion("Range", 5);
+        assert!(reply.contains("\"PlotRange\""), "{reply}");
+        // The exact name still comes first.
+        assert!(reply.contains("\"matches\":[\"Range\""), "{reply}");
+        // Abbreviations that skip letters but start words.
+        let reply = completion("Rng", 3);
+        assert!(reply.contains("\"PlotRange\""), "{reply}");
+        let reply = completion("pts", 3);
+        assert!(reply.contains("\"PlotPoints\""), "{reply}");
+        // The fuzzy tier is a fallback: when the prefix already has answers it stays
+        // out of the list, which is what keeps it quiet.
+        let reply = completion("Pl", 2);
+        assert!(!reply.contains("\"ParametricPlot\""), "{reply}");
+        // A word abbreviation beats a mid-word fragment: `lot` reads `Locator`'s word
+        // before it reads the middle of `Plot`.
+        let reply = completion("lot", 3);
+        assert!(reply.contains("\"Locator\""), "{reply}");
+        // A fragment that is not a word start, and does not abbreviate words, is the
+        // last resort: `otran` still reaches `PlotRange`.
+        let reply = completion("otran", 5);
+        assert!(reply.contains("\"PlotRange\""), "{reply}");
+    }
+
+    #[test]
     fn completion_reports_the_span_to_replace() {
         let reply = completion("Sin[Plo", 7);
         assert!(reply.contains("\"cursor_start\":4"), "{reply}");
@@ -2333,6 +3260,7 @@ mod tests {
     #[test]
     fn completion_offers_session_symbols_first() {
         reset();
+        reset_used();
         let _ = woxi::interpret("myGadget[t_] := t^2");
         let reply = completion("myGad", 6);
         assert!(reply.contains("\"matches\":[\"myGadget\""), "{reply}");
@@ -2353,6 +3281,9 @@ mod tests {
         assert!(reply.contains("\"PlotRange\""), "{reply}");
         // A delayed option default must be listed too.
         assert!(reply.contains("\"PlotTheme\""), "{reply}");
+        // Attributes and the four-state status come from the interpreter.
+        assert!(reply.contains("\"HoldAll\""), "{reply}");
+        assert!(reply.contains("\"status\":\"implemented\""), "{reply}");
         assert!(reply.contains("plotting"), "{reply}");
         let after = woxi::get_last_output().map(|expr| format!("{expr:?}"));
         assert_eq!(before, after, "inspect must not record Out[] history");
@@ -2402,5 +3333,50 @@ mod tests {
         assert!(reply.contains("\"version\":"), "{reply}");
         let reply = query("complete_dance", "{}");
         assert!(reply.contains("UnknownMessage"), "{reply}");
+    }
+
+    #[test]
+    fn diagnostics_flag_a_misspelling_with_a_fix() {
+        let reply = query(
+            "diagnostics_request",
+            "{\"code\":\"Plott[Sin[x], {x, 0, 1}]\"}",
+        );
+        assert!(reply.contains("\"code\":\"spelling\""), "{reply}");
+        assert!(reply.contains("\"fix\""), "{reply}");
+        assert!(reply.contains("\"insert\":\"Plot\""), "{reply}");
+    }
+
+    #[test]
+    fn diagnostics_stay_quiet_while_typing() {
+        let reply = query(
+            "diagnostics_request",
+            "{\"code\":\"Plot[Sin[x], {x, 0, 1\"}",
+        );
+        assert!(reply.contains("\"status\":\"incomplete\""), "{reply}");
+        assert!(reply.contains("\"items\":[]"), "{reply}");
+    }
+
+    #[test]
+    fn prototypes_are_learned_from_examples() {
+        let reply = query(
+            "prototypes_request",
+            "{\"examples\":[\"Plot[Sin[x], {x, -2 Pi, 2 Pi}]\",\"Table[i^2, {i, 10}]\"]}",
+        );
+        assert!(reply.contains("\"Plot\""), "{reply}");
+        assert!(reply.contains("\"role\":\"iterator\""), "{reply}");
+        assert!(reply.contains("{x, xmin, xmax}"), "{reply}");
+        assert!(reply.contains("{i, imax}"), "{reply}");
+        assert!(reply.contains("\"Sin[x]\""), "{reply}");
+    }
+
+    #[test]
+    fn definitions_carry_parameters() {
+        let reply = query(
+            "definitions_request",
+            "{\"codes\":[\"f[x_, y_] := x^2 + y\",\"g = 3\"]}",
+        );
+        assert!(reply.contains("\"name\":\"f\""), "{reply}");
+        assert!(reply.contains("\"params\":[\"x\",\"y\"]"), "{reply}");
+        assert!(reply.contains("\"name\":\"g\""), "{reply}");
     }
 }
