@@ -2,62 +2,24 @@
 
 Android frontend for [Woxi](https://github.com/ad-si/Woxi) the Wolfram Language interpreter, with a mobile-friendly UI inspired by MathStudio.
 
-## Architecture
-
-```
-app/src/main/assets/www/
-  css/app.css            light and dark palettes, bundled face rules for typeset output
-  fonts/                 Atkinson Hyperlegible Mono/Next and the fallback glyph subset, with their licences
-  index.html             top bar / notebook / keyboard / sheets (+ pre-paint theme script)
-  js/app.js              entries, persistence, menu, options (theme), keyboard wiring
-  js/assist.js           the typing bar and its sheet (prototypes.js holds the table)
-  js/keyboard.js         in-app math keyboard, pages, swipe gestures
-  js/notebook.js         Jupyter .ipynb documents (reader/writer) + base64 helpers
-  js/plot-interact.js    drag to pan and pinch to zoom a 2D plot
-  js/prototypes.js       curated argument shapes and the slot-role helpers
-  js/render-output.js    interpreter output items -> notebook HTML, plot margin trim
-  js/woxi-client.js      main-thread client (promises over the native bridge)
-app/src/main/kotlin/com/woctordho/woximobile/
-  MainActivity.kt        WebView shell: edge-to-edge, asset loader, SAF, back handling, theme
-  NativeBridge.kt        window.WoxiNative: engineRequest(...), files, theme, insets
-  NativeEngine.kt        loads libwoxi_jni.so, owns the single engine thread
-engine/                  Rust crate `woxi-jni`: the JNI wrapper around the Woxi core
-  data/functions.csv     Woxi's symbol registry, vendored for its frequency order
-  src/assist/            typing help: complete, inspect, status, diagnostics, prototypes
-  src/eval.rs            one entry at a time -> its output items
-  src/json.rs            request/reply envelopes, flat field readers, escaping
-  src/lib.rs             JNI entry points, crate docs and the module list
-  src/manipulate.rs      Manipulate controls and re-rendering with new values
-  src/output.rs          output items: text, graphics, print, warning, error
-  src/plot.rs            plot handles, and the sampler rewriting behind pan/zoom
-  src/typeset.rs         horizontal spacing of the layout's SVG (products, relations, fractions)
-tools/                   build, deploy and test scripts, plus the three that own the artwork:
-  make-icon.py           fits that into Android's icon layers and writes res/ + design/
-  make-woxi-mobile.py    puts two wheels under it ("Woxi Mobile")
-  trace-woxi-mark.py     traces Woxi's W out of their logo bitmap into clean geometry
-```
-
 ## Build
 
 ```pwsh
-# SDK and NDK (put them on PATH, or export ANDROID_HOME pointing at the SDK)
+# SDK and NDK (put them on PATH, or export `ANDROID_HOME` pointing at the SDK)
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
 sdkmanager "ndk;28.2.13676358"
 
 # Engine (after changing `engine/`)
-# For development use `-Profile fast`: the same numerics as release, without thin LTO
-# across the interpreter and without debug info, incremental. A rebuild after an edit
-# takes seconds instead of the minutes a release link does.
+# For development use the profile `fast`, without LTO and without debug info, incremental. A rebuild takes seconds.
 .\tools\build-engine.ps1 -Profile fast                # arm64-v8a
 .\tools\build-engine.ps1 -Abi x86_64 -Profile fast    # x86_64 for emulator
 
-# Engine for a build that ships: the profile `release`, with thin LTO.
+# For release use the profile `release`, with thin LTO. A build takes minutes.
 .\tools\build-engine.ps1                              # arm64-v8a
 
 # App
-# Gradle 9.8 runs on JDK 17-25. Point JAVA_HOME at one (or have
-# `java` on PATH. deploy.ps1 and test-device.ps1 derive JAVA_HOME from it).
+# Gradle 9.9 runs on JDK 17-25. Point `JAVA_HOME` at one, or have `java` on PATH.
 .\gradlew.bat :app:assembleRelease                    # arm64-v8a
 .\gradlew.bat :app:assembleRelease -Pabi=all          # arm64-v8a + x86_64
 
@@ -67,7 +29,7 @@ sdkmanager "ndk;28.2.13676358"
 
 Notes:
 - `cargo-ndk` needs an NDK. `tools/build-engine.ps1` uses `ANDROID_NDK_HOME` if set, otherwise the newest NDK under the SDK found through `ANDROID_HOME`, `ANDROID_SDK_ROOT` or Android Studio's default location.
-- The library is stored uncompressed and mmapped from the APK. Only ABIs that have a `libwoxi_jni.so` in `app/src/main/jniLibs` are packaged, and `-Pabi` picks which. The default is arm64-v8a alone, since that is the phone.
+- The library is stored uncompressed and mmapped from the APK. Only ABIs that have a `libwoxi_jni.so` in `app/src/main/jniLibs` are packaged, and `-Pabi` picks which. The default is arm64-v8a alone.
 
 ## Lint and test
 
@@ -79,43 +41,18 @@ cargo clippy --profile fast --all-targets -- -D warnings
 cargo test --profile fast -- --test-threads=1
 ```
 
-The same commands run in CI (`.github/workflows/lint.yml`). `fast` is the profile to use while developing. `release` is only for a build that ships.
+See `.github/workflows/lint.yml` for lints and tests other than Rust.
 
-See `.github/workflows/lint.yml` for the Kotlin, JavaScript and Python checks.
+## Keeping rebuilds warm
 
-## Automation hooks
+Once the first `fast` build has populated `engine/target/fast`, a change to `engine/src` costs about two seconds: the wrapper crate recompiles and the test binary relinks. `cargo clippy` over the same tree is under a second, and `cargo fmt --check` is instant.
 
-The web layer exposes `window.WoxiApp.testAction(action, argument)`, and `MainActivity.handleTestIntent()` drives it from an intent extra, so the app can be driven on a device without touching the screen:
+A four-minute rebuild means the interpreter itself is being compiled again, and that only happens when `woxi`, `engine/Cargo.toml` or `engine/Cargo.lock` changes, or when its artifacts under `engine/target/fast` are deleted. A commit does not: `woxi`'s build script asks cargo to watch `.git/HEAD` and the branch ref to stamp its own version, but it runs inside the registry copy of the crate, where no `.git` exists, so those watches are dropped (checked by touching both files: the wrapper rebuilt in two seconds, `woxi` stayed fresh). The NDK path is pinned by `tools/build-engine.ps1`, so the environment cargo records for build scripts is the same on every run. `target/fast/build/<crate>-<hash>/` holds what a build script generated; `woxi` generates its tables there, so removing that directory re-runs the script and recompiles `woxi` on the next build. Do not prune target subdirectories by hand: if space is needed, delete `engine/target/<profile>` as a whole and accept one cold build.
 
-```powershell
-adb shell am start -n com.woctordho.woximobile/.MainActivity --es woxi_action dump
-adb shell am start -n com.woctordho.woximobile/.MainActivity --es woxi_action keys 'Plot'
-```
+Clippy is a second graph (check-only units) next to the test build, so it type-checks every dependency once per change to one. Afterward it stays warm across edits of `engine/src`. `--no-deps` keeps the lints to this crate, which is what a plain run does anyway.
 
-`tools/woxi-session.ps1` wraps this (`Start-WoxiSession`, `Invoke-WoxiAction`, `Invoke-WoxiActionWait`, `Get-WoxiLog`) and retries a session until the page answers, which is what the on-device checks above use. Available actions: `insert`, `add`, `type` (put text in the entry without evaluating it), `key`, `keys`, `press` (press a keyboard key by label), `caret` (`<at>`, or `<start>,<end>` to select a range), `format` (format the active entry), `formatall` (format every entry), `godef` (jump to the definition under the caret), `evalall`, `dom`, `dump`, `metrics`, `kb`, `swipe`, `barswipe`, `multitouch` (the two-finger drag case, with `lost` for a dropped `touchend`), `shift`, `save`, `loadjson`, `serialize`, `sheet`, `options`, `theme`, `reload`, `slider`, `scrollto`, `plotview` (drive a plot gesture: `pan,<dx>,<dy>` or `zoom,<factor>`), `plotdrag` and `plotpinch` (streamed single-pointer and two-pointer gestures, since adb cannot inject two fingers at once), `plotlatency` (delay plot answers by n ms, to reproduce races).
+A probe workspace (a throwaway crate that depends on `woxi`, used to check what the interpreter does before writing engine code) keeps its own `target/` for the same reason. Cargo keys artifacts on the whole unit graph, so a workspace that differs by one crate version recompiles everything instead of reusing another workspace's artifacts. Copy `engine/Cargo.lock` into it when the app's lock changes, build it with `cargo run --profile fast --bin <probe>`, and an edit to a probe costs a second.
 
-The typing-help bar has its own hooks: `assist` logs the bar state (`idle`, `signature`, `candidates`, `options`, `iterator`), the prefix, the first matches, the caret, the entry text and the centre of every bar key in device pixels, which is what a tap test needs. `assistaccept` accepts a match by name (the first one by default). `assistsheet` opens the sheet on `all`, `examples` or `about`. `assistclose` closes it.
+## Automation and debugging
 
-## Debugging in an emulator
-
-An emulator is the better environment for gesture work: a standard ROM, and it can be rebooted in seconds when the WebView gets itself into a bad state.
-
-```powershell
-# System image and AVD (avdmanager's prompt hangs when not on a TTY, so the AVD is written by hand)
-sdkmanager "system-images;android-36;google_apis;x86_64"
-# Installed to %USERPROFILE%\.android\avd\woxi36.ini and woxi36.avd\config.ini, then:
-emulator -avd woxi36 -no-snapshot -no-boot-anim -gpu auto
-
-# The engine also has to exist for the emulator's ABI
-rustup target add x86_64-linux-android
-cargo ndk -t x86_64 --platform 24 -o ..\app\src\main\jniLibs build --release
-
-# Drive the emulator instead of the phone
-$Env:WOXI_ADB_SERIAL = 'emulator-5554'       # every tools/*.ps1 honours this
-adb -s emulator-5554 root                    # google_apis (not playstore) images allow this
-.\tools\inject-pinch.ps1 -Cx 588 -Cy 861 -Gap0 130 -Gap1 30   # real two-finger pinch
-```
-
-`tools/inject-pinch.ps1` writes the touch panel's multi-touch protocol directly, with both fingers in two slots of the same touchscreen device. That detail matters: Android only merges fingers that arrive on one device, so writing each finger to a different emulator `virtio_input_multi_touch_N` device produces two independent single-finger streams and the web layer never sees a pinch at all.
-
-`dump` reports one line per entry: its source, how many SVGs it has, whether the plot trim ran (`fit=yes WxH`), the rectangle gestures map onto (`rect=WxH/data` when the axes were recognised, `/svg` when they were not), a text preview of the output, and how long the engine round trip and the rendering took (`engine=..ms render=..ms json=..B`).
+See `docs/automation.md`.

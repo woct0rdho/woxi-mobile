@@ -182,7 +182,7 @@ class NativeBridge(
         }
     }
 
-    // One plot-interaction message (pan/zoom frame, re-sample, retain, release).
+    // One plot-interaction message (pan/zoom frame, re-sample, release).
     // Replies through the same callback channel as `engineRequest`.
     @JavascriptInterface
     fun plotRequest(

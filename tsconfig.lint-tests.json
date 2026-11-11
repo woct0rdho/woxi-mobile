@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "checkJs": false
+  },
+  "include": [
+    "tests/**/*.js",
+    "app/src/main/assets/www/js/**/*.js",
+    "types/**/*.d.ts"
+  ]
+}

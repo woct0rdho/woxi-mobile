@@ -1,765 +1,995 @@
-// Interactive 2D plots: drag to pan, pinch to zoom.
+// Interactive 2D plots: drag to pan. Two fingers pan and zoom. The line through the two fingers
+// when the pinch starts selects x-only, y-only or uniform zoom, and the midpoint moves with the
+// fingers. One mechanism for every interactive plot.
 //
-// A plot output carries a handle and the data range it currently shows
-// (`data-woxi-plot`). A gesture turns into a new range and asks the engine to
-// re-render that handle at it - the engine re-renders Woxi's cached plot data, it
-// does not re-evaluate what the user typed, so a frame costs a few milliseconds.
-// The response replaces the picture, and the range the engine reports back is the
-// one the next frame works from, so a gesture accumulates instead of drifting.
+// A plot carries a handle, the range its picture shows (`data-woxi-plot`) and a scene: the
+// frame, the data rectangle, the tick values with the labels the renderer printed, value lines
+// and texts, all as numbers in the picture's own units (`engine/src/plot/scene/`). The frontend
+// draws that scene and the samples on one canvas (`plot-layer.js`), at rest and while a finger is
+// down. The markup the engine also sends is inserted hidden, because it is what the notebook
+// saves. A plot whose picture has an element the scene cannot express is not registered at all:
+// it stays a still picture, and there is no second interaction path.
 //
-// Re-evaluating the entry produces a fresh plot with its original range: that is
-// what resets the view, nothing is stored anywhere else.
+// A gesture turns into a new range. The engine is asked for a scene at the range the finger
+// reached, as fast as it answers: one request is in flight at a time and at most one goes out per
+// display frame. A gesture frame asks for the scene only (`"picture": false`). The markup is
+// brought back at rest, so what the notebook stores is a picture of the range the user left.
 //
-// Messages follow Jupyter's shape: a `msg_type` with a `content` object, and a reply
-// carrying `status` (`ok`/`error`, the latter with `ename`/`evalue`). `plot_retain`
-// and `plot_release` keep the engine's handle registry tied to the controllers that
-// are actually on screen.
+// The curve does not wait for those answers. The engine also sends the sampled points (base64
+// `u16` pairs on a shared grid, see `plot_layer()` in engine/src/plot/frame.rs) and the gesture
+// draws them on the canvas at every display frame, clipped where the picture clips its own curves.
+// The samples reach half a view past the view, so a pan brings the curve in without a round trip.
+// A re-sample (`plot_refine`) brings fresh points and no scene: the canvas redraws the curve and
+// the labels, whose values did not change, stay as they are.
 //
-// Between answers the picture waits for the engine. An earlier version transformed
-// the whole SVG locally so the finger had something to drag immediately, but a frame
-// is one flat drawing: scaling it moved the axes, ticks and labels along with the
-// curve, and every engine answer snapped them back. A preview would have to transform
-// the data layer alone, which needs the renderer to deliver one (see
-// docs/plot_interaction_review.md), so the frame stays fixed and the request rate is
-// what makes a gesture smooth. Gestures use pointer events with pointer capture, so
-// replacing the SVG while the finger is down cannot take the rest of the gesture with
-// it.
+// Finger pixels become data units through the same mapping the canvas draws with, so a pixel of
+// finger movement is a pixel of curve movement. The map is read for the view in hand (the canvas
+// holds the box and the scale). Neither the frame nor the card can move under the gesture.
+//
+// Messages follow Jupyter's shape: a `msg_type` with a `content` object, and a reply carrying
+// `status` (`ok`/`error`, the latter with `ename`/`evalue`). `plot_release` frees the engine's
+// handle when its controller is gone.
 
-(function (global) {
-  'use strict';
+import {
+  movedShare,
+  needsDensify,
+  panViewFrom,
+  pinchAnchor,
+  pinchMode,
+  positiveView,
+  refineKind,
+  refinePad,
+  SPEED_EMA,
+  viewBasis,
+  zoomAxesViewFrom,
+} from "./plot-gesture.js";
+import * as WoxiPlotLayer from "./plot-layer.js";
+import { build } from "./plot-samples.js";
+import * as WoxiRender from "./render-output.js";
 
-  var STEP_MS = 16;      // floor: about one display frame. The adaptive step below is
-                         // what protects plots whose frames are expensive.
-  var STEP_MAX_MS = 200; // longest, for plots whose frames are expensive
-  var PINCH_MIN = 0.2;   // ignore degenerate pinch scales
+const STATS_SAMPLES = 240; // frame timings kept per plot for `plotperf`
+// A round trip assumed before one has been measured, for the re-sample margin.
+const DEFAULT_ROUND_TRIP_MS = 150;
+// The percentile of the measured round trips the margin is sized for.
+const ROUND_TRIP_PERCENTILE = 0.9;
+// A repaint whose scale differs from the previous one by more than this share moved everything
+// the canvas drew: the card was resized (legitimate) or the SVG was not pinned (a bug).
+const SCALE_JUMP_SHARE = 0.005;
+// One record per plot element: the view its markup shows (parsed from the attribute, cached
+// against the string it came from), the controller that owns its listeners, and the counters.
+const sessions = new WeakMap();
 
-  // When the cached data runs out the engine has to sample again. That is much
-  // heavier than a re-render (it re-runs the plot call), so it only happens once a
-  // gesture has been still for a moment, and at a distance from the last one.
-  var REFINE_IDLE_MS = 350;
-  var REFINE_MIN_GAP_MS = 700;
-  var REFINE_NARROW = 0.25; // view much narrower than the sampled range
+function sessionOf(container) {
+  let session = sessions.get(container);
+  if (!session) {
+    session = { raw: null, view: null, controller: null, counters: null };
+    sessions.set(container, session);
+  }
+  return session;
+}
 
-  // A plot with a fixed parameter domain (parametric, polar) gains detail by being
-  // drawn with more points, not by sampling a different range. Worth doing when the
-  // view is much narrower than the picture, and only a few times.
-  var DENSIFY_NARROW = 0.25;
-  var DENSIFY_MAX_LEVEL = 3;
+function controllerOf(container) {
+  const session = container && sessions.get(container);
+  return session ? session.controller : null;
+}
 
-  function noop() {}
+// The attribute is the markup's own record of the view, and it survives a notebook rebuild.
+// `setView` is the only writer. The cache is the string it wrote.
+function viewOf(container) {
+  const session = sessionOf(container);
+  const raw = container.getAttribute("data-woxi-plot") || "";
+  if (session.raw !== raw) {
+    session.raw = raw;
+    try {
+      session.view = JSON.parse(raw || "null");
+    } catch (err) {
+      session.view = null;
+    }
+  }
+  return session.view;
+}
 
-  // Does this view need data the picture does not have: outside the sampled range
-  // (zoomed out past it, or panned away), or far inside it (zoomed in past the
-  // sampling). A re-sample covers the view plus a margin, so a small pan after one
-  // is free. Two-axis plots (contours, fields) are checked in y as well: covering x
-  // says nothing about a vertical pan.
-  function needsRefine(plot) {
-    if (!plot || !plot.s || !plot.d || !plot.x) return false;
-    if (outsideOrCoarse(plot.x, plot.d)) return true;
-    if (plot.dy && plot.y) return outsideOrCoarse(plot.y, plot.dy);
+function setView(container, view) {
+  const session = sessionOf(container);
+  const summary = WoxiRender.plotSummary(view);
+  session.view = summary;
+  session.raw = JSON.stringify(summary);
+  container.setAttribute("data-woxi-plot", session.raw);
+}
+
+function now() {
+  return window.performance.now();
+}
+
+// `seeds` carries what came with the pictures already on screen (the samples and the scene), so
+// the first gesture starts from them instead of asking for them again.
+function attach(root, send, onFrame, seeds) {
+  const byId = {};
+  for (let i = 0; seeds && i < seeds.length; i += 1) byId[seeds[i].id] = seeds[i];
+  const plots = root.querySelectorAll(".woxi-plot");
+  for (let j = 0; j < plots.length; j += 1) {
+    const view = viewOf(plots[j]);
+    // A plot without a seed is restored markup from an earlier app session: its handle belongs
+    // to an engine that no longer exists, so its first request would be `ExpiredHandle` and the
+    // controller would be disposed straight away. The app re-evaluates the document at boot and
+    // attaches the fresh picture. Until then the saved picture is shown as it is.
+    if (!view || !byId[view.id]) continue;
+    wire(plots[j], send, onFrame, byId[view.id]);
+  }
+}
+
+// The samples and the scene each plot on screen was last given, so a rebuild of the notebook
+// (an entry added, deleted or undone) can hand them to the new elements instead of dropping
+// every plot back to a still picture. Only a live controller has them: a restored picture that
+// was never wired must not become a controller with no scene.
+function seedsOf(root) {
+  const out = [];
+  const plots = root && root.querySelectorAll ? root.querySelectorAll(".woxi-plot") : [];
+  for (let i = 0; i < plots.length; i += 1) {
+    const session = sessions.get(plots[i]);
+    const controller = session && session.controller;
+    if (!controller) continue;
+    const seed = controller.seed();
+    if (seed) out.push(seed);
+  }
+  return out;
+}
+
+// The markup of an output that is worth storing: the picture, not the transient canvas. The
+// canvas has no pixels once serialized and the SVG under it is hidden while it is live, so a
+// rebuild from the raw innerHTML would restore a blank card. The stored SVG keeps the layout's
+// shape (`pinBox`), which is the card's size.
+function markupOf(root) {
+  if (!root || !root.cloneNode) return root ? root.innerHTML : "";
+  const copy = root.cloneNode(true);
+  const canvases = copy.querySelectorAll ? copy.querySelectorAll("canvas.woxi-plot-layer") : [];
+  for (let i = 0; i < canvases.length; i += 1) {
+    if (canvases[i].parentNode) canvases[i].parentNode.removeChild(canvases[i]);
+  }
+  const svgs = copy.querySelectorAll ? copy.querySelectorAll("svg") : [];
+  for (let j = 0; j < svgs.length; j += 1) {
+    if (svgs[j].style) svgs[j].style.visibility = "";
+  }
+  return copy.innerHTML;
+}
+
+// One plot message. The bridge answers with a promise (and rejects when it is gone), so there
+// is nothing to catch here: a synchronous throw would be a bug worth seeing.
+function noop() {}
+
+function fire(send, msgType, content) {
+  const answer = send(msgType, content);
+  if (answer && answer.catch) answer.catch(noop);
+}
+
+function wire(container, send, onFrame, seed) {
+  // A controller reference, not an attribute: a notebook rebuild recreates the elements from
+  // HTML, and an attribute would claim they are still wired when their listeners are gone.
+  // Every wired plot has a seed with a scene: it is the evaluation (or the rebuild) that
+  // produced its samples and scene. A plot without one is restored markup from an earlier
+  // session (see `attach`), and is left as a still picture.
+  if (!seed || !seed.scene || sessionOf(container).controller) return;
+
+  // Pointer ids in the order the fingers landed.
+  const pointers = new Map();
+  let pinch = null; // { startDistance, view, fx, fy }
+  // While a finger is down the gesture keeps its own range: every move is applied to that, not
+  // to what the picture currently shows, so requests still in flight cannot make a drag lose
+  // distance.
+  let gestureView = null;
+  // The range of the newest scene the canvas draws, and the range of the newest picture asked
+  // for. They differ while a gesture is running: a gesture frame carries no markup. The saved
+  // range is the element's `data-woxi-plot` attribute and is read when it is needed.
+  let sceneView = null;
+  let wanted = null;
+  // The controller's life: `live`, `stale` (the engine no longer knows the handle: keep panning
+  // the cached scene and samples locally) or `disposed` (the node is gone: nothing may run).
+  let status = "live";
+  function isLive() {
+    return status === "live";
+  }
+  // One request at a time: `inFlight` is the whole of the ordering.
+  let queued = null; // { kind, view, density }
+  let inFlight = false;
+  // A pump already waiting for the next display frame.
+  let pumpQueued = false;
+  // The range whose last request failed (kind `view` or `refine`), so a range that cannot be
+  // served is not asked for again on every frame. A successful answer clears it.
+  let refused = null;
+  // The level the current samples were densified to.
+  let density = 0;
+  // A coverage re-sample has completed since this controller was wired. Until it has, the first
+  // coverage re-sample gets the large first-interaction margin.
+  let covered = false;
+  // The view span of each axis at the last re-sample: a zoom-in past ZOOM_IN of it asks for a
+  // denser sample. `null` until the first picture is known.
+  let basis = null;
+  // The finger's speed through the view, in views per second, for the margin calculation.
+  let gestureSpeed = 0;
+  let lastMoveAt = 0;
+  // A non-view request (a re-sample) has been sent since the last view: the next view gets one
+  // turn before another re-sample, so the ticks cannot starve.
+  let refinementSinceView = false;
+
+  // Which axes are logarithmic, from the snapshot the seed was built with: the gesture maths
+  // needs it even when no canvas is drawing.
+  let logAxes = seed.log || { x: false, y: false };
+  // The newest scene and its samples. The first scene's layout is kept with the seed: every
+  // later picture is drawn in the first one's coordinates, and a rebuild must not resize the
+  // card because the newest picture's labels happen to be wider.
+  let scene = seed.scene;
+  let layout = seed.layout || WoxiPlotLayer.layoutOf(scene);
+  if (layout && scene) scene = WoxiPlotLayer.normalize(scene, layout);
+  let prepared = seed.prepared || null;
+  // The range in `data-woxi-plot` is the saved picture's. A seed's scene is that picture, so the
+  // range is both what the canvas drew and what was persisted: a gesture starts from a settled
+  // state. A stored view that a log axis cannot draw (an older document) is repaired before the
+  // first paint, not only at the first touch.
+  let initialView = viewOf(container);
+  if (initialView) {
+    const repaired = positiveView(initialView, logAxes);
+    if (rangeDiffers(initialView, repaired)) {
+      setView(container, repaired);
+      initialView = viewOf(container);
+    }
+    if (scene) {
+      sceneView = initialView;
+      wanted = initialView;
+    }
+  }
+  let layer = null;
+  // The range the samples cover, from the newest reply that said so (or the seed's). Only used
+  // to decide when a re-sample is due.
+  let coverage =
+    seed.coverage && seed.coverage.d ? { d: seed.coverage.d, dy: seed.coverage.dy || null } : null;
+  if (initialView) basis = viewBasis(initialView, logAxes);
+
+  function currentView() {
+    return gestureView || wanted || viewOf(container);
+  }
+
+  function stats() {
+    const session = sessionOf(container);
+    if (!session.counters) {
+      session.counters = {
+        frames: 0,
+        draws: 0,
+        paintFails: 0,
+        sends: 0,
+        failures: 0,
+        lastError: "",
+        lastFailed: "",
+        views: 0,
+        refines: 0,
+        checks: 0,
+        checkAsk: 0,
+        checkNoNeed: 0,
+        refinePad: null,
+        refineReason: null,
+        resizes: 0,
+        lastBox: null,
+        lastScale: null,
+        roundTrip: [],
+        bytes: [],
+        paint: [],
+      };
+    }
+    return session.counters;
+  }
+
+  function record(list, value) {
+    list.push(value);
+    if (list.length > STATS_SAMPLES) list.shift();
+  }
+
+  // What the answer weighed: the picture and its points. The scene is not measured: it was
+  // parsed from the reply, and serializing it again would cost a copy per gesture frame.
+  function weightOf(item) {
+    let size = item.svg ? item.svg.length : 0;
+    const series = item.data && item.data.s;
+    if (series) {
+      for (let i = 0; i < series.length; i += 1) size += (series[i].p || "").length;
+    }
+    return size;
+  }
+
+  // The canvas: one renderer, mounted as soon as there is a scene and a box to draw it in.
+  function mountLayer(box) {
+    if (!scene || !box) return;
+    layer = WoxiPlotLayer.mount(container, scene, prepared, logAxes, box, requestDraw);
+    requestDraw();
+  }
+
+  function dropLayer() {
+    if (!layer) return;
+    WoxiPlotLayer.unmount(layer);
+    layer = null;
+  }
+
+  // A repaint is one canvas draw. Several updates in a frame collapse into one.
+  let drawQueued = false;
+
+  function requestDraw() {
+    if (!layer || drawQueued) return;
+    drawQueued = true;
+    const run = function () {
+      drawQueued = false;
+      drawLayer();
+    };
+    window.requestAnimationFrame(run);
+  }
+
+  function drawLayer() {
+    if (!layer) return;
+    const counters = stats();
+    counters.draws += 1;
+    const view = currentView();
+    const started = now();
+    const drawn = WoxiPlotLayer.paint(layer, view);
+    record(counters.paint, now() - started);
+    if (!drawn) {
+      counters.paintFails += 1;
+      return;
+    }
+    // A repaint at a different scale resizes everything the canvas drew: the card was resized,
+    // or the SVG was not pinned. The box itself is set once at mount and never changes. It must
+    // not happen during a gesture. `plotperf` counts it so a recording is not the only witness.
+    const lastScale = counters.lastScale;
+    if (typeof lastScale === "number" && Math.abs(lastScale - layer.scale) > SCALE_JUMP_SHARE) {
+      counters.resizes += 1;
+    }
+    counters.lastBox = [layer.box.width, layer.box.height];
+    counters.lastScale = layer.scale;
+  }
+
+  // The data-to-screen mapping the drag and the pinch convert pixels with. The canvas holds the
+  // box and the scene, so this is one call, not a measurement.
+  function mappingOf(view) {
+    return layer
+      ? WoxiPlotLayer.dataMapping(view, layer.scene, layer.box, layer.scale, logAxes)
+      : null;
+  }
+
+  function beginGesture() {
+    gestureView = positiveView(currentView(), logAxes);
+    gestureSpeed = 0;
+    lastMoveAt = now();
+    requestDraw();
+  }
+
+  // The gesture is over: from here on the scene is what the canvas shows, and `reconcile` asks
+  // for whatever the plot still owes - a scene at the finger's range, and the markup that saves
+  // it.
+  function endGesture() {
+    gestureView = null;
+    reconcile();
+  }
+
+  function beginPinch() {
+    if (pointers.size < 2) {
+      pinch = null;
+      return;
+    }
+    const fingers = Array.from(pointers.values());
+    const a = fingers[0];
+    const b = fingers[1];
+    const view = currentView();
+    const mapping = mappingOf(view);
+    if (!mapping || !view) {
+      pinch = null;
+      return;
+    }
+    const startDistance = Math.hypot(a.x - b.x, a.y - b.y);
+    if (!(startDistance > 0)) {
+      pinch = null;
+      return;
+    }
+    const anchor = pinchAnchor(view, mapping, a, b, container.getBoundingClientRect(), logAxes);
+    pinch = {
+      startDistance: startDistance,
+      mode: pinchMode(a, b),
+      view: view,
+      fx: anchor.fx,
+      fy: anchor.fy,
+      midX: (a.x + b.x) / 2,
+      midY: (a.y + b.y) / 2,
+    };
+  }
+
+  // Pointer capture. The DOM throws for a pointer that is already gone, which is the one case
+  // worth ignoring.
+  function capture(event, on) {
+    const method = on ? "setPointerCapture" : "releasePointerCapture";
+    if (!container[method]) return;
+    try {
+      container[method](event.pointerId);
+    } catch (err) {
+      // Already released.
+    }
+  }
+
+  function onDown(event) {
+    const view = viewOf(container);
+    // A stale plot can still be panned locally: its canvas keeps the cached samples. Only the
+    // engine requests stop (see `enqueue`).
+    if (!view || status === "disposed") return;
+    event.preventDefault();
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.size === 1) {
+      beginGesture();
+    } else if (pointers.size === 2) {
+      beginPinch();
+    }
+    capture(event, true);
+  }
+
+  function onMove(event) {
+    const pointer = pointers.get(event.pointerId);
+    if (!pointer) return;
+    event.preventDefault();
+    const previousX = pointer.x;
+    const previousY = pointer.y;
+    pointer.x = event.clientX;
+    pointer.y = event.clientY;
+
+    let next = null;
+    const previousView = currentView();
+    if (pinch && pointers.size >= 2) {
+      const fingers = Array.from(pointers.values());
+      const midX = (fingers[0].x + fingers[1].x) / 2;
+      const midY = (fingers[0].y + fingers[1].y) / 2;
+      const distance = Math.hypot(fingers[0].x - fingers[1].x, fingers[0].y - fingers[1].y);
+      // The spread is the distance between the fingers, which ignores a twist at constant gap.
+      // The start line chose the axis: an x pinch scales only x, a y pinch only y, and a uniform
+      // pinch scales both by the same factor.
+      const factor = distance / pinch.startDistance;
+      const factorX = pinch.mode === "y" ? 1 : factor;
+      const factorY = pinch.mode === "x" ? 1 : factor;
+      // Scale about the midpoint the pinch started on, then move that midpoint with the fingers.
+      // Both axes pan. Only an axis pinch leaves the other axis's scale alone.
+      const zoomed = zoomAxesViewFrom(pinch.view, factorX, factorY, pinch.fx, pinch.fy, logAxes);
+      if (zoomed) {
+        next = panViewFrom(
+          zoomed,
+          midX - pinch.midX,
+          midY - pinch.midY,
+          mappingOf(zoomed),
+          logAxes
+        );
+      }
+    } else {
+      next = panViewFrom(
+        previousView,
+        pointer.x - previousX,
+        pointer.y - previousY,
+        mappingOf(previousView),
+        logAxes
+      );
+    }
+    if (!next) return;
+    // The finger's speed through the view, in views per second: how much of a view the move
+    // crossed divided by how long it took. A pinch crosses by the change of its span. Both axes
+    // are measured in the drawing space (decades on a log axis).
+    const at = now();
+    const seconds = (at - lastMoveAt) / 1000;
+    if (seconds > 0 && previousView) {
+      const share = Math.max(
+        movedShare(previousView.x, next.x, logAxes.x),
+        movedShare(previousView.y, next.y, logAxes.y)
+      );
+      const speed = share / seconds;
+      gestureSpeed = gestureSpeed > 0 ? SPEED_EMA * gestureSpeed + (1 - SPEED_EMA) * speed : speed;
+    }
+    lastMoveAt = at;
+    // A move of no pixels is not a new range: asking for it costs a round trip for nothing.
+    const moved = rangeDiffers(previousView, next);
+    gestureView = next;
+    requestDraw();
+    if (moved) enqueue("view", next);
+  }
+
+  function onUp(event) {
+    if (!pointers.has(event.pointerId)) return;
+    pointers.delete(event.pointerId);
+    if (!pointers.size) endGesture();
+    if (pointers.size >= 2) beginPinch();
+    else pinch = null;
+    capture(event, false);
+  }
+
+  // Stops the controller without telling the engine anything. `detach` collects the handles so
+  // the caller can release them after the replacement has attached.
+  function dispose() {
+    if (status === "disposed") return;
+    status = "disposed";
+    queued = null;
+    pumpQueued = false;
+    dropLayer();
+    sessionOf(container).controller = null;
+    container.removeEventListener("pointerdown", onDown);
+    container.removeEventListener("pointermove", onMove);
+    container.removeEventListener("pointerup", onUp);
+    container.removeEventListener("pointercancel", onUp);
+  }
+
+  // What the gesture knows about the samples on hand: the capability flags the markup carries,
+  // and the coverage the newest reply reported.
+  function samplesOnHand() {
+    const shown = viewOf(container);
+    return {
+      s: !!(shown && shown.s),
+      dn: !!(shown && shown.dn),
+      d: coverage ? coverage.d : null,
+      dy: coverage ? coverage.dy : null,
+    };
+  }
+
+  function rangeDiffers(shown, view) {
+    if (!shown || !view || !shown.x || !shown.y) return true;
+    return (
+      shown.x[0] !== view.x[0] ||
+      shown.x[1] !== view.x[1] ||
+      shown.y[0] !== view.y[0] ||
+      shown.y[1] !== view.y[1]
+    );
+  }
+
+  function dueRefine() {
+    if (status === "disposed") return null;
+    const view = currentView();
+    if (!view) return null;
+    if (refused && refused.kind !== "view" && !rangeDiffers(refused.view, view)) return null;
+    const samples = samplesOnHand();
+    if (needsDensify(view, samples, density)) {
+      return { kind: "densify", view: view, density: density + 1 };
+    }
+    const kind = refineKind(view, samples, logAxes, basis);
+    if (!kind) return null;
+    return {
+      kind: "refine",
+      view: view,
+      density: 0,
+      reason: kind,
+      pad: refinePad(kind, covered, gestureSpeed, tripMs(), !!samples.dy),
+      basis: viewBasis(view, logAxes),
+    };
+  }
+
+  // A p90 of the measured round trips, in milliseconds, for the margin calculation. With no
+  // samples yet, a conservative default.
+  function tripMs() {
+    const list = stats().roundTrip;
+    if (!list || !list.length) return DEFAULT_ROUND_TRIP_MS;
+    const sorted = list.slice().sort(function (a, b) {
+      return a - b;
+    });
+    return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * ROUND_TRIP_PERCENTILE))];
+  }
+
+  // What the plot still owes, asked after every answer and at the end of every gesture. One
+  // mechanism: the canvas shows the scene at the current view, and the markup that gets saved
+  // shows the current range. So a re-sample is owed when the view needs data the samples do not
+  // cover, and a scene when the scene on screen is not at the view, and a picture when the
+  // markup is not (only at rest: a gesture frame asks for the scene alone).
+  function reconcile() {
+    if (status !== "live") return false;
+    if (inFlight) return true;
+    const view = currentView();
+    if (!view) return false;
+    const counters = stats();
+    counters.checks += 1;
+    const settled = gestureView
+      ? !!sceneView && !rangeDiffers(sceneView, view)
+      : !rangeDiffers(viewOf(container), view);
+    // One view between two re-samples: a re-sample carries no scene, so after one the labels
+    // would stay at the old range while the finger keeps moving. The coverage is allowed one
+    // more view of lag. The ticks are not.
+    if (refinementSinceView && !settled) {
+      if (refused && refused.kind === "view" && !rangeDiffers(refused.view, view)) {
+        counters.checkNoNeed += 1;
+        return false;
+      }
+      counters.checkAsk += 1;
+      enqueue("view", view);
+      return true;
+    }
+    const due = dueRefine();
+    if (due) {
+      counters.checkAsk += 1;
+      enqueue(due.kind, due.view, due.density, due);
+      return true;
+    }
+    if (!settled) {
+      // A range the engine already refused is not asked for again: the answer would be the same
+      // refusal, once per display frame. A new view clears it.
+      if (refused && refused.kind === "view" && !rangeDiffers(refused.view, view)) {
+        counters.checkNoNeed += 1;
+        return false;
+      }
+      counters.checkAsk += 1;
+      enqueue("view", view);
+      return true;
+    }
+    counters.checkNoNeed += 1;
     return false;
   }
 
-  function outsideOrCoarse(view, data) {
-    var span = view[1] - view[0];
-    var dataSpan = data[1] - data[0];
-    if (!(span > 0) || !(dataSpan > 0)) return false;
-    if (view[0] < data[0] || view[1] > data[1]) return true;
-    return span < dataSpan * REFINE_NARROW;
-  }
-
-  // A fixed-domain plot can be redrawn with more points. That is the only way to
-  // show detail inside the domain it already has.
-  function needsDensify(plot, level) {
-    if (!plot || !plot.dn || !plot.d || !plot.x) return false;
-    if (level >= DENSIFY_MAX_LEVEL) return false;
-    var span = plot.x[1] - plot.x[0];
-    var domain = plot.d[1] - plot.d[0];
-    if (!(span > 0) || !(domain > 0)) return false;
-    return span < domain * DENSIFY_NARROW;
-  }
-
-  // view state on the container
-
-  function viewOf(container) {
-    try {
-      return JSON.parse(container.getAttribute('data-woxi-plot') || 'null');
-    } catch (err) {
-      return null;
+  function enqueue(kind, view, densityLevel, details) {
+    if (!view || status === "disposed") return;
+    // A stale controller cannot ask the engine anything, but a local pan still has to keep its
+    // range: `wanted` is what the canvas draws at rest, so the gesture does not snap back.
+    if (status === "stale") {
+      if (kind === "view") wanted = view;
+      return;
     }
-  }
-
-  function setView(container, view) {
-    container.setAttribute('data-woxi-plot', JSON.stringify(view));
-  }
-
-  // The rectangle the data is actually drawn in, in screen pixels.
-
-  // A straight segment as `{x1, y1, x2, y2}`. Woxi 0.4 draws the axes as `<line>`
-  // elements. Earlier versions used two-point polylines, and framed plots draw a
-  // `<rect>` instead. Anything that is not a single straight segment is ignored, which
-  // is what keeps the curve itself (a polyline with hundreds of points) out of this.
-  function segmentOf(element) {
-    var tag = element.tagName.toLowerCase();
-    if (tag === 'line') {
-      var x1 = parseFloat(element.getAttribute('x1'));
-      var y1 = parseFloat(element.getAttribute('y1'));
-      var x2 = parseFloat(element.getAttribute('x2'));
-      var y2 = parseFloat(element.getAttribute('y2'));
-      if (!isFinite(x1) || !isFinite(y1) || !isFinite(x2) || !isFinite(y2)) return null;
-      return { x1: x1, y1: y1, x2: x2, y2: y2 };
+    const job = { kind: kind, view: view, density: densityLevel || 0 };
+    if (details) {
+      job.pad = details.pad;
+      job.reason = details.reason;
+      job.basis = details.basis;
     }
-    if (tag === 'polyline') {
-      var points = (element.getAttribute('points') || '').trim().split(/\s+/);
-      if (points.length < 2 || points.length > 6) return null;
-      var nums = [];
-      for (var i = 0; i < points.length; i++) {
-        var pair = points[i].split(',');
-        if (pair.length !== 2) return null;
-        nums.push(parseFloat(pair[0]), parseFloat(pair[1]));
-      }
-      if (nums.length !== 4 || !isFinite(nums[0]) || !isFinite(nums[1]) ||
-        !isFinite(nums[2]) || !isFinite(nums[3])) {
-        return null;
-      }
-      return { x1: nums[0], y1: nums[1], x2: nums[2], y2: nums[3] };
-    }
-    if (tag === 'path') {
-      var d = element.getAttribute('d') || '';
-      var parts = d.split(/[MmLlHhVv, ]+/).filter(function (part) { return part.length > 0; });
-      if (parts.length !== 4) return null;
-      var values = parts.map(parseFloat);
-      for (var j = 0; j < values.length; j++) if (!isFinite(values[j])) return null;
-      return { x1: values[0], y1: values[1], x2: values[2], y2: values[3] };
-    }
-    return null;
-  }
-
-  // Woxi's plot SVG has no clip path, but its axes are straight line segments that
-  // span the data area, and a framed plot (contours, densities) draws that frame as a
-  // `<rect>`. Both give the data rectangle in SVG user units. The screen mapping comes
-  // from the SVG's own transform, so letterboxing is included too.
-  function userRect(svg) {
-    var rects = svg.querySelectorAll('rect');
-    var frame = null;
-    for (var i = 0; i < rects.length; i++) {
-      var rect = rects[i];
-      if ((rect.getAttribute('fill') || '') !== 'none') continue;
-      var width = parseFloat(rect.getAttribute('width'));
-      var height = parseFloat(rect.getAttribute('height'));
-      if (!(width > 0) || !(height > 0)) continue;
-      if (!frame || width * height > frame.width * frame.height) {
-        frame = {
-          x: parseFloat(rect.getAttribute('x')) || 0,
-          y: parseFloat(rect.getAttribute('y')) || 0,
-          width: width,
-          height: height,
-        };
-      }
-    }
-    if (frame) return frame;
-
-    var nodes = svg.querySelectorAll('line, polyline, path');
-    var horizontal = null;
-    var vertical = null;
-    for (var j = 0; j < nodes.length; j++) {
-      var segment = segmentOf(nodes[j]);
-      if (!segment) continue;
-      var dx = Math.abs(segment.x2 - segment.x1);
-      var dy = Math.abs(segment.y2 - segment.y1);
-      if (dy <= 0.5 && (!horizontal || dx > horizontal.length)) {
-        horizontal = { length: dx, min: Math.min(segment.x1, segment.x2), max: Math.max(segment.x1, segment.x2) };
-      }
-      if (dx <= 0.5 && (!vertical || dy > vertical.length)) {
-        vertical = { length: dy, min: Math.min(segment.y1, segment.y2), max: Math.max(segment.y1, segment.y2) };
-      }
-    }
-    if (!horizontal || !vertical) return null;
-    // The axes span the data area and cross wherever the data origin happens to be, so
-    // the rectangle comes from their extents rather than from where they meet: a plot
-    // of `Sin` is centred on zero, and taking the crossing as a corner would describe
-    // a quarter of the picture.
-    return {
-      x: horizontal.min,
-      y: vertical.min,
-      width: horizontal.max - horizontal.min,
-      height: vertical.max - vertical.min,
-    };
-  }
-
-  function screenPoint(matrix, x, y) {
-    var point;
-    if (typeof DOMPoint !== 'undefined') {
-      point = new DOMPoint(x, y).matrixTransform(matrix);
-    } else {
-      point = { x: matrix.a * x + matrix.c * y + matrix.e, y: matrix.b * x + matrix.d * y + matrix.f };
-    }
-    return { x: point.x, y: point.y };
-  }
-
-  // Screen rectangle of the data area. Falls back to the whole SVG when the axes
-  // cannot be recognised, which is what the gesture maths used to assume.
-  function plotRect(svg) {
-    var box = svg.getBoundingClientRect();
-    if (!(box.width > 0) || !(box.height > 0)) return null;
-    var user = userRect(svg);
-    var matrix = svg.getScreenCTM ? svg.getScreenCTM() : null;
-    if (user && matrix && user.width > 0 && user.height > 0) {
-      var topLeft = screenPoint(matrix, user.x, user.y);
-      var bottomRight = screenPoint(matrix, user.x + user.width, user.y + user.height);
-      var width = bottomRight.x - topLeft.x;
-      var height = bottomRight.y - topLeft.y;
-      // The data area cannot be larger than the picture it is drawn in.
-      if (width > 0 && height > 0 && width <= box.width * 1.01 && height <= box.height * 1.01) {
-        return { left: topLeft.x, top: topLeft.y, width: width, height: height, box: box, data: true };
-      }
-    }
-    return { left: box.left, top: box.top, width: box.width, height: box.height, box: box, data: false };
-  }
-
-  function containerRect(container) {
-    var svg = container.querySelector('svg');
-    return svg ? plotRect(svg) : null;
-  }
-
-  // gesture maths
-
-  // Dragging moves the picture with the finger: right shows lower x, down shows
-  // higher y (the y axis points up).
-  function panViewFrom(view, dx, dy, rect) {
-    if (!view || !rect) return null;
-    var sx = (view.x[1] - view.x[0]) / rect.width;
-    var sy = (view.y[1] - view.y[0]) / rect.height;
-    return {
-      id: view.id,
-      x: [view.x[0] - dx * sx, view.x[1] - dx * sx],
-      y: [view.y[0] + dy * sy, view.y[1] + dy * sy],
-    };
-  }
-
-  function panView(container, dx, dy) {
-    return panViewFrom(viewOf(container), dx, dy, containerRect(container));
-  }
-
-  // Scales a range about a fixed anchor, given in fractions of the plot area: each
-  // endpoint moves toward or away from the anchor, rather than the range being
-  // re-centered on it. Factor 1 is then the identity at every anchor, and the data
-  // point under the finger stays under the finger.
-  function zoomViewFrom(view, factor, fx, fy) {
-    if (!view || !(factor > 0) || factor < PINCH_MIN) return null;
-    var ax = view.x[0] + (fx === undefined ? 0.5 : fx) * (view.x[1] - view.x[0]);
-    var ay = view.y[1] - (fy === undefined ? 0.5 : fy) * (view.y[1] - view.y[0]);
-    return {
-      id: view.id,
-      x: [ax + (view.x[0] - ax) / factor, ax + (view.x[1] - ax) / factor],
-      y: [ay + (view.y[0] - ay) / factor, ay + (view.y[1] - ay) / factor],
-    };
-  }
-
-  function zoomView(container, factor, fx, fy) {
-    return zoomViewFrom(viewOf(container), factor, fx, fy);
-  }
-
-  // talking to the engine
-
-  function attach(root, send, onFrame) {
-    var plots = root.querySelectorAll('.woxi-plot');
-    for (var i = 0; i < plots.length; i++) wire(plots[i], send, onFrame);
-  }
-
-  // Swaps in a re-rendered plot, adopting the range the engine reported. Used when
-  // no gesture is running (tests, and the frames after the finger has lifted).
-  function apply(container, item) {
-    if (!item || !item.svg) return;
-    container.innerHTML = global.WoxiRender.graphicInnerHtml(item);
-    if (item.plot) setView(container, item.plot);
-    global.WoxiRender.fitGraphics(container);
-  }
-
-  function fire(send, msgType, content) {
-    try {
-      var answer = send(msgType, content);
-      if (answer && answer.catch) answer.catch(noop);
-    } catch (err) {
-      // The bridge is gone. There is nothing left to talk to.
-    }
-  }
-
-  function wire(container, send, onFrame) {
-    // A controller reference, not an attribute: a notebook rebuild recreates the
-    // elements from HTML, and an attribute would claim they are still wired when
-    // their listeners are gone.
-    if (container.__woxiPlot) return;
-
-    var pointers = {};        // pointerId -> {x, y}
-    var activeCount = 0;
-    var pinch = null;         // { startDistance, view, fx, fy }
-    // While a finger is down the gesture keeps its own range: every move is applied
-    // to that, not to what the picture currently shows, so requests still in flight
-    // cannot make a drag lose distance. The ranges agree again on lift-off.
-    var gestureView = null;
-    // The range the user last asked for. A gesture starts from this rather than from
-    // whatever the DOM shows, so starting a new one while a frame is still on its way
-    // cannot step back a frame.
-    var wanted = null;
-    // One request at a time, tagged with a sequence number: a response for an older
-    // view is never allowed to move the picture back to it.
-    var queued = null;        // { kind, view, tag, density }
-    var latestTag = 0;        // the newest thing the user asked for
-    var paintedTag = 0;       // the newest answer already drawn
-    var inFlight = false;
-    var lastSentAt = 0;
-    var stepMs = STEP_MS;
-    var refineTimer = null;
-    var lastRefineAt = 0;
-    // Set when the engine says the handle is gone or no longer renders: the plot
-    // keeps its picture, but stops asking for frames or re-samples.
-    var dead = false;
-    var disposed = false;
-    // While a gesture runs, the picture keeps the geometry it had when the finger
-    // landed, so tick-label changes cannot resize the plot under the user's hand.
-    var frozen = null;
-    // The data rectangle and the SVG box, measured once per gesture.
-    var rect = null;
-
-    function currentView() {
-      return gestureView || wanted || viewOf(container);
-    }
-
-    // The range the user wants, paired with the coverage the engine last confirmed.
-    // The two arrive independently - a frame can land while a finger is down - so
-    // they are kept apart instead of being read out of one another.
-    function refineCandidate() {
-      var desired = currentView();
-      if (!desired) return null;
-      var shown = viewOf(container);
-      if (!shown || !shown.d) return desired;
-      return { id: desired.id, x: desired.x, y: desired.y, d: shown.d, dy: shown.dy, s: shown.s, dn: shown.dn };
-    }
-
-    function densityLevel() {
-      return Number(container.getAttribute('data-woxi-density') || 0) || 0;
-    }
-
-    // After a gesture has settled, ask for more data when the view needs it.
-    function scheduleRefineCheck() {
-      if (dead || disposed || container.getAttribute('data-woxi-resample') === 'off') return;
-      if (refineTimer) global.clearTimeout(refineTimer);
-      refineTimer = global.setTimeout(function () {
-        refineTimer = null;
-        if (disposed) return;
-        // Never re-sample under a finger, and never while a view is still on its way:
-        // both would be superseded before the answer arrived.
-        if (gestureView || inFlight || (queued && queued.kind === 'view')) {
-          scheduleRefineCheck();
-          return;
-        }
-        if (Date.now() - lastRefineAt < REFINE_MIN_GAP_MS) {
-          scheduleRefineCheck();
-          return;
-        }
-        var view = refineCandidate();
-        if (!view) return;
-        var shown = viewOf(container);
-        // A fixed-domain plot: more points, same domain.
-        if (shown && needsDensify(shown, densityLevel())) {
-          lastRefineAt = Date.now();
-          enqueue('densify', view, densityLevel() + 1);
-          return;
-        }
-        if (!needsRefine(view)) return;
-        lastRefineAt = Date.now();
-        enqueue('refine', view);
-      }, REFINE_IDLE_MS);
-    }
-
-    function enqueue(kind, view, density) {
-      if (!view || disposed) return;
+    // One queue, one rule. A view coalesces with a queued view and never replaces a queued
+    // re-sample: the re-sample is what puts the curve under the finger. A re-sample replaces a
+    // queued view, so it gets the next slot -- but after a re-sample has been sent, a queued view
+    // goes first, so the ticks cannot starve behind a fast finger. The newest view is kept in
+    // `wanted` and is re-judged after that view.
+    if (kind === "view") {
       wanted = view;
-      latestTag += 1;
-      var job = { kind: kind, view: view, tag: latestTag, density: density || 0 };
-      if (!queued || kind === 'view') {
-        // The newest view wins. A queued re-sample is not worth sending once the
-        // view has moved on.
-        queued = job;
-      }
-      pump();
+      // A view coalesces with a queued view. After a re-sample, one view replaces a queued
+      // re-sample too: that is the ticks' turn. Before one, a queued re-sample is left alone.
+      if (!queued || queued.kind === "view" || refinementSinceView) queued = job;
+    } else if (!(refinementSinceView && queued && queued.kind === "view")) {
+      queued = job;
     }
+    pump();
+  }
 
-    function messageFor(job) {
-      if (job.kind === 'refine') return 'plot_refine';
-      if (job.kind === 'densify') return 'plot_densify';
-      return 'plot_view';
-    }
+  function messageFor(job) {
+    if (job.kind === "refine") return "plot_refine";
+    if (job.kind === "densify") return "plot_densify";
+    return "plot_view";
+  }
 
-    function contentFor(job) {
-      var content = { handle: job.view.id, x: job.view.x, y: job.view.y };
-      if (job.kind === 'densify') content.level = job.density;
+  function contentFor(job) {
+    const content = { handle: job.view.id };
+    if (job.kind === "densify") {
+      content.level = job.density;
       return content;
     }
+    content.x = job.view.x;
+    content.y = job.view.y;
+    if (job.kind === "refine" && job.pad > 0) content.pad = job.pad;
+    if (job.kind === "view") {
+      // The frame's shape, from the scene the canvas draws: the engine re-lays a crop out, and
+      // `Show`'s own default would turn a square picture into a 1.6:1 one.
+      if (scene && scene.frame && scene.frame[2] > 0) {
+        content.aspect = scene.frame[3] / scene.frame[2];
+      }
+      // A gesture frame needs the scene, not the markup: nothing shows the SVG, and the answer
+      // at rest brings it for the document.
+      if (gestureView) content.picture = false;
+    }
+    return content;
+  }
 
-    function pump() {
-      if (inFlight || !queued || disposed) return;
-      // A container taken out of the document (a rebuilt notebook, a deleted entry)
-      // must not keep asking the engine for frames.
-      if (!container.isConnected) {
-        queued = null;
-        dispose(true);
-        return;
-      }
-      var wait = stepMs - (Date.now() - lastSentAt);
-      if (wait > 0) {
-        global.setTimeout(pump, wait);
-        return;
-      }
-      var job = queued;
+  function pump() {
+    if (status !== "live" || inFlight || !queued) return;
+    if (!container.isConnected) {
       queued = null;
-      inFlight = true;
-      var sentAt = Date.now();
-      lastSentAt = sentAt;
-      send(messageFor(job), contentFor(job)).then(function (reply) {
-        inFlight = false;
-        if (disposed) return;
-        var item = reply && reply.status === 'ok' ? reply.content : null;
-        if (!item || !item.svg) {
-          var ename = reply && reply.ename;
-          if (ename === 'ExpiredHandle' || !container.querySelector('svg')) {
-            container.setAttribute('data-woxi-resample', 'off');
-            dead = true;
-            container.setAttribute('data-woxi-view', 'expired');
-            return;
-          }
-          // A request the plot cannot serve: stop asking for more data, but keep
-          // the picture and keep panning the data it has.
-          container.setAttribute('data-woxi-resample', 'off');
-          return;
-        }
-        // Let the request rate follow the engine: a contour frame that takes 80 ms
-        // should not be asked for every 40 ms.
-        stepMs = Math.min(STEP_MAX_MS, Math.max(STEP_MS, (Date.now() - sentAt) * 1.1));
-        if (job.kind === 'densify') {
-          container.setAttribute('data-woxi-density', String(job.density));
-        }
-        applyItem(item, job.tag);
-        // The newest answer settles the view, so that is when to decide whether it
-        // needs more data than the picture has. A re-sample goes through the same
-        // queue, which keeps the two from overtaking each other.
-        if (job.kind !== 'view' || job.tag === latestTag) scheduleRefineCheck();
-        pump();
-      }, function () {
-        inFlight = false;
-        if (job.kind === 'refine' || job.kind === 'densify') {
-          // Do not keep asking for something the engine cannot deliver.
-          container.setAttribute('data-woxi-resample', 'off');
-          return;
-        }
-        pump();
-      });
+      dispose();
+      return;
     }
-
-    // Shows a response.
-    //
-    // Two separate questions, and mixing them up froze the picture: during a pinch
-    // every new move makes the previous answer outdated, so "is this answer still the
-    // newest?" is almost always no - yet those frames are exactly what has to be
-    // drawn. So: a picture is painted whenever the answer is newer than the one on
-    // screen (which stops a late answer from rolling the viewport back, and still
-    // redraws every frame of a gesture), while the range is only taken from the
-    // newest answer, so the maths never follows a lagging frame.
-    function applyItem(item, tag) {
-      if (!item || !item.svg) return;
-      var newest = tag === latestTag;
-      var paint = tag > paintedTag;
-      if (paint) {
-        paintedTag = tag;
-        container.innerHTML = global.WoxiRender.graphicInnerHtml(item);
-        // Frozen geometry while a finger is down, so the plot cannot resize itself
-        // (tick labels change the ink bounds) in the middle of a drag.
-        global.WoxiRender.fitGraphics(container, gestureView ? frozen : null);
-      }
-      if (!item.plot) return;
-      var truth = currentView();
-      var shown = viewOf(container);
-      if (!newest || gestureView) {
-        // Keep the range the user wants. Take only the sampling that came back -
-        // and not even that when what is on screen is already covered by it, so a
-        // late answer cannot undo a re-sample that has already landed.
-        var covered = shown && shown.d && truth && truth.x[0] >= shown.d[0]
-          && truth.x[1] <= shown.d[1];
-        if (covered) {
-          item.plot.d = shown.d;
-          item.plot.s = shown.s;
-          item.plot.dn = shown.dn;
-        }
-        item.plot.x = truth ? truth.x : item.plot.x;
-        item.plot.y = truth ? truth.y : item.plot.y;
-      }
-      setView(container, item.plot);
-      if (newest && !gestureView) wanted = item.plot;
-      // After the range is written, not before: what gets persisted is the markup and
-      // the attribute together, and persisting first saved a frame behind.
-      if (onFrame) onFrame(container);
-    }
-
-    function schedule(view) {
-      enqueue('view', view);
-    }
-
-    function ids() {
-      return Object.keys(pointers);
-    }
-
-    function measure() {
-      rect = containerRect(container);
-      return rect;
-    }
-
-    function beginGesture() {
-      gestureView = currentView();
-      frozen = global.WoxiRender.svgGeometry(container);
-      measure();
-    }
-
-    // The gesture froze the crop it started with. The view it ends on produces
-    // different tick labels. When the new trim would only remove margin, the frozen
-    // crop is kept: a frame that never moves is worth a little extra padding, and the
-    // next explicit evaluation re-trims. When it would cut content (the labels grew),
-    // the crop is interpolated over a few frames instead of jumping.
-    function settleGeometry() {
-      var from = global.WoxiRender.svgGeometry(container);
-      global.WoxiRender.fitGraphics(container);
-      var to = global.WoxiRender.svgGeometry(container);
-      if (!from || !to || from.viewBox === to.viewBox) {
-        if (onFrame) onFrame(container);
-        return;
-      }
-      var inside = to.x >= from.x - 1 && to.y >= from.y - 1
-        && to.x + to.width <= from.x + from.width + 1
-        && to.y + to.height <= from.y + from.height + 1;
-      if (inside) {
-        global.WoxiRender.setGeometry(container, from);
-        if (onFrame) onFrame(container);
-        return;
-      }
-      var started = Date.now();
-      var duration = 160;
-      function step() {
-        if (disposed || gestureView) return;
-        var t = Math.min(1, (Date.now() - started) / duration);
-        var eased = t * t * (3 - 2 * t);
-        var box = {
-          x: from.x + (to.x - from.x) * eased,
-          y: from.y + (to.y - from.y) * eased,
-          width: from.width + (to.width - from.width) * eased,
-          height: from.height + (to.height - from.height) * eased,
-        };
-        box.viewBox = [box.x, box.y, box.width, box.height].join(' ');
-        global.WoxiRender.setGeometry(container, box);
-        if (t < 1) {
-          if (global.requestAnimationFrame) global.requestAnimationFrame(step);
-          else global.setTimeout(step, 16);
-        } else if (onFrame) {
-          onFrame(container);
-        }
-      }
-      step();
-    }
-
-    function endGesture() {
-      gestureView = null;
-      frozen = null;
-      rect = null;
-      settleGeometry();
-    }
-
-    function beginPinch() {
-      var list = ids();
-      if (list.length < 2) {
-        pinch = null;
-        return;
-      }
-      var a = pointers[list[0]];
-      var b = pointers[list[1]];
-      var area = rect || measure();
-      if (!area) {
-        pinch = null;
-        return;
-      }
-      var cx = (a.x + b.x) / 2;
-      var cy = (a.y + b.y) / 2;
-      pinch = {
-        startDistance: Math.hypot(a.x - b.x, a.y - b.y),
-        view: currentView(),
-        // The pinch anchor stays put while the fingers scale, so the picture does
-        // not slide around under them.
-        fx: (cx - area.left) / area.width,
-        fy: (cy - area.top) / area.height,
-      };
-    }
-
-    function onDown(event) {
-      var view = viewOf(container);
-      if (!view || dead || disposed) return;
-      event.preventDefault();
-      pointers[event.pointerId] = { x: event.clientX, y: event.clientY };
-      activeCount = ids().length;
-      try {
-        container.setPointerCapture(event.pointerId);
-      } catch (err) {
-        // the pointer may already be gone. Moves still arrive normally
-      }
-      if (activeCount === 1) beginGesture();
-      if (activeCount >= 2) beginPinch();
-    }
-
-    function onMove(event) {
-      var pointer = pointers[event.pointerId];
-      if (!pointer) return;
-      event.preventDefault();
-      var previousX = pointer.x;
-      var previousY = pointer.y;
-      pointer.x = event.clientX;
-      pointer.y = event.clientY;
-
-      if (pinch && ids().length >= 2) {
-        var list = ids();
-        var a = pointers[list[0]];
-        var b = pointers[list[1]];
-        var distance = Math.hypot(a.x - b.x, a.y - b.y);
-        if (pinch.startDistance > 0) {
-          var zoomed = zoomViewFrom(pinch.view, distance / pinch.startDistance,
-            pinch.fx, pinch.fy);
-          if (zoomed) {
-            gestureView = zoomed;
-            schedule(zoomed);
-          }
-        }
-        return;
-      }
-      var next = panViewFrom(gestureView || currentView(), pointer.x - previousX,
-        pointer.y - previousY, rect || measure());
-      if (next) {
-        gestureView = next;
-        schedule(next);
-      }
-    }
-
-    function onUp(event) {
-      if (!pointers[event.pointerId]) return;
-      delete pointers[event.pointerId];
-      activeCount = ids().length;
-      if (activeCount === 0) {
-        endGesture();
-        scheduleRefineCheck();
-      }
-      if (activeCount >= 2) beginPinch();
-      else pinch = null;
-    }
-
-    // Stops the controller without telling the engine anything. `detach` collects
-    // the handles so the caller can release them after the replacement has attached
-    // (the same handle is addressed by the rebuilt markup).
-    function dispose(silent) {
-      if (disposed) return;
-      disposed = true;
-      dead = true;
-      if (refineTimer) {
-        global.clearTimeout(refineTimer);
-        refineTimer = null;
-      }
+    // One request per display frame. Nothing else throttles them.
+    if (pumpQueued) return;
+    pumpQueued = true;
+    window.requestAnimationFrame(function () {
+      pumpQueued = false;
+      if (status !== "live" || inFlight || !queued) return;
+      const job = queued;
       queued = null;
-      var view = viewOf(container);
-      container.__woxiPlot = null;
-      if (silent && view) fire(send, 'plot_release', { handle: view.id });
-    }
-
-    container.addEventListener('pointerdown', onDown);
-    container.addEventListener('pointermove', onMove);
-    container.addEventListener('pointerup', onUp);
-    container.addEventListener('pointercancel', onUp);
-    container.classList.add('woxi-plot-ready');
-    // One reference per controller, so the engine can drop the plot data when the
-    // last one goes away. Fire and forget: the reply carries nothing we need.
-    var initial = viewOf(container);
-    if (initial) fire(send, 'plot_retain', { handle: initial.id });
-    container.__woxiPlot = {
-      schedule: schedule,
-      pan: panView,
-      zoom: zoomView,
-      // Gesture-shaped helpers: they start from the newest requested range rather
-      // than from what the DOM shows, which is what real drags do.
-      panBy: function (dx, dy) {
-        var next = panViewFrom(currentView(), dx, dy, containerRect(container));
-        if (!next) return null;
-        endGesture();
-        schedule(next);
-        return next;
-      },
-      zoomBy: function (factor, fx, fy) {
-        var next = zoomViewFrom(currentView(), factor, fx, fy);
-        if (!next) return null;
-        endGesture();
-        schedule(next);
-        return next;
-      },
-      refine: function (view) {
-        enqueue('refine', view);
-      },
-      view: currentView,
-      send: send,
-      dispose: dispose,
-    };
+      void sendJob(job);
+    });
   }
 
-  // Stops every controller under `root` and returns what has to be released once
-  // the replacement plots have attached.
-  function detach(root) {
-    var stale = [];
-    if (!root || !root.querySelectorAll) return stale;
-    var plots = root.querySelectorAll('.woxi-plot');
-    for (var i = 0; i < plots.length; i++) {
-      var controller = plots[i].__woxiPlot;
-      if (!controller) continue;
-      var view = viewOf(plots[i]);
-      controller.dispose(false);
-      if (view) stale.push({ id: view.id, send: controller.send });
+  // A job that produced no usable answer. `ename`/`message` come from the reply or the bridge
+  // rejection. The latch belongs to the kind of job that failed: a refused picture must not stop a
+  // re-sample, which is often what would make the picture drawable. A new answer clears both.
+  function failJob(job, ename, message) {
+    if (status === "disposed") return;
+    if (ename === "ExpiredHandle") {
+      // A handle the engine has evicted or forgotten. Keep the cached scene and samples: the
+      // canvas can still pan them locally, and a fresh evaluation of the entry will replace
+      // the controller with one that has a live handle. Disposing here would drop the canvas
+      // and show the older saved picture instead - a visible snap back.
+      status = "stale";
+      queued = null;
+      pumpQueued = false;
+      return;
     }
-    return stale;
+    if (!container.isConnected) {
+      dispose();
+      return;
+    }
+    const counters = stats();
+    counters.failures += 1;
+    counters.lastError = ename ? ename + ": " + (message || "") : message || "empty reply";
+    counters.lastFailed = job.kind;
+    refused = { kind: job.kind === "view" ? "view" : "refine", view: job.view };
+    reconcile();
+    pump();
   }
 
-  // Releases handles collected by `detach` (or an explicit list of ids) through the
-  // send function the controller had.
-  function release(stale) {
-    if (!stale) return;
-    for (var i = 0; i < stale.length; i++) {
-      var entry = stale[i];
-      if (entry && entry.send && typeof entry.id === 'number') {
-        fire(entry.send, 'plot_release', { handle: entry.id });
+  async function sendJob(job) {
+    if (!isLive() || inFlight || !job) return;
+    inFlight = true;
+    const sentAt = now();
+    stats().sends += 1;
+    // A re-sample is counted as such for the queue's alternation, and its margin/reason are
+    // visible in `plotperf`.
+    if (job.kind === "view") {
+      refinementSinceView = false;
+    } else {
+      refinementSinceView = true;
+      stats().refinePad = job.pad || null;
+      stats().refineReason = job.reason || null;
+    }
+    let promise;
+    try {
+      promise = send(messageFor(job), contentFor(job));
+    } catch (error) {
+      inFlight = false;
+      failJob(job, error && error.ename, String((error && error.message) || error));
+      return;
+    }
+    if (!promise || typeof promise.then !== "function") {
+      inFlight = false;
+      failJob(job, null, "the bridge returned no promise");
+      return;
+    }
+    try {
+      const reply = await promise;
+      inFlight = false;
+      if (status === "disposed") return;
+      const item = reply?.status === "ok" ? reply.content : null;
+      const carries = item && (item.svg || item.data || item.plot);
+      if (!carries) {
+        failJob(job, reply?.ename, reply?.evalue);
+        return;
+      }
+      const counters = stats();
+      if (item.svg) counters.frames += 1;
+      if (job.kind === "view") counters.views += 1;
+      else counters.refines += 1;
+      record(counters.roundTrip, now() - sentAt);
+      record(counters.bytes, weightOf(item));
+      if (job.kind === "densify") density = job.density;
+      // A re-sample re-evaluates the original call, which replaces a densified graphic with the
+      // renderer's default number of points. Forget the level, or a parametric plot that panned
+      // once would never ask for a denser drawing again.
+      else if (job.kind === "refine") density = 0;
+      refused = null;
+      applyItem(item, job);
+      // A re-sample that arrived is the new density basis. The first coverage one ends the
+      // large first-interaction margin.
+      if (job.kind !== "view") {
+        if (job.reason === "coverage") covered = true;
+        if (job.basis) basis = job.basis;
+      }
+      reconcile();
+      pump();
+    } catch (error) {
+      // A handler above threw (a DOM or decoding error in applyItem), or the reply was
+      // rejected. The job is over: keep the queue moving and surface it in the counters
+      // instead of an unhandled rejection.
+      inFlight = false;
+      failJob(job, error && error.ename, String((error && error.message) || error));
+    }
+  }
+
+  // Shows a response on the canvas, and the markup it carries hidden (the document's picture).
+  function applyItem(item, job) {
+    if (item.data) {
+      if (typeof item.data.lx === "boolean") logAxes = { x: item.data.lx, y: !!item.data.ly };
+      const nextPrepared = build(item.data);
+      if (nextPrepared) {
+        prepared = nextPrepared;
+        if (layer) WoxiPlotLayer.update(layer, null, prepared, logAxes);
+        // Coverage describes the samples that arrived with it. A picture reply reports the
+        // engine's coverage, which can be newer than the samples the canvas still holds when a
+        // re-sample reply was lost, so it is not adopted here.
+        if (item.plot && item.plot.d) {
+          coverage = { d: item.plot.d, dy: item.plot.dy || null };
+        }
+      } else {
+        // Samples the canvas cannot draw: keep the samples and the coverage that are still on
+        // screen, and do not ask for this same range again (the answer would not change).
+        if (job && job.view) refused = { kind: "refine", view: job.view };
       }
     }
+    if (item.plot && item.plot.scene) {
+      if (!layout) layout = WoxiPlotLayer.layoutOf(item.plot.scene);
+      scene = WoxiPlotLayer.normalize(item.plot.scene, layout);
+      // A scene arrives without markup on a gesture frame. The canvas is already mounted, and it
+      // has to draw the new ticks and labels at once - not only when the next markup lands.
+      if (layer) WoxiPlotLayer.update(layer, scene, null, null);
+      sceneView = item.plot.x && item.plot.y ? { x: item.plot.x, y: item.plot.y } : null;
+    }
+    if (item.svg) {
+      // The markup is what the notebook saves, never what the app shows: it is inserted hidden,
+      // sized by the pinned box so the card cannot resize, and the canvas goes over it.
+      const box = layer ? layer.box : layout ? WoxiPlotLayer.boxOf(layout) : null;
+      dropLayer();
+      container.innerHTML = WoxiRender.svgTag(item.svg, "woxi-graphic");
+      mountLayer(box);
+      if (item.plot && item.plot.x) {
+        // The attribute keeps the view and the sample capability flags. A reopened document
+        // reads it back.
+        setView(container, item.plot);
+      }
+    }
+    // Adopt the range the answer was drawn at only when no newer view has been asked for. A
+    // reply that arrives after the finger moved on must not pull the view back. A repaired
+    // range (the engine's log fallback) is adopted while the answer is still the newest.
+    if (
+      item.plot &&
+      item.plot.x &&
+      item.plot.y &&
+      (!job || job.kind !== "view" || !wanted || !rangeDiffers(wanted, job.view))
+    ) {
+      wanted = { id: item.plot.id, x: item.plot.x, y: item.plot.y };
+    }
+    requestDraw();
+    // What gets persisted is the markup and the attribute together, only between gestures.
+    if (onFrame && !gestureView && item.svg) onFrame(container);
   }
 
-  function first(root) {
-    return root.querySelector ? root.querySelector('.woxi-plot') : null;
-  }
+  container.addEventListener("pointerdown", onDown);
+  container.addEventListener("pointermove", onMove);
+  container.addEventListener("pointerup", onUp);
+  container.addEventListener("pointercancel", onUp);
 
-  global.WoxiPlot = {
-    attach: attach,
-    apply: apply,
-    detach: detach,
-    release: release,
-    first: first,
-    viewOf: viewOf,
-    panView: panView,
-    zoomView: zoomView,
-    needsRefine: needsRefine,
-    needsDensify: needsDensify,
-    plotRect: containerRect,
-    schedule: function (container, view) {
-      if (container && container.__woxiPlot) container.__woxiPlot.schedule(view);
+  sessionOf(container).controller = {
+    active: function () {
+      return !!gestureView;
     },
-    refine: function (container, view) {
-      if (container && container.__woxiPlot) container.__woxiPlot.refine(view);
+    send: send,
+    dispose: dispose,
+    // A re-sample now, and whether one is due, for the harness.
+    refineNow: function () {
+      const due = dueRefine();
+      if (due) enqueue(due.kind, due.view, due.density, due);
+    },
+    refineDue: function () {
+      return !!dueRefine();
+    },
+    // The scene the canvas is drawing, for `plotscene` (a gesture frame's scene is live here
+    // before its markup arrives).
+    scene: function () {
+      return layer ? layer.scene : null;
+    },
+    // What a rebuilt notebook's new element needs to draw at once: the scene and samples the
+    // canvas has, the first scene's layout, the axes and the samples' coverage. Only a wired
+    // plot has them.
+    seed: function () {
+      const view = viewOf(container);
+      if (!view || !scene) return null;
+      return {
+        id: view.id,
+        scene: scene,
+        prepared: prepared,
+        layout: layout,
+        log: logAxes,
+        coverage: coverage,
+      };
+    },
+    // The harness reads this to see a controller as it sees itself.
+    state: function () {
+      return {
+        status: status,
+        density: density,
+        layer: !!layer,
+        prepared: !!prepared,
+        series: prepared ? prepared.series.length : 0,
+        gesture: gestureView,
+        wanted: wanted,
+        scene: sceneView,
+        shown: viewOf(container),
+        coverage: coverage,
+        box: layer ? layer.box : null,
+        scale: layer ? layer.scale : null,
+        mapping: mappingOf(currentView()),
+        frame: scene ? scene.frame : null,
+        rails: scene ? scene.rails || null : null,
+        // The tick set the canvas is drawing, grouped for the harness.
+        ticks: scene ? tickSummary(scene.ticks) : null,
+      };
     },
   };
-})(window);
+
+  // A plot is wired with the scene it was rendered with. Mount the canvas now so it draws
+  // before the first gesture.
+  if (scene) mountLayer(layout ? WoxiPlotLayer.boxOf(layout) : null);
+}
+
+// Stops every controller under `root` and returns what has to be released once the replacement
+// plots have attached.
+function detach(root) {
+  const stale = [];
+  if (!root || !root.querySelectorAll) return stale;
+  const plots = root.querySelectorAll(".woxi-plot");
+  for (let i = 0; i < plots.length; i += 1) {
+    const controller = controllerOf(plots[i]);
+    if (!controller) continue;
+    const view = viewOf(plots[i]);
+    controller.dispose();
+    if (view) stale.push({ id: view.id, send: controller.send });
+  }
+  return stale;
+}
+
+// Releases handles collected by `detach`, except the ones `root` still addresses: a notebook
+// rebuild recreates the elements from the stored HTML with the same handle ids, so the engine's
+// data is still what those plots show.
+function release(stale, root) {
+  if (!stale || !stale.length) return;
+  const kept = {};
+  const plots = root && root.querySelectorAll ? root.querySelectorAll(".woxi-plot") : [];
+  for (let i = 0; i < plots.length; i += 1) {
+    const view = viewOf(plots[i]);
+    if (view) kept[view.id] = true;
+  }
+  for (let j = 0; j < stale.length; j += 1) {
+    const entry = stale[j];
+    if (kept[entry.id]) continue;
+    fire(entry.send, "plot_release", { handle: entry.id });
+  }
+}
+
+function first(root) {
+  return root.querySelector ? root.querySelector(".woxi-plot") : null;
+}
+
+// The last plot on the page, for the harness's `plotstate last` / `plotscene last`: a sweep that
+// adds one plot per case inspects the one it just added, not the first.
+function last(root) {
+  if (!root.querySelectorAll) return null;
+  const plots = root.querySelectorAll(".woxi-plot");
+  return plots.length ? plots[plots.length - 1] : null;
+}
+
+// How a scene's ticks are grouped, for `plotstate`: `axis:kind:labeled`. A tick's kind says
+// whether it follows an axis line (`a`) or sits on the frame (`f`).
+function tickSummary(ticks) {
+  const summary = {};
+  for (let i = 0; i < ticks.length; i += 1) {
+    const tick = ticks[i];
+    const key = tick.o + ":" + (tick.k || "?") + (tick.l ? ":label" : "");
+    summary[key] = (summary[key] || 0) + 1;
+  }
+  return summary;
+}
+
+// The session record's other parts, for the harness: the frame counters.
+function perf(container) {
+  const session = container && sessions.get(container);
+  return session ? session.counters : null;
+}
+
+function resetPerf(container) {
+  const session = container && sessions.get(container);
+  if (session) session.counters = null;
+}
+
+export {
+  attach,
+  controllerOf as controller,
+  detach,
+  first,
+  last,
+  markupOf,
+  perf,
+  release,
+  resetPerf,
+  seedsOf,
+  viewOf,
+};

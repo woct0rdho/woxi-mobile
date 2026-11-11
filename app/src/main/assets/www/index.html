@@ -8,9 +8,9 @@
   // Resolve the stored theme before the first paint, so the notebook does not flash
   // the wrong background. app.js re-applies it once the UI is up.
   (function () {
-    var mode = 'system', dark = true;
+    let mode = 'system', dark = true;
     try {
-      var saved = JSON.parse(localStorage.getItem('woxi.notebook.v1') || '{}');
+      const saved = JSON.parse(localStorage.getItem('woxi.notebook.v1') || '{}');
       if (saved.settings && saved.settings.theme) mode = saved.settings.theme;
     } catch (err) {
       // first run
@@ -22,8 +22,8 @@
 </script>
 <link rel="stylesheet" href="css/app.css">
 </head>
-<body>
 
+<body>
 <div id="woxi-splash">
   <div class="woxi-splash-inner">
     <div class="woxi-splash-logo">Woxi</div>
@@ -61,13 +61,6 @@
 
 <div id="woxi-toast" class="woxi-hidden"></div>
 
-<script src="js/keyboard.js"></script>
-<script src="js/notebook.js"></script>
-<script src="js/woxi-client.js"></script>
-<script src="js/render-output.js"></script>
-<script src="js/plot-interact.js"></script>
-<script src="js/prototypes.js"></script>
-<script src="js/assist.js"></script>
-<script src="js/app.js"></script>
+<script type="module" src="js/app.js"></script>
 </body>
 </html>

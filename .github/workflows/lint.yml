@@ -52,7 +52,10 @@ jobs:
           node-version: "22"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec eslint app/src/main/assets/www/js
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm types
+      - run: pnpm test
 
   python:
     name: python (ruff)

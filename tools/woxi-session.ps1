@@ -4,7 +4,7 @@
 # reports "finished" but never runs JavaScript), so a session is only considered
 # live once the in-page test hook has answered.
 #
-# Usage: .\tools\woxi-session.ps1
+# Usage: . .\tools\woxi-session.ps1
 #     Start-WoxiSession
 #     Invoke-WoxiAction 'swipe' 'left'    # fire an woxi_action intent
 #     Wait-WoxiLog 'kb: page='            # wait for the reply, returns the text
@@ -123,12 +123,12 @@ function Start-WoxiSession([int]$attempts = 5, [int]$settleSec = 10) {
     }
     if (Test-WoxiRendererBlocked) {
       Write-Host 'the Android WebView renderer is blocked for this app (ActivityManager: process is bad).'
-      Write-Host 'Restart the phone to clear it; reinstalling does not.'
+      Write-Host 'Restart the phone to clear it. Reinstalling does not.'
       return $false
     }
     Write-Host "attempt ${i}: no renderer"
   }
-  Write-Host 'session could not be started; last log lines:'
+  Write-Host 'session could not be started. Last log lines:'
   Get-WoxiLog '' 15 | ForEach-Object { Write-Host ('  ' + $_) }
   return $false
 }

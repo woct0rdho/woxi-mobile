@@ -30,7 +30,7 @@ function Resolve-JavaHome {
         $Env:JAVA_HOME = Split-Path -Parent (Split-Path -Parent $java.Source)
         return
     }
-    throw 'no JDK: set JAVA_HOME (JDK 17-21), or put java on PATH'
+    throw 'no JDK: set JAVA_HOME (JDK 17-25), or put java on PATH'
 }
 
 Resolve-JavaHome

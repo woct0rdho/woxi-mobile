@@ -13,7 +13,7 @@ buildscript {
 // ktlint managed in this manifest so Dependabot can update it.
 // The app build never resolves this configuration, and build scripts
 // (*.gradle.kts) are deliberately not linted.
-val ktlint by configurations.creating {
+val ktlint = configurations.create("ktlint") {
     attributes {
         attribute(
             org.gradle.api.attributes.Bundling.BUNDLING_ATTRIBUTE,

@@ -2,10 +2,9 @@
 
 The artwork is the composition from tools/make-woxi-mobile.py - Woxi's traced mark
 with two wheeled axles - so this script imports that one for the geometry and the
-colours instead of keeping a second copy of them.
+colors instead of keeping a second copy of them.
 
 Layout, in Android's 108 x 108 unit adaptive icon canvas:
-
 - a launcher crops the canvas to the central 72 x 72 units, then applies a mask
   shape inscribed in that box. Android asks for the logo to sit inside the inner
   66 x 66 units that remain visible under every mask, i.e. a circle of radius 33,
@@ -23,21 +22,20 @@ Legacy bitmaps (API 24-25) are not cropped to that 72 unit window - the launcher
 shows the whole square or circle - so they are drawn with their own, larger fit.
 
 The layers Android is given, all generated here:
-
 drawable/ic_launcher_background.xml        flat #050505, full bleed to 108 dp
 drawable/ic_launcher_foreground.xml        the car, transparent, fitted to 33 units
 drawable/ic_launcher_foreground_round.xml  the same at 35 units, for android:roundIcon
-drawable/ic_launcher_monochrome.xml        one colour, for Android 13 themed icons
+drawable/ic_launcher_monochrome.xml        one color, for Android 13 themed icons
 mipmap-anydpi-v26/ic_launcher{,_round}.xml the <adaptive-icon> files naming them
 mipmap-{m,h,xh,xxh,xxxh}dpi/*.png          legacy bitmaps for API 24-25
 
 As measured, the standard foreground's furthest point is 31.7 units from the canvas
 center: 1.3 units inside the 66 unit safe circle and 4.3 inside the worst case mask, a
 circle of radius 36, so the W's top corners and both wheels stay visible under any mask.
-The car is then nudged OPTICAL_SHIFT = 2 units of the 108 down. Geometric centring
+The car is then nudged OPTICAL_SHIFT = 2 units of the 108 down. Geometric centering
 leaves equal 14 unit gaps, but the W is one broad mass with a long top edge while the
 bottom is two small wheels, so it reads as sitting high. The nudge levels it, and because
-the extremes move towards the horizontal axis it also brings the furthest point slightly
+the extremes move toward the horizontal axis it also brings the furthest point slightly
 closer to the center rather than further. Padding ends up 11.1 units left and right,
 16.3 above and 12.3 below.
 
@@ -45,7 +43,7 @@ The round variant is the exception the Android docs describe: a launcher only as
 android:roundIcon when it masks icons to a circle, so that foreground may sit closer to
 the edge. Themed icons are a single tinted layer, so the wheel holes would otherwise
 show the W's tips through them. The monochrome layer therefore clips the W to the area
-outside the wheels and draws the wheels on top, giving the same silhouette the colour
+outside the wheels and draws the wheels on top, giving the same silhouette the color
 icon has.
 
 Outputs: every file in the table above, plus design/ (a standalone icon.svg, icon-512.png
@@ -84,7 +82,7 @@ STALE = [f"drawable-{d}/ic_launcher.png" for d in ("ldpi", "mdpi", "hdpi", "xhdp
 
 
 def load_car():
-    """The composition module: geometry, colours and the body renderer."""
+    """The composition module: geometry, colors and the body renderer."""
     spec = importlib.util.spec_from_file_location("woxi_car", CAR_TOOL)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -100,17 +98,17 @@ def fit_scale(width, height, radius, fit):
 
 
 def placer(width, height, radius, scale):
-    """Car coordinates -> canvas coordinates, centerd on the whole car box.
+    """Car coordinates -> canvas coordinates, centered on the whole car box.
 
     The box is the mark plus the wheels hanging below it, so its center is
     (width / 2, (height + radius) / 2) - not the center of the mark, which would
     sit the whole car low by half a wheel.
 
-    OPTICAL_SHIFT then nudges everything down a little. Geometric centring leaves
+    OPTICAL_SHIFT then nudges everything down a little. Geometric centering leaves
     equal gaps above and below, but the W is one broad mass with a long top edge
     while the bottom is just two small wheels, so at icon size it reads as sitting
     high. Two units out of 108 is enough to look level, and it hardly touches the
-    fit: the extremes move towards the horizontal axis, so the furthest point gets
+    fit: the extremes move toward the horizontal axis, so the furthest point gets
     slightly closer to the center, not further.
     """
     total = height + radius
@@ -134,16 +132,16 @@ def body_path(contours, place):
     return " ".join(parts)
 
 
-def wheel_parts(contours, width, height, radius, place, colours):
-    """Every wheel circle as (center, radius in canvas units, colour)."""
+def wheel_parts(contours, width, height, radius, place, colors):
+    """Every wheel circle as (center, radius in canvas units, color)."""
     unit = unit_scale(place)
     out = []
     for axle in car.axles(contours, height):
-        circles = [(radius, colours["tyre"]), (radius * car.WHEEL["rim"], colours["rim"])]
-        circles += [(radius * car.WHEEL["hole"], colours["tyre"]) for _ in car.holes((axle, height), radius)]
-        circles.append((radius * car.WHEEL["hub"], colours["tyre"]))
-        for r, colour in circles:
-            out.append((place(axle, height), r * unit, colour))
+        circles = [(radius, colors["tire"]), (radius * car.WHEEL["rim"], colors["rim"])]
+        circles += [(radius * car.WHEEL["hole"], colors["tire"]) for _ in car.holes((axle, height), radius)]
+        circles.append((radius * car.WHEEL["hub"], colors["tire"]))
+        for r, color in circles:
+            out.append((place(axle, height), r * unit, color))
     return out
 
 
@@ -172,16 +170,16 @@ def foreground_xml(contours, width, height, radius, fit, what):
     unit_scale(place)
     tops = place(0, 0)[1], place(0, height)[1]
     stops = "\n".join(
-        f'                <item android:offset="{offset:g}" android:color="#FF{colour}" />'
-        for offset, colour in car.STOPS
+        f'                <item android:offset="{offset:g}" android:color="#FF{color}" />'
+        for offset, color in car.STOPS
     )
     wheels = []
-    for (cx, cy), r, fill in wheel_parts(contours, width, height, radius, place, {"tyre": car.TYRE, "rim": car.RIM}):
+    for (cx, cy), r, fill in wheel_parts(contours, width, height, radius, place, {"tire": car.TIRE, "rim": car.RIM}):
         wheels.append(f'  <path android:fillColor="#{fill}" android:pathData="{circle_path(cx, cy, r)}" />')
     return """<?xml version="1.0" encoding="utf-8"?>
 <!-- {what}
      The car's furthest point is {fit:g} units from the canvas center:
-     {pad:.2f} units inside the 36 unit circle a launcher can mask to, and {safe:.2f}
+     {pad:.3f} units inside the 36 unit circle a launcher can mask to, and {safe:.3f}
      inside the 66 x 66 unit area Android guarantees to show. Wheels are painted
      after the body on purpose. Generated by tools/make-icon.py. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -216,12 +214,12 @@ def foreground_xml(contours, width, height, radius, fit, what):
 
 
 def monochrome_xml(contours, width, height, radius):
-    """One-colour version for Android 13 themed icons.
+    """One-color version for Android 13 themed icons.
 
-    In colour the tyres are opaque and hide the W's tips. In a single tint those tips
+    In color the tires are opaque and hide the W's tips. In a single tint those tips
     would show through the wheels' drilled holes, so the W is clipped to the area
     outside the wheels and the wheels are drawn on top, giving the same silhouette the
-    coloured icon has. The clip uses plain winding (canvas rect one way, the two disc
+    colored icon has. The clip uses plain winding (canvas rect one way, the two disc
     outlines the other) because <clip-path> has no fill-rule attribute. This layer is
     shared by both adaptive icons, so it keeps the safe fit rather than the round one.
     """
@@ -248,8 +246,8 @@ def monochrome_xml(contours, width, height, radius):
             )
         )
     return """<?xml version="1.0" encoding="utf-8"?>
-<!-- Woxi Mobile themed icon (Android 13+): the same artwork in one colour, tinted by
-     the system. Tyre and rim merge into a disc. The drilled holes and the W's
+<!-- Woxi Mobile themed icon (Android 13+): the same artwork in one color, tinted by
+     the system. Tire and rim merge into a disc. The drilled holes and the W's
      counters stay as holes, so the wheel still reads as a wheel.
      Generated by tools/make-icon.py. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -273,7 +271,7 @@ def adaptive_xml(foreground):
 
 
 def draw_car(img, contours, width, height, radius, fit):
-    """Paint the car into `img`, centerd with circumradius `fit`, in canvas units.
+    """Paint the car into `img`, centered with circumradius `fit`, in canvas units.
 
     The body goes down first and the wheels over it, matching the SVG: the W's tips
     reach the axle, so a body painted last would cut spikes out of the rims.
@@ -302,12 +300,12 @@ def draw_car(img, contours, width, height, radius, fit):
 
     draw = ImageDraw.Draw(img)
     for axle in car.axles(contours, height):
-        circles = [(radius, car.rgb(car.TYRE)), (radius * car.WHEEL["rim"], car.rgb(car.RIM))]
-        circles += [(radius * car.WHEEL["hole"], car.rgb(car.TYRE)) for _ in car.holes((axle, height), radius)]
-        circles.append((radius * car.WHEEL["hub"], car.rgb(car.TYRE)))
-        for r, colour in circles:
+        circles = [(radius, car.rgb(car.TIRE)), (radius * car.WHEEL["rim"], car.rgb(car.RIM))]
+        circles += [(radius * car.WHEEL["hole"], car.rgb(car.TIRE)) for _ in car.holes((axle, height), radius)]
+        circles.append((radius * car.WHEEL["hub"], car.rgb(car.TIRE)))
+        for r, color in circles:
             box = [at(axle - r, height - r), at(axle + r, height + r)]
-            draw.ellipse([box[0][0], box[0][1], box[1][0], box[1][1]], fill=colour)
+            draw.ellipse([box[0][0], box[0][1], box[1][0], box[1][1]], fill=color)
 
 
 def masked(img, shape, span):
@@ -391,12 +389,12 @@ def svg_source(contours, width, height, radius):
     stops = "\n".join(f'      <stop offset="{o * 100:g}%" stop-color="#{c}" />' for o, c in car.STOPS)
     wheels = []
     for axle in car.axles(contours, height):
-        circles = [(radius, car.TYRE), (radius * car.WHEEL["rim"], car.RIM)]
-        circles += [(radius * car.WHEEL["hole"], car.TYRE) for _ in car.holes((axle, height), radius)]
-        circles.append((radius * car.WHEEL["hub"], car.TYRE))
-        for r, colour in circles:
+        circles = [(radius, car.TIRE), (radius * car.WHEEL["rim"], car.RIM)]
+        circles += [(radius * car.WHEEL["hole"], car.TIRE) for _ in car.holes((axle, height), radius)]
+        circles.append((radius * car.WHEEL["hub"], car.TIRE))
+        for r, color in circles:
             cx, cy = place(axle, height)
-            wheels.append(f'    <circle cx="{cx:.3f}" cy="{cy:.3f}" r="{r * unit:.3f}" fill="#{colour}" />')
+            wheels.append(f'    <circle cx="{cx:.3f}" cy="{cy:.3f}" r="{r * unit:.3f}" fill="#{color}" />')
     return """<?xml version="1.0" encoding="utf-8"?>
 <!-- Woxi Mobile icon. Generated by tools/make-icon.py from the traced mark in
      design/woxi-mark.json. Shown at the full 108 unit canvas. The launcher crops

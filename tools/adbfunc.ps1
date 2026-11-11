@@ -27,13 +27,39 @@ function Resolve-AdbPath {
 
 $script:AdbPath = Resolve-AdbPath
 
-# Serial of the device to drive. Set WOXI_ADB_SERIAL to use another one, e.g. an emulator:
+# Serial of the device to drive. `WOXI_ADB_SERIAL` names it. Without it the one device
+# that is attached is used, so no serial or emulator name is baked in here.
 # $Env:WOXI_ADB_SERIAL = 'emulator-5554'
-$script:AdbSerial = if ($Env:WOXI_ADB_SERIAL) { $Env:WOXI_ADB_SERIAL } else { '3116TF1010011589' }
+$script:AdbSerial = $Env:WOXI_ADB_SERIAL
+
+function Get-AttachedSerials {
+    $out = & $script:AdbPath devices 2>&1 | Out-String
+    return @($out -split "`r?`n" | Where-Object { $_ -match '^(\S+)\s+device\s*$' } | ForEach-Object { $matches[1] })
+}
+
+# The serial, or $null while no single device is attached. Used by the waits, which must
+# keep looking rather than fail.
+function Find-AdbSerial {
+    if ($script:AdbSerial) { return $script:AdbSerial }
+    $attached = @(Get-AttachedSerials)
+    if ($attached.Count -eq 1) { $script:AdbSerial = $attached[0] }
+    return $script:AdbSerial
+}
+
+# The serial a command should use, or a clear error naming the candidates.
+function Resolve-AdbSerial {
+    $serial = Find-AdbSerial
+    if ($serial) { return $serial }
+    $attached = @(Get-AttachedSerials)
+    $seen = if ($attached.Count) { $attached -join ', ' } else { 'none' }
+    throw "no single device attached ($seen): set WOXI_ADB_SERIAL to pick one (see: adb devices)"
+}
 
 function Get-AdbDevice {
+    $serial = Find-AdbSerial
+    if (-not $serial) { return $false }
     $out = & $script:AdbPath devices 2>&1 | Out-String
-    return ($out -match "$([regex]::Escape($script:AdbSerial))\s+device")
+    return ($out -match "$([regex]::Escape($serial))\s+device")
 }
 
 function Wait-AdbDevice {
@@ -54,9 +80,11 @@ function Invoke-Adb {
     )
     for ($attempt = 1; $attempt -le $Retries; $attempt++) {
         if (-not (Wait-AdbDevice -TimeoutSeconds $WaitSeconds)) { continue }
-        $out = & $script:AdbPath -s $script:AdbSerial @Arguments 2>&1 | Out-String
+        $serial = Find-AdbSerial
+        if (-not $serial) { continue }
+        $out = & $script:AdbPath -s $serial @Arguments 2>&1 | Out-String
         $text = $out.TrimEnd()
-        if ($text -notmatch "device '$([regex]::Escape($script:AdbSerial))' not found" -and
+        if ($text -notmatch "device '$([regex]::Escape($serial))' not found" -and
             $text -notmatch 'error: closed' -and
             $text -notmatch 'no devices/emulators found' -and
             $text -notmatch 'failed to get feature set') {

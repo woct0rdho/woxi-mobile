@@ -18,20 +18,30 @@ pub(crate) fn item(kind: &str, text: &str, svg: Option<&str>) -> String {
     }
 }
 
-pub(crate) fn graphics_item(svg: &str) -> String {
-    format!("{{\"type\":\"graphics\",\"svg\":\"{}\"}}", json_escape(svg))
-}
-
-/// Like [`graphics_item`], with the interactive-view handle of a 2D plot.
-pub(crate) fn graphics_item_with_plot(svg: &str, plot: Option<&str>) -> String {
-    match plot {
-        Some(plot) => format!(
-            "{{\"type\":\"graphics\",\"svg\":\"{}\",\"plot\":{}}}",
-            json_escape(svg),
-            plot
-        ),
-        None => graphics_item(svg),
+/// A `graphics` item: the markup, and optionally the interactive-view handle of a 2D plot
+/// (the range its picture shows) and the samples a gesture draws the curve from. Either
+/// may be absent: a re-sample brings samples for the picture already on screen.
+pub(crate) fn graphics_item_with_plot(
+    svg: Option<&str>,
+    plot: Option<&str>,
+    data: Option<&str>,
+) -> String {
+    let mut out = String::from("{\"type\":\"graphics\"");
+    if let Some(svg) = svg {
+        out.push_str(",\"svg\":\"");
+        out.push_str(&json_escape(svg));
+        out.push('"');
     }
+    if let Some(plot) = plot {
+        out.push_str(",\"plot\":");
+        out.push_str(plot);
+    }
+    if let Some(data) = data {
+        out.push_str(",\"data\":");
+        out.push_str(data);
+    }
+    out.push('}');
+    out
 }
 
 /// Result text with the graphics placeholders removed (`-Graphics-` etc.).

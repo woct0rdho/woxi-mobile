@@ -6,9 +6,65 @@ use crate::manipulate::{
     render_body,
 };
 use crate::output::{graphics_item_with_plot, item, residual_text};
-use crate::plot::{held_statement, literal_statement, register_plot, Held};
+use crate::plot::{capture_statement, register_plot, Capture};
 
-pub(crate) fn evaluate_statement_items(stmt: &str, held: Option<Held>) -> Vec<String> {
+/// Splits a cell on top-level semicolons, respecting brackets and quoted strings. Woxi's
+/// statement splitter keeps `a = 2; Plot[...]` together, and `string_to_expr` parses only
+/// the first expression of a string, so a cell that holds several statements has to be
+/// split here before the last one is parsed.
+pub(crate) fn split_semicolons(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut start = 0usize;
+    for (index, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ';' if depth == 0 => {
+                parts.push(&text[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+/// The interpreter answers bare numbers, quoted strings and simple braced lists on a fast
+/// path that does not record `%`/`Out[]` history, which makes `%` after such a cell resolve
+/// to whatever came before it. Parenthesizing the statement routes it through the normal
+/// path, which does record it. The value and its typesetting are unchanged.
+pub(crate) fn literal_statement(statement: &str) -> String {
+    let trimmed = statement.trim();
+    if trimmed.is_empty() || trimmed.ends_with(';') {
+        return statement.to_string();
+    }
+    let literal = trimmed.parse::<i64>().is_ok()
+        || (trimmed.contains('.') && trimmed.parse::<f64>().is_ok())
+        || (trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('{') && trimmed.ends_with('}'));
+    if literal {
+        format!("({trimmed})")
+    } else {
+        statement.to_string()
+    }
+}
+
+pub(crate) fn evaluate_statement_items(stmt: &str, capture: Capture) -> Vec<String> {
     let mut items = Vec::new();
     // Bare literals are answered by an interpreter fast path that does not record
     // `%` history. See `literal_statement`.
@@ -41,10 +97,23 @@ pub(crate) fn evaluate_statement_items(stmt: &str, held: Option<Held>) -> Vec<St
             }
 
             if let Some(svg) = graphics {
-                let plot = woxi::get_last_output()
+                let output = woxi::get_last_output();
+                // The payload and the samples of an interactive plot. The samples are the
+                // picture's own points: there is no pre-sample, so the first gesture starts from
+                // exactly the range the picture shows. A two-axis renderer reports those points
+                // mirrored in y, which `plot_layer` undoes.
+                let (plot, layer) = match output
                     .as_ref()
-                    .and_then(|expr| register_plot(expr, &held));
-                items.push(graphics_item_with_plot(svg, plot.as_deref()));
+                    .and_then(|expr| register_plot(expr, &capture))
+                {
+                    Some((payload, samples)) => (Some(payload), Some(samples)),
+                    None => (None, None),
+                };
+                items.push(graphics_item_with_plot(
+                    Some(svg),
+                    plot.as_deref(),
+                    layer.as_deref(),
+                ));
                 let residual = residual_text(&result.result);
                 if !residual.is_empty() {
                     items.push(item("text", &residual, None));
@@ -69,8 +138,8 @@ pub(crate) fn evaluate_all(input: &str) -> String {
         }
         // Captured before the statement runs, so the interpreter's `%` still refers
         // to the previous result while the statement is being evaluated.
-        let held = held_statement(&statement);
-        items.extend(evaluate_statement_items(&statement, held));
+        let capture = capture_statement(&statement);
+        items.extend(evaluate_statement_items(&statement, capture));
     }
     format!("[{}]", items.join(","))
 }
@@ -88,5 +157,44 @@ pub(crate) fn evaluate_manipulate(body: &str, bindings_json: &str) -> String {
     match render_body(body, &bindings) {
         Some(svg) => format!("{{\"svg\":\"{}\"}}", json_escape(&svg)),
         None => "{}".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{evaluate_all, literal_statement, split_semicolons};
+
+    fn reset() {
+        woxi::clear_state();
+    }
+
+    #[test]
+    fn bare_literals_are_parenthesized() {
+        assert_eq!(literal_statement("42"), "(42)");
+        assert_eq!(literal_statement(" 3.5 "), "(3.5)");
+        assert_eq!(literal_statement("\"hi\""), "(\"hi\")");
+        assert_eq!(literal_statement("{1, 2}"), "({1, 2})");
+        assert_eq!(literal_statement("42;"), "42;");
+        assert_eq!(literal_statement("a = 1"), "a = 1");
+        assert_eq!(
+            literal_statement("Plot[Sin[x], {x, 0, 1}]"),
+            "Plot[Sin[x], {x, 0, 1}]"
+        );
+    }
+
+    #[test]
+    fn semicolons_split_at_top_level_only() {
+        assert_eq!(split_semicolons("a = 2; Plot[a x, {x, 0, 1}]").len(), 2);
+        assert_eq!(split_semicolons("f[1;2]; g").len(), 2);
+        assert_eq!(split_semicolons("\"a;b\"; c").len(), 2);
+        assert_eq!(split_semicolons("a = 2").len(), 1);
+    }
+
+    #[test]
+    fn percent_sees_bare_literals() {
+        reset();
+        evaluate_all("42");
+        let items = evaluate_all("%");
+        assert!(items.contains("\"text\":\"42\""), "{items}");
     }
 }

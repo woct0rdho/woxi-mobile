@@ -296,7 +296,7 @@ class MainActivity : ComponentActivity() {
 
     // Applies the resolved theme ('light' | 'dark') to everything outside the web layer:
     // window background (visible before the page paints), system-bar icon contrast, and
-    // the interpreter's typesetting colours.
+    // the interpreter's typesetting colors.
     fun applyTheme(theme: String) {
         val dark = theme != "light"
         val background = if (dark) 0xFF1E1E1E.toInt() else 0xFFECECEC.toInt()

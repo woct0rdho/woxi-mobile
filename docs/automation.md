@@ -66,26 +66,37 @@ Get-WoxiLog 'plotperf'
 
 ### Typing help
 
-- `assist` dumps the bar state (`idle`, `signature`, `candidates`, `options`, `iterator`), the prefix, the first matches, the caret, the entry text and the centre of every bar key in device pixels, which is what a tap test needs.
+- `assist` dumps the bar state (`idle`, `signature`, `candidates`, `options`, `iterator`), the prefix, the first matches, the caret, the entry text and the center of every bar key in device pixels, which is what a tap test needs.
 - `assistaccept [name]` accepts a match (the first one by default).
 - `assistsheet <all|examples|about>` opens the help sheet on that section. `assistclose` closes it.
 - `diag` logs the issues the help found: their codes, which have a fix, and the text they were found in.
 
 ### Plots
 
-- `plotview <pan,dx,dy|zoom,factor>` drives a gesture directly: a pan in pixels, or a zoom about the plot's centre.
-- `plotdrag <dx,dy>` and `plotpinch <factor>` stream single-pointer and two-pointer gestures over time, since adb cannot inject two fingers at once.
+The plot hooks below live in `js/plot-hooks.js`. The rest of the actions live in `js/test-hooks.js` (its `createTestAction` takes the menu and options sheets from the app). Both drive the same controllers a finger does:
 - `plotsweep <dx,dy,frames>` drags at display-frame rate for that many frames and logs how long it took, which is a finger rather than a script stepping through moves.
+- `plotpinch <factor>[,<angle>,<shiftX>,<shiftY>]` streams a synthetic two-finger gesture over time, for a device where `tools/inject-pinch.ps1` (the real touch-panel pinch) is not available. The default is a horizontal pinch. `45` is a uniform pinch, `90` a vertical one, and the shifts move the midpoint during the gesture (for example `plotpinch 2,0,80,40` is a pan while x zooms).
 - `plothold <dx,dy>`, `plotmove <fraction>` and `plotrelease` do the same step by step and leave the finger down, so a screenshot can catch the frame the canvas draws before any answer arrives.
 - `plotlatency <ms>` delays every plot answer, which is how a gesture is checked with the engine behind.
-- `plotrefine` asks for a re-sample now instead of waiting for the idle timer.
-- `plotperf` logs what plot frames cost: round trip, SVG paint, canvas draws, payload bytes, the range and coverage, and how often a re-sample was asked for. `plotperf reset` clears the counters.
-- `plotstate` logs what the first plot's controller believes: the range the finger asked for, the picture's range, the samples' coverage, whether a canvas is mounted, how many series it holds, and the matrix of its last draw.
-- `plotframe` logs the picture's frame and the payload's data rectangle in user units next to each other, and `plotcanvas` the canvas element, its bitmap and every box the paint uses. The pair is what showed that a frame is not a data area.
+- `plotrefine` asks for a re-sample now instead of waiting for the idle timer (or a denser drawing, for a plot whose domain is fixed) and reports whether one was due, using the coverage the samples really have.
+- `expire` drops the engine's plot handles without re-evaluating, so the next request takes the `ExpiredHandle` path. `plotstate` then reports `status: stale` and the canvas keeps panning its cached samples.
+- `plotperf` logs what plot frames cost: round trip and canvas paint percentiles, payload bytes, views/refines (with the last re-sample's margin and reason, `pad=<views>/<coverage|resolution>`), the coverage checks and their answers, the pinned box and scale, draws, dropped repaints, sends, failures (`failed=<n>:<ename>: <message>/<kind>`, the kind naming a view or a re-sample) and `geom` - repaints whose scale differed from the previous one (the box is pinned at mount), which is a visual jump of everything the canvas drew and must stay 0 during a gesture. `plotperf reset` clears the counters.
+- `plotstate` logs what the first plot's controller believes (append `last` to inspect the newest plot instead): `status` (`live`, or `stale` when the engine no longer knows the handle and the canvas keeps panning its cached scene. A disposed controller is gone and the action reports `none`), `density`, `layer` (a canvas is mounted), `prepared` (the samples decode), `series`, `gesture`, `wanted` (the range the finger left), `scene` (the range the newest scene shows), `shown` (the range in `data-woxi-plot`), `coverage`, `box` and `scale` (the pinned layout and the user-to-pixel scale), the data `mapping`, the scene's `frame` and `rails` (the room the labels and marks need inside the frame), and a `ticks` summary grouped as `axis:kind:labeled` (`a` for an axis tick, `f` for a frame tick).
+- `plotscene` logs the scene the canvas is drawing, with coordinates rounded to 0.01 (append `last` for the newest plot): `box`, `frame`, `rails`, `fs`, `lines` (orientation, value and kind), `ticks` (orientation, value, kind, its edge `s`, along-edge position `at`, base, tip, and a labeled tick's `dx`/`dy`/anchor/size) and `texts`. It reads the layer, so it also shows a gesture frame before its markup arrives. Use it to see which side a frame label was put on or how far inside its rail an axis was clamped.
+- `rebuild` rebuilds the notebook from the output HTML it keeps, without re-evaluating: what deleting an entry does. A plot comes back with the samples and the scene of the old element (`seedsOf`), so it stays interactive. A plot with no live controller comes back as a still picture, and the next evaluation of its entry gives it a fresh one.
 
-`dump` reports one line per entry: its source, how many SVGs it has, whether the plot trim ran (`fit=yes WxH`), the rectangle gestures map onto (`rect=WxH/data` when the axes were recognised, `/svg` when they were not), a text preview of the output, and how long the engine round trip and the rendering took (`engine=..ms render=..ms json=..B`).
+`dump` reports one line per entry: its source, how many SVGs it has, the plot trim (`fit=yes WxH` when the ink trim ran, `fit=scene WxH` when the picture is pinned to its layout box, `fit=raw` when it kept its own box), `plot=<handle>` with the range it shows and whether it can re-sample/densify, a text preview of the output, and how long the engine round trip and the rendering took (`engine=..ms render=..ms json=..B`).
 
-Gestures can also be measured rather than eyeballed: `tools/record-pan.ps1` records the screen while a sweep runs, and `tools/check-pan-frames.py` measures the recording frame by frame - the curve's box inside the plot card, how far it stops short of the edge it should reach, and the step it moved. A pan that hides part of the curve until an answer lands shows up there as a short box or a still frame followed by a jump.
+Gestures are measured frame by frame rather than eyeballed:
+
+```pwsh
+.\tools\record-gesture.ps1 -Steps 'wait|1500;swipe|540,860,760,860,600;wait|1500;action|plotperf' -Out $Env:TEMP\swipe.mp4
+python tools\check-pan-frames.py $Env:TEMP\swipe.mp4 --card 90,560,1070,1200 --montage $Env:TEMP\frames.png
+```
+
+`record-gesture.ps1` injects a real touch swipe (`adb shell input swipe`) or a real two-finger pinch (`tools/inject-pinch.ps1`, which writes the panel's multi-touch protocol and needs root), optionally interleaved with app actions. It fails a recording that contains a single frame: that is what a gesture over a static page (no interactive plot, or coordinates that missed it) produces. `record-pan.ps1` does the same for the synthetic `plotsweep`. `check-pan-frames.py` extracts every frame and measures the curve's box and the step it took (cross-correlated, `--limit` px so a periodic curve cannot match its own next period), the picture's background box inside `--card`, and how far the curve stops short of the reference box. It lists still frames, jumping frames and card changes, and `--montage` writes the worst frames side by side. `--from`/`--to` select frames, `--background r,g,b` fixes the picture's fill.
+
+For a single before/after comparison, `tools/check-ink-box.py shot1.png shot2.png ...` prints the box and pixel count of the series color in each screenshot. Two screenshots of the same view - one at rest, one with a finger down and one pixel of movement (which mounts the canvas), then back to the same range - must agree to within a pixel or two: a larger box while the finger is down is the canvas drawing the curve at a different scale than the picture, which is what a gesture reads as a zoom.
 
 ## Debugging in an emulator
 
@@ -101,7 +112,7 @@ rustup target add x86_64-linux-android
 .\tools\build-engine.ps1 -Abi x86_64 -Profile fast
 
 # Drive the emulator instead of the phone
-$Env:WOXI_ADB_SERIAL = 'emulator-5554'       # every tools/*.ps1 honours this
+$Env:WOXI_ADB_SERIAL = 'emulator-5554'       # every tools/*.ps1 honors this
 adb -s emulator-5554 root                    # google_apis (not playstore) images allow this
 .\tools\inject-pinch.ps1 -Cx 588 -Cy 861 -Gap0 130 -Gap1 30   # real two-finger pinch
 ```

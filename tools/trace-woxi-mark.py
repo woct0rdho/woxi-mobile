@@ -3,14 +3,13 @@
 Woxi's only icon asset is `images/logo.png` in ad-si/Woxi - there is no SVG in
 the repository - so the mark is recovered from that bitmap and then cleaned up
 into the geometric figure it obviously is:
-
 - a coverage field is recovered from the RGB values, using the fact that
   every pixel is `coverage * gradient(y) + (1 - coverage) * background`.
-  Normalising per row removes the mark's own gradient, so one global
+  Normalizing per row removes the mark's own gradient, so one global
   threshold is valid over the whole figure. A plain luminance threshold
   would eat the bottom of the W, where the gradient is dark.
 - the field is averaged with its own mirror image, about the axis that
-  minimises the difference, which removes the sub-pixel asymmetry left by
+  minimizes the difference, which removes the sub-pixel asymmetry left by
   whoever rendered the original.
 - the field is upscaled 4x and handed to potrace with -a 0 (straight
   segments only). potrace's input convention is "dark is figure", so the
@@ -22,7 +21,7 @@ into the geometric figure it obviously is:
   as the intersections of those lines - one vertex per corner, no staircase.
 - the vertices are matched with their mirror images and averaged, so the
   path is exactly symmetric, and
-- the result is rasterised back and compared against the original coverage
+- the result is rasterized back and compared against the original coverage
   field, so the script reports the error it really achieves.
 
 `--marching-squares` (or a missing potrace) walks the 0.5 level set with skimage
@@ -75,7 +74,7 @@ DEFAULT_SOURCE = os.path.join(TEMP, "woxi-logo.png")
 DEFAULT_POTRACE = os.environ.get("WOXI_POTRACE") or shutil.which("potrace") or "potrace"
 STOPS = [(0.0, "FAC22A"), (0.5, "F07C39"), (1.0, "DA3355")]
 SS = 4
-SHORT_EDGE = 8.0  # edges under this are treated as artefacts, see tidy_corners
+SHORT_EDGE = 8.0  # edges under this are treated as artifacts, see tidy_corners
 
 
 def rgb(value):
@@ -102,9 +101,9 @@ def gradient_at(t):
 def coverage_field(path):
     """Per-pixel ink coverage of the mark, plus the window it was found in."""
     img = np.asarray(Image.open(path).convert("RGB"), dtype=np.float64)
-    colourful = (img.max(axis=2) - img.min(axis=2)) > 60
-    rows = np.where(colourful.any(axis=1))[0]
-    cols = np.where(colourful.any(axis=0))[0]
+    colorful = (img.max(axis=2) - img.min(axis=2)) > 60
+    rows = np.where(colorful.any(axis=1))[0]
+    cols = np.where(colorful.any(axis=0))[0]
     margin = 8
     y0, y1 = max(0, rows[0] - margin), min(img.shape[0], rows[-1] + margin + 1)
     x0, x1 = max(0, cols[0] - margin), min(img.shape[1], cols[-1] + margin + 1)
@@ -151,8 +150,8 @@ def mirror(field, axis):
 
 def trace_potrace(coverage, exe, upscale=4, turdsize=10):
     """Straight-segment potrace trace, returned as polygons in source pixels."""
-    grey = Image.fromarray((np.clip(coverage, 0, 1) * 255).astype(np.uint8))
-    big = grey.resize((coverage.shape[1] * upscale, coverage.shape[0] * upscale), Image.BICUBIC)
+    gray = Image.fromarray((np.clip(coverage, 0, 1) * 255).astype(np.uint8))
+    big = gray.resize((coverage.shape[1] * upscale, coverage.shape[0] * upscale), Image.BICUBIC)
     pgm = os.path.join(TEMP, "woxi-mark-input.pgm")
     Image.fromarray(255 - np.asarray(big)).save(pgm)  # potrace: dark is figure
     svg = os.path.join(TEMP, "woxi-mark-potrace.svg")
@@ -297,8 +296,8 @@ def straighten(points, tolerance_deg=6.0, snap_deg=3.0, min_run=2.0):
 
     Consecutive edges running the same way are merged into one run, each run is fitted
     with a single line, runs that are nearly horizontal or vertical are made exactly so,
-    and the corners come back as the intersections of neighbouring lines. Runs that are
-    too short to carry a direction, or that snapping has left parallel to a neighbour,
+    and the corners come back as the intersections of neighboring lines. Runs that are
+    too short to carry a direction, or that snapping has left parallel to a neighbor,
     are folded into it first, so no two corners can land on top of each other.
     """
     points = np.asarray(points, dtype=np.float64)
@@ -373,7 +372,7 @@ def tidy_corners(points, threshold=SHORT_EDGE, collinear_deg=1.5, locality=3.0, 
     Two things leave short edges behind. One is a corner that came out as a pair of
     vertices, where the two edges either side of the short one are the real edges and
     their intersection is the corner they were describing. The other is a straight run
-    split in two, where the short edge runs the same way as a neighbour and the shared
+    split in two, where the short edge runs the same way as a neighbor and the shared
     vertex simply goes. The two cases are told apart by that collinearity, because
     distance alone cannot separate them: the flat on top of the center tip is split by
     the mirror axis into two 5 px halves, and merging those by line intersection would
@@ -583,7 +582,7 @@ def enforce_mirror(polygons, axis):
     return result
 
 
-def symmetrise(points, axis, tolerance=1.5, on_axis=0.05, rounds=3):
+def symmetrize(points, axis, tolerance=1.5, on_axis=0.05, rounds=3):
     """Average every vertex with its mirror image, so the path is exactly symmetric."""
     points = np.asarray(points, dtype=np.float64)
     for _ in range(rounds):
@@ -698,13 +697,13 @@ def main():
     print(f"source      {os.path.relpath(args.source, ROOT)}")
     print(f"window      {coverage.shape[1]}x{coverage.shape[0]} px at ({window[0]}, {window[1]})")
     print(
-        f"mirror axis x={axis:.3f} px (window center {coverage.shape[1] / 2:.3f}), residual {residual:.4f} before, {float(np.abs(field - mirror(field, axis)).mean()):.4f} after"
+        f"mirror axis x={axis:.3f} px (window center {coverage.shape[1] / 2:.3f}), residual {residual:.3f} before, {float(np.abs(field - mirror(field, axis)).mean()):.3f} after"
     )
     print(f"tracer      {tracer}")
 
     raw = trace_potrace(field, args.potrace) if use_potrace else trace_marching_squares(field)
     raw = [c for c in raw if area(c) > 20.0]  # drop specks
-    polygons = [symmetrise(tidy_corners(straighten(rdp(c, args.eps), args.tolerance, args.snap)), axis) for c in raw]
+    polygons = [symmetrize(tidy_corners(straighten(rdp(c, args.eps), args.tolerance, args.snap)), axis) for c in raw]
     polygons = [merge_collinear(p) for p in enforce_mirror(polygons, axis)]
     polygons = polish(polygons)
     stats = measure(polygons, coverage)
@@ -715,14 +714,14 @@ def main():
         f"{report['horizontals']} horizontal, {report['verticals']} vertical edges"
     )
     print(
-        f"cleanliness closest two vertices {report['closest_vertices_px']:.2f} px apart. "
-        f"shortest edge {report['shortest_edge_px']:.2f} px. "
+        f"cleanliness closest two vertices {report['closest_vertices_px']:.3f} px apart. "
+        f"shortest edge {report['shortest_edge_px']:.3f} px. "
         f"{report['near_axis_but_not_on_it']} near-axis edges not exactly on an axis. "
         f"symmetry residual {report['symmetry_residual_px']:.2e} px"
     )
     print(
-        f"fidelity    IoU {stats['iou']:.5f}, mean coverage error {stats['mean_coverage_error']:.4f}, "
-        f"worst edge {stats['max_edge_px']:.2f} px, {stats['pixels_wrong']} px wrong"
+        f"fidelity    IoU {stats['iou']:.3f}, mean coverage error {stats['mean_coverage_error']:.3f}, "
+        f"worst edge {stats['max_edge_px']:.3f} px, {stats['pixels_wrong']} px wrong"
     )
 
     points = np.vstack(polygons)
@@ -735,8 +734,8 @@ def main():
         json.dump(
             {
                 "source": "images/logo.png in ad-si/Woxi",
-                "method": f"{tracer}, RDP {args.eps:.2f} px, edges merged within {args.tolerance:.1f} deg and snapped within "
-                f"{args.snap:.1f} deg, vertices mirrored about x={axis:.3f}",
+                "method": f"{tracer}, RDP {args.eps:.3f} px, edges merged within {args.tolerance:.3f} deg and snapped within "
+                f"{args.snap:.3f} deg, vertices mirrored about x={axis:.3f}",
                 "metrics": {k: round(v, 6) for k, v in stats.items()},
                 "figure": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in report.items()},
                 "mirror_axis_px": round(axis, 3),
@@ -770,8 +769,8 @@ def main():
 <!-- Woxi's W, traced from images/logo.png in ad-si/Woxi by tools/trace-woxi-mark.py and
      tidied into the geometric figure it is: one vertex per corner, straight edges, the
      near-horizontal cuts exactly horizontal, and mirror symmetry about the vertical axis.
-     IoU {iou:.5f} against the source bitmap, worst edge {worst:.2f} px.
-     The path is even-odd filled, so the three counters are holes. Recolour by changing
+     IoU {iou:.3f} against the source bitmap, worst edge {worst:.3f} px.
+     The path is even-odd filled, so the three counters are holes. Recolor by changing
      the fill. The gradient below is Woxi's own. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="{w:g}" height="{h:.3f}"
      viewBox="0 0 {w:g} {h:.3f}">

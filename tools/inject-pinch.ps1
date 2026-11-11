@@ -15,7 +15,7 @@
 #     .\tools\inject-pinch.ps1 -Cx 588 -Cy 861 -Gap0 30  -Gap1 200      # pinch out (zoom in)
 
 param(
-  [string]$Serial = $(if ($Env:WOXI_ADB_SERIAL) { $Env:WOXI_ADB_SERIAL } else { 'emulator-5554' }),
+  [string]$Serial = '',
   [int]$Cx = 588,
   [int]$Cy = 861,
   [int]$Gap0 = 130,
@@ -26,6 +26,10 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'adbfunc.ps1')
 $adb = $script:AdbPath
+# `-Serial` overrides the device the rest of the tools use (WOXI_ADB_SERIAL, or the one
+# attached device).
+if ($Serial) { $script:AdbSerial = $Serial }
+$Serial = Resolve-AdbSerial
 
 $script = @"
 #!/system/bin/sh

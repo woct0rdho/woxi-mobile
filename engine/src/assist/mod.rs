@@ -15,6 +15,9 @@ pub(crate) mod inspect;
 pub(crate) mod prototypes;
 pub(crate) mod status;
 
+#[cfg(test)]
+mod tests;
+
 use crate::assist::complete::completion_content;
 use crate::assist::diagnostics::diagnostics_content;
 use crate::assist::format::format_content;

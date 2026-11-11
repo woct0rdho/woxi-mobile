@@ -1,0 +1,10 @@
+{
+  "log_fallback_decades": 12,
+  "u16_max": 65535,
+  "sample_pad": 0.5,
+  "refine_near": 0.3,
+  "zoom_in": 0.25,
+  "densify_max_level": 3,
+  "max_refine_pad": 4,
+  "two_axis_max_refine_pad": 1
+}

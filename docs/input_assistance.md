@@ -29,7 +29,7 @@ The bar is the keyboard's first two pages, four keys each. The menu is the sheet
 |---|---|---|
 | 1 (context) | Eval, the function chips / signature, `<-` | every keystroke updates it |
 | 2 (cell) | Undo, Redo, Insert, Delete | no keyboard shortcuts on a phone. Insert and Delete are the two cell edits, next to each other |
-| 3 (text) | Cut, Copy, Paste, Format | selection edits, plus normalising the entry |
+| 3 (text) | Cut, Copy, Paste, Format | selection edits, plus normalizing the entry |
 
 | Menu | Why not the bar |
 |---|---|
@@ -141,7 +141,7 @@ Results on the device, which is how the rules were tuned:
 | `Rng` with `RangeFilter` used earlier in the entry | `RangeFilter`, `Range`, `PlotRange` |
 | `Ran` / `Rang` | `Range`, ... / `Range`, `RangeFilter`, `PlotRange` |
 
-The remaining ambiguity is between neighbours of the same band (`Integer` versus `Integers`, `Contours` versus `ContourPlot`), which alphabetical or length order settles. That is a coin flip, not a wrong answer.
+The remaining ambiguity is between neighbors of the same band (`Integer` versus `Integers`, `Contours` versus `ContourPlot`), which alphabetical or length order settles. That is a coin flip, not a wrong answer.
 
 ## Prototypes, roles and examples
 
@@ -179,7 +179,7 @@ Seven messages, one envelope (`{msg_type, content}` in, `{msg_type, status, cont
 | `format_request` | the formatted text of each code, through Woxi's formatter |
 | `catalog_request` | symbol count and version (Woxi extension) |
 
-Priorities: NORMAL for everything the user is waiting on, BACKGROUND for the one-off catalogue. Gesture frames still overtake both.
+Priorities: NORMAL for everything the user is waiting on, BACKGROUND for the one-off catalog. Gesture frames still overtake both.
 
 ## What is not implemented, and why
 

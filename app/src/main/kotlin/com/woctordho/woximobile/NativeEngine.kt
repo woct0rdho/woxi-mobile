@@ -2,6 +2,9 @@ package com.woctordho.woximobile
 
 import android.util.Log
 import org.json.JSONObject
+import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.thread
 
 // Owner of the Wolfram Language interpreter (`libwoxi_jni.so`).
 //
@@ -11,11 +14,10 @@ import org.json.JSONObject
 //
 // Requests are queued with a priority instead of plain FIFO: a gesture frame on a
 // plot must not wait behind a background re-sample, which can take hundreds of
-// milliseconds. Interactive requests (view, retain, release) go first, then normal
-// work (evaluation, Manipulate, reset), and only then background re-sampling. When an
-// interactive request arrives, background work that has not started yet is dropped:
-// the frontend asks for a re-sample again once the gesture has settled, so a queued
-// one is already out of date.
+// milliseconds. Interactive requests (view, release) go first, then normal
+// work (evaluation, Manipulate, reset), and only then background re-sampling. Nothing
+// queued is ever dropped: a request whose callback never runs would leave its caller
+// waiting forever, so a stale re-sample runs in its turn instead.
 object NativeEngine {
     private const val TAG = "Woxi"
 
@@ -39,17 +41,52 @@ object NativeEngine {
     const val KIND_RESET = "reset"
     const val KIND_MANIPULATE = "manipulate"
 
-    // A queued unit of work, already bound to its callback.
+    // A queued unit of work, ordered by its priority and then by arrival. `PriorityBlockingQueue`
+    // is the lock and the wait: the worker blocks in `take()` and a submission wakes it, so
+    // there is no monitor object, no hand-written wait loop and nothing to notify (Kotlin has no
+    // `wait`/`notify` on `Any` for exactly this reason - the library primitive is the answer).
+    // `sequence` is the tiebreaker: the queue is a heap, so without it two requests of the same
+    // priority could run out of order.
     private class Task(
+        val priority: Int,
+        val sequence: Long,
         val run: () -> Unit,
-    )
+    ) : Comparable<Task> {
+        override fun compareTo(other: Task): Int =
+            if (priority != other.priority) {
+                priority.compareTo(other.priority)
+            } else {
+                sequence.compareTo(other.sequence)
+            }
+    }
 
-    private val lock = Object()
-    private val interactive = ArrayDeque<Task>()
-    private val normal = ArrayDeque<Task>()
-    private val background = ArrayDeque<Task>()
-    private var worker: Thread? = null
+    private val queue = PriorityBlockingQueue<Task>()
+    private val sequence = AtomicLong()
     private var loaded = false
+
+    init {
+        // One daemon thread for the life of the process, because the interpreter is stateful and
+        // not thread safe. It costs a blocked thread, and it removes the lazy-start handshake the
+        // monitor needed.
+        thread(start = true, isDaemon = true, name = "woxi-engine") {
+            while (true) {
+                val task =
+                    try {
+                        queue.take()
+                    } catch (interrupted: InterruptedException) {
+                        // Nothing interrupts this thread in normal use, but an interrupt must not
+                        // end the only thread that can reach the interpreter.
+                        continue
+                    }
+                try {
+                    task.run()
+                } catch (error: Throwable) {
+                    // A task failing must not take the engine thread down with it.
+                    Log.w(TAG, "engine task failed", error)
+                }
+            }
+        }
+    }
 
     // Whether typeset output should be drawn for a dark background.
     @Volatile
@@ -170,7 +207,7 @@ object NativeEngine {
 
     private fun priorityOf(request: String): Int =
         when (messageType(request)) {
-            "plot_view", "plot_retain", "plot_release" -> INTERACTIVE
+            "plot_view", "plot_release" -> INTERACTIVE
             "plot_refine", "plot_densify" -> BACKGROUND
             else -> NORMAL
         }
@@ -186,49 +223,9 @@ object NativeEngine {
         priority: Int,
         run: () -> Unit,
     ) {
-        synchronized(lock) {
-            startWorkerLocked()
-            when (priority) {
-                INTERACTIVE -> {
-                    interactive.addLast(Task(run))
-                    // A queued re-sample is stale as soon as the view moves on.
-                    background.clear()
-                }
-
-                BACKGROUND -> {
-                    background.addLast(Task(run))
-                }
-
-                else -> {
-                    normal.addLast(Task(run))
-                }
-            }
-            lock.notifyAll()
-        }
-    }
-
-    private fun startWorkerLocked() {
-        if (worker != null) return
-        val thread =
-            Thread({
-                while (true) {
-                    val task =
-                        synchronized(lock) {
-                            while (interactive.isEmpty() && normal.isEmpty() && background.isEmpty()) {
-                                lock.wait()
-                            }
-                            when {
-                                interactive.isNotEmpty() -> interactive.removeFirst()
-                                normal.isNotEmpty() -> normal.removeFirst()
-                                else -> background.removeFirst()
-                            }
-                        }
-                    task.run()
-                }
-            }, "woxi-engine")
-        thread.isDaemon = true
-        thread.start()
-        worker = thread
+        // Unbounded and never blocks. It wakes the worker, and the comparator puts the request
+        // where its priority says it belongs.
+        queue.add(Task(priority, sequence.incrementAndGet(), run))
     }
 
     private fun ensureLoaded() {
@@ -237,7 +234,7 @@ object NativeEngine {
         loaded = true
     }
 
-    // The notebook background decides how the typeset SVGs are coloured.
+    // The notebook background decides how the typeset SVGs are colored.
     private fun applyDarkFlag() {
         runCatching { setDarkMode(darkTypesetting) }
     }

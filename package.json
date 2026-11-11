@@ -1,14 +1,27 @@
 {
   "name": "woxi-mobile-web",
   "private": true,
-  "description": "Lint tooling for the WebView layer. Nothing here ships in the APK.",
+  "description": "Lint and test tooling for the WebView layer. Nothing here ships in the APK.",
   "packageManager": "pnpm@12.16.1",
+  "type": "module",
   "scripts": {
-    "lint": "eslint app/src/main/assets/www/js"
+    "lint": "eslint app/src/main/assets/www/js tests",
+    "lint:fix": "eslint app/src/main/assets/www/js tests --fix",
+    "format": "prettier --write \"app/src/main/assets/www/js/**/*.js\" \"tests/**/*.js\" eslint.config.cjs",
+    "format:check": "prettier --check \"app/src/main/assets/www/js/**/*.js\" \"tests/**/*.js\" eslint.config.cjs",
+    "fix": "pnpm lint:fix && pnpm format",
+    "types": "tsc -p tsconfig.json",
+    "test": "node --test tests/"
   },
   "devDependencies": {
-    "eslint": "^10.14.0",
     "@eslint/js": "^10.0.1",
-    "globals": "^17.14.0"
+    "@types/node": "^22.20.5",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "eslint": "^10.14.0",
+    "eslint-plugin-simple-import-sort": "^14.0.0",
+    "globals": "^17.14.0",
+    "prettier": "^3.10.1",
+    "typescript": "npm:@typescript/typescript6@~6.0.2",
+    "typescript-eslint": "^8.72.2"
   }
 }

@@ -1,4 +1,4 @@
-//! Formatting: Woxi's own whitespace normaliser, one line per entry.
+//! Formatting: Woxi's own whitespace normalizer, one line per entry.
 //!
 //! The formatter only moves horizontal whitespace and indentation, never line breaks
 //! (see `woxi::lsp::format`), and it refuses to return text whose code changed. So

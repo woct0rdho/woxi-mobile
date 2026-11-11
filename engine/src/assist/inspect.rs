@@ -44,7 +44,7 @@ pub(crate) fn options_of(name: &str) -> Vec<(String, String)> {
 
 /// The attributes a symbol carries (`HoldAll`, `Listable`, ...). Read through
 /// `Attributes[...]`, which does not record `Out[]` history. They are the part of a
-/// symbol's behaviour an experienced user actually reasons about: whether its
+/// symbol's behavior an experienced user actually reasons about: whether its
 /// arguments are evaluated is often the whole question.
 pub(crate) fn attributes_of(name: &str) -> Vec<String> {
     if !is_symbol_name(name) {

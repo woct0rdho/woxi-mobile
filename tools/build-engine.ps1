@@ -38,6 +38,11 @@ if (-not $Env:ANDROID_NDK_HOME -and -not $Env:ANDROID_NDK_ROOT) {
     if (-not $candidate) { throw "no NDK found in $ndkRoot - install one with sdkmanager 'ndk;<version>'" }
     $Env:ANDROID_NDK_HOME = $candidate.FullName
 }
+# One spelling of the NDK path for every run. Cargo records the environment of a build
+# script, so a run where the caller set ANDROID_NDK_HOME and one where this script found
+# the NDK would otherwise look like two different toolchains and re-run the build scripts
+# of everything that looks at them.
+$Env:ANDROID_NDK_HOME = (Resolve-Path $Env:ANDROID_NDK_HOME).Path
 Write-Host "NDK: $Env:ANDROID_NDK_HOME"
 Write-Host "target ABI: $Abi, profile: $Profile"
 

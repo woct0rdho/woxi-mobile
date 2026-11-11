@@ -259,15 +259,25 @@ html, body {
   overflow-x: auto;
 }
 /* A plot that carries a view handle pans and zooms, so it claims its touches
-   instead of letting the page scroll under the finger. */
+   instead of letting the page scroll under the finger. A canvas over the picture
+   carries the curve during a gesture (plot-layer.js), clipped to the plot box so it
+   cannot spill over the text. */
 .woxi-plot {
   touch-action: none;
-  /* The local preview transforms the SVG, and it must not spill over the text. */
   overflow: hidden;
   position: relative;
 }
 .woxi-plot svg {
+  position: relative;
+  z-index: 1;
   cursor: grab;
+}
+.woxi-plot-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 2;
 }
 .woxi-out-graphic svg {
   display: block;

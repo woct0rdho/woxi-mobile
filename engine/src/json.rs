@@ -25,6 +25,40 @@ pub(crate) fn json_number(value: f64) -> String {
     }
 }
 
+/// A JSON array of already-encoded values.
+pub(crate) fn json_array(values: impl IntoIterator<Item = String>) -> String {
+    let values: Vec<String> = values.into_iter().collect();
+    format!("[{}]", values.join(","))
+}
+
+/// A JSON object from its fields, in the order given. `None` leaves a field out, which is
+/// how an optional one stays optional without the caller tracking commas.
+pub(crate) fn json_object(fields: &[(&str, Option<String>)]) -> String {
+    let mut out = String::with_capacity(64);
+    out.push('{');
+    let mut first = true;
+    for (key, value) in fields {
+        let Some(value) = value else {
+            continue;
+        };
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push('"');
+        out.push_str(key);
+        out.push_str("\":");
+        out.push_str(value);
+    }
+    out.push('}');
+    out
+}
+
+/// A `[x, y]` range as JSON.
+pub(crate) fn json_range(range: (f64, f64)) -> String {
+    json_array([json_number(range.0), json_number(range.1)])
+}
+
 /// The message shape used by the plot-interaction channel: one request object in,
 /// one reply object out. `msg_type` says what to do, `content` carries the fields,
 /// and a reply reports `status` with an `ename`/`evalue` pair on failure, the way a
@@ -57,6 +91,15 @@ pub(crate) fn json_field_text(json: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// A boolean field that may be absent, so a request can default it (a missing picture means
+/// "send the markup", which is what every older client expects).
+pub(crate) fn json_field_bool_opt(json: &str, key: &str) -> Option<bool> {
+    let needle = format!("\"{key}\"");
+    let at = json.find(&needle)? + needle.len();
+    let rest = json[at..].trim_start().strip_prefix(':')?.trim_start();
+    Some(rest.starts_with("true"))
 }
 
 pub(crate) fn json_field_number(json: &str, key: &str) -> Option<f64> {

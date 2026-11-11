@@ -14,9 +14,9 @@
 //!   comparison, `0.34` for the logical operators).
 //!
 //! Every enclosing group and the SVG width are adjusted by the same amount, so
-//! nothing after the changed gap moves relative to its neighbours. Fractions,
+//! nothing after the changed gap moves relative to its neighbors. Fractions,
 //! radicals and other vector-composed boxes are left alone: their internals are
-//! centred by the layout, and their run positions are part of that geometry.
+//! centered by the layout, and their run positions are part of that geometry.
 
 /// Character advance of the monospace face the layout assumes, as a fraction
 /// of the font size (see `MONO_ADVANCE` in Woxi's `layout_box`).
@@ -404,12 +404,12 @@ fn row_width(children: &[Node]) -> Option<f64> {
     Some(right)
 }
 
-/// Respaces the numerator and denominator of a fraction, then re-centres both
+/// Respaces the numerator and denominator of a fraction, then re-centers both
 /// rows and re-sizes the bar to the wider one plus the layout's 2 px padding a
 /// side. Returns how much the fraction's width changed.
 fn respace_fraction(children: &mut [Node]) -> f64 {
     // Widths must be readable before anything moves. A radical in a row would
-    // make the re-centring guesswork.
+    // make the re-centering guesswork.
     let old_bar = match children {
         [Node::Group { children: num, .. }, Node::Raw(bar), Node::Group { children: den, .. }] => {
             if row_width(num).is_none() || row_width(den).is_none() {
@@ -469,7 +469,7 @@ fn respace_group(children: &mut [Node]) -> f64 {
         shift_group_x(&mut children[i], shift);
         let atom = atom_of(&children[i]);
         let width_delta = match atom {
-            // A fraction is re-centred and its bar re-sized when its contents
+            // A fraction is re-centered and its bar re-sized when its contents
             // got narrower. Other geometry-composed boxes stay as they are.
             Atom::Opaque => match &mut children[i] {
                 Node::Group { children, .. } if is_fraction(children) => respace_fraction(children),
