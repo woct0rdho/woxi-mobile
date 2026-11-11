@@ -39,12 +39,13 @@ if (-not $Env:ANDROID_NDK_HOME -and -not $Env:ANDROID_NDK_ROOT) {
     $Env:ANDROID_NDK_HOME = $candidate.FullName
 }
 Write-Host "NDK: $Env:ANDROID_NDK_HOME"
-Write-Host "target ABI: $Abi"
+Write-Host "target ABI: $Abi, profile: $Profile"
 
 Push-Location (Join-Path $repo 'engine')
 try {
     $args = @('ndk', '-t', $Abi, '--platform', '24', '-o', $out, 'build')
     if ($Profile -eq 'release') { $args += '--release' }
+    elseif ($Profile -ne 'dev') { $args += '--profile'; $args += $Profile }
     & cargo @args
     if ($LASTEXITCODE -ne 0) { throw "cargo ndk failed ($LASTEXITCODE)" }
 } finally {
@@ -58,5 +59,5 @@ Get-ChildItem $out -Recurse -Filter '*.so' |
     ForEach-Object { Write-Host "removing stray library $($_.Name)"; Remove-Item $_.FullName }
 
 Get-ChildItem $out -Recurse -Filter *.so | ForEach-Object {
-    Write-Host ("built {0} ({1:N1} MB)" -f $_.FullName.Replace("$repo\", ''), ($_.Length / 1MB))
+    Write-Host ("library {0} ({1:N1} MB)" -f $_.FullName.Replace("$repo\", ''), ($_.Length / 1MB))
 }

@@ -23,9 +23,11 @@ jobs:
         with:
           cache-workspaces: engine
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      # `fast` is the development profile: the same numerics as release without thin LTO
+      # across the interpreter, so a rebuild takes seconds. Release is only for shipping.
+      - run: cargo clippy --profile fast --all-targets -- -D warnings
       # Single-threaded. The tests share the interpreter's global session state.
-      - run: cargo test -- --test-threads=1
+      - run: cargo test --profile fast -- --test-threads=1
 
   kotlin:
     name: kotlin (ktlint)

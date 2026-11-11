@@ -39,21 +39,27 @@ tools/                   build, deploy and test scripts, plus the three that own
 
 ## Build
 
-```powershell
+```pwsh
 # SDK and NDK (put them on PATH, or export ANDROID_HOME pointing at the SDK)
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
 sdkmanager "ndk;28.2.13676358"
 
 # Engine (after changing `engine/`)
-.\tools\build-engine.ps1                           # -> app/src/main/jniLibs/arm64-v8a/libwoxi_jni.so
-.\tools\build-engine.ps1 -Abi x86_64               # for the emulator
+# For development use `-Profile fast`: the same numerics as release, without thin LTO
+# across the interpreter and without debug info, incremental. A rebuild after an edit
+# takes seconds instead of the minutes a release link does.
+.\tools\build-engine.ps1 -Profile fast                # arm64-v8a
+.\tools\build-engine.ps1 -Abi x86_64 -Profile fast    # x86_64 for emulator
+
+# Engine for a build that ships: the profile `release`, with thin LTO.
+.\tools\build-engine.ps1                              # arm64-v8a
 
 # App
 # Gradle 9.8 runs on JDK 17-25. Point JAVA_HOME at one (or have
 # `java` on PATH. deploy.ps1 and test-device.ps1 derive JAVA_HOME from it).
-.\gradlew.bat :app:assembleRelease                 # arm64-v8a
-.\gradlew.bat :app:assembleRelease -Pabi=all       # arm64-v8a + x86_64
+.\gradlew.bat :app:assembleRelease                    # arm64-v8a
+.\gradlew.bat :app:assembleRelease -Pabi=all          # arm64-v8a + x86_64
 
 # Build + install + launch + screenshot on a connected phone
 .\tools\deploy.ps1
@@ -65,7 +71,17 @@ Notes:
 
 ## Lint and test
 
-See `.github/workflows/lint.yml`.
+```pwsh
+cd engine
+cargo fmt --check
+cargo clippy --profile fast --all-targets -- -D warnings
+# The tests share the interpreter's global session state, so they run on one thread.
+cargo test --profile fast -- --test-threads=1
+```
+
+The same commands run in CI (`.github/workflows/lint.yml`). `fast` is the profile to use while developing. `release` is only for a build that ships.
+
+See `.github/workflows/lint.yml` for the Kotlin, JavaScript and Python checks.
 
 ## Automation hooks
 

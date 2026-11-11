@@ -17,7 +17,7 @@ woxi = { version = "0.4.0", default-features = false }
 jni = "0.22"
 
 [profile.release]
-# Built with all cores: fat LTO + a single codegen unit made the (very large)
+# Built with all cores. fat LTO + a single codegen unit made the (very large)
 # interpreter crate compile single-threaded, which took far longer than the
 # size win was worth. The final APK is deflated anyway.
 opt-level = 2
@@ -25,3 +25,12 @@ lto = "thin"
 codegen-units = 16
 panic = "unwind"      # panics are caught at the JNI boundary
 strip = "symbols"
+
+[profile.fast]
+# Development builds: what release sets, minus the two things that make a rebuild slow.
+# Thin LTO across the interpreter and debug info are dropped. Incremental compilation keeps
+# a rebuild after an edit to a couple of seconds. See README.md for the commands.
+inherits = "release"
+lto = false
+incremental = true
+debug = false
