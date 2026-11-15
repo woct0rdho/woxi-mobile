@@ -258,6 +258,23 @@ export function createTestAction(menu) {
             ' prefix="' +
             runtime.assist.prefix +
             '"' +
+            " context=" +
+            (function () {
+              // What the bar's own decision function makes of this text and caret, so a
+              // test can see why a row is showing.
+              const decision = runtime.assist.contextFor(assistRead);
+              return (
+                (decision.ctx.head || "-") +
+                "/arg" +
+                decision.ctx.argIndex +
+                "/" +
+                (decision.variant ? decision.variant.length + " slots" : "no variant") +
+                "/" +
+                (decision.past ? "past" : "inside") +
+                "/" +
+                decision.state
+              );
+            })() +
             " matches=" +
             (runtime.assist.matches && runtime.assist.matches.names
               ? runtime.assist.matches.names.slice(0, 6).join(",")
@@ -269,7 +286,10 @@ export function createTestAction(menu) {
               .slice(0, 3)
               .map(function (detail) {
                 return (
-                  (detail.type || "?") + (detail.arity ? "/" + JSON.stringify(detail.arity) : "")
+                  (detail.type || "?") +
+                  (detail.arity ? "/" + JSON.stringify(detail.arity) : "") +
+                  (detail.option ? "o" : "") +
+                  (detail.callOption ? "c" : "")
                 );
               })
               .join(",") +

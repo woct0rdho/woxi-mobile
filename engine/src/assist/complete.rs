@@ -1,9 +1,11 @@
 //! Completion: the symbol table, Woxi's frequency prior, the tiered matcher and the
 //! ranked candidates.
 
-use crate::json::{json_escape, json_field_number, json_field_text};
+use crate::assist::inspect::options_of;
+use crate::json::{json_escape, json_field_number, json_field_text, json_string_array};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::LazyLock;
 
 /// Upper bound on a completion reply, whatever the request asks for.
@@ -78,6 +80,22 @@ pub(crate) static SYMBOLS: LazyLock<Vec<(&'static str, bool)>> = LazyLock::new(|
 
 pub(crate) fn symbol_table() -> &'static [(&'static str, bool)] {
     SYMBOLS.as_slice()
+}
+
+/// Every option symbol the registry declares, generated from `Options[f]` over the
+/// functions that take options (see `engine/data/README.md`). It answers "is this name an
+/// option rather than a call", which decides between `Axes` and `Axes[]` on a chip. The
+/// options of one call still come from `Options[head]` at run time.
+pub(crate) static OPTION_SYMBOLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    include_str!("../../data/option_symbols.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
+});
+
+pub(crate) fn is_option_symbol(name: &str) -> bool {
+    OPTION_SYMBOLS.contains(name)
 }
 
 /// Whether `name` is a plain symbol name: the `Options[...]` probe below builds code
@@ -382,6 +400,9 @@ pub(crate) struct Candidate {
     band: Option<u32>,
     /// Named somewhere in the notebook, which lifts a rare name to the front.
     used: bool,
+    /// 2 for an option of the call the caret is in, 1 for one that call already names,
+    /// 0 otherwise. Only meaningful in an options context; a tie-break inside the tier.
+    option_rank: u8,
 }
 
 /// The order the bar and the sheet show: what the user typed, then how often the name
@@ -389,6 +410,10 @@ pub(crate) struct Candidate {
 pub(crate) fn order(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
     a.tier
         .cmp(&b.tier)
+        // In a call's options region, the call's own options are what the user is
+        // looking for. The tier still comes first, so this cannot lift a weaker match
+        // over a better one. The options already in the call come after the missing ones.
+        .then_with(|| b.option_rank.cmp(&a.option_rank))
         // Package-qualified names and system variables are real, but they are not what
         // a phone user is typing: they go after the plain names of a tier.
         .then_with(|| a.quirk.cmp(&b.quirk))
@@ -459,6 +484,77 @@ pub(crate) fn was_used(name: &str) -> bool {
     USED_SYMBOLS.with(|used| used.borrow().contains(name))
 }
 
+// The option names a head declares, cached for built-in heads: `Options[f]` is Woxi's
+// own declaration, and the probe is the history-neutral one `inspect_request` uses.
+// Built-in options do not change during a session. A user-defined head is probed each
+// time because `Options[f] = ...` can change it.
+thread_local! {
+    static OPTION_NAMES: RefCell<HashMap<String, Rc<HashSet<String>>>> =
+        RefCell::new(HashMap::new());
+}
+
+fn option_names(head: &str) -> Rc<HashSet<String>> {
+    let builtin = is_builtin_name(head);
+    if builtin {
+        if let Some(names) = OPTION_NAMES.with(|cache| cache.borrow().get(head).cloned()) {
+            return names;
+        }
+    }
+    let names: HashSet<String> = options_of(head).into_iter().map(|(name, _)| name).collect();
+    let names = Rc::new(names);
+    if builtin {
+        OPTION_NAMES.with(|cache| {
+            cache
+                .borrow_mut()
+                .insert(head.to_string(), Rc::clone(&names));
+        });
+    }
+    names
+}
+
+/// What the caret's context adds to the ranking: the call whose options are being typed,
+/// and the options that call already names. The frontend knows the call (it shows the
+/// signature bar) and the argument index, and sends both with the request; the names are
+/// the engine's own answer, `Options[f]`.
+///
+/// The boost is a tie-break inside the matching tier (see [`order`]): a better match
+/// still wins, which is what keeps the options from outranking the name the user is
+/// actually typing. An option the call already names ranks below the options it does
+/// not name yet, since repeating one is legal but rarely intended.
+pub(crate) struct OptionsContext {
+    names: Rc<HashSet<String>>,
+    used: HashSet<String>,
+}
+
+impl OptionsContext {
+    pub(crate) fn new(head: &str, used: &[String]) -> Option<Self> {
+        if !is_symbol_name(head) {
+            return None;
+        }
+        let names = option_names(head);
+        if names.is_empty() {
+            return None;
+        }
+        Some(Self {
+            names,
+            used: used.iter().cloned().collect(),
+        })
+    }
+
+    /// 2 for an option of the call, 1 when the call already names it, 0 for anything
+    /// else.
+    fn rank(&self, name: &str) -> u8 {
+        if !self.names.contains(name) {
+            return 0;
+        }
+        if self.used.contains(name) {
+            1
+        } else {
+            2
+        }
+    }
+}
+
 /// Fuzzy matches are only offered when the sharper tiers leave fewer than this many
 /// candidates. Typing a prefix that already has answers never grows a fuzzy tail.
 pub(crate) const FUZZY_MIN_SHARP: usize = 3;
@@ -479,6 +575,7 @@ pub(crate) fn candidates(
     cursor: usize,
     limit: usize,
     category: &str,
+    options: Option<&OptionsContext>,
 ) -> (usize, usize, usize, Vec<Candidate>) {
     let (start, prefix) = identifier_before(code, cursor);
     let mut sharp: Vec<Candidate> = Vec::new();
@@ -494,12 +591,13 @@ pub(crate) fn candidates(
         let quirk = name.contains('`') || name.starts_with('$');
         let band = rank_band(&name);
         let used = !session && was_used(&name);
+        let option_rank = options.map_or(0, |context| context.rank(&name));
         let rare = band.is_some_and(|band| band >= RARE_BAND)
             || (band.is_none() && name.chars().count() > LONG_NAME);
-        // Low-frequency names are matched only when the query is specific or the
-        // notebook already uses them. That is what keeps three typed letters from
-        // listing the tail of the registry.
-        if rare && !used && !is_specific(prefix, &quality, &name) {
+        // Low-frequency names are matched only when the query is specific, the
+        // notebook already uses them, or the call is asking for exactly this option.
+        // That is what keeps three typed letters from listing the tail of the registry.
+        if rare && !used && option_rank == 0 && !is_specific(prefix, &quality, &name) {
             return;
         }
         let row = Candidate {
@@ -514,6 +612,7 @@ pub(crate) fn candidates(
             quirk,
             band,
             used,
+            option_rank,
         };
         if quality.tier >= 5 {
             if weak.len() < MAX_WEAK {
@@ -599,7 +698,12 @@ pub(crate) fn completion_content(json: &str) -> String {
         .map(|value| (value.max(1.0) as usize).min(MAX_MATCHES))
         .unwrap_or(24);
     let category = json_field_text(json, "category").unwrap_or_default();
-    let (start, end, total, rows) = candidates(&code, cursor, limit, &category);
+    // The frontend's caret context: the call whose options are being typed and the
+    // options it already names. Absent outside an options region (the common case).
+    let context_head = json_field_text(json, "context_head").unwrap_or_default();
+    let context_used = json_string_array(json, "context_used");
+    let options = OptionsContext::new(&context_head, &context_used);
+    let (start, end, total, rows) = candidates(&code, cursor, limit, &category, options.as_ref());
 
     let mut matches = Vec::with_capacity(rows.len());
     let mut types = Vec::with_capacity(rows.len());
@@ -619,12 +723,14 @@ pub(crate) fn completion_content(json: &str) -> String {
             None => "null".to_string(),
         };
         extra.push(format!(
-            "{{\"implemented\":{},\"status\":\"{}\",\"category\":\"{}\",\"doc\":\"{}\",\"arity\":{}}}",
+            "{{\"implemented\":{},\"status\":\"{}\",\"category\":\"{}\",\"doc\":\"{}\",\"arity\":{},\"option\":{},\"callOption\":{}}}",
             if row.implemented { 1 } else { 0 },
             status_name(&row.name),
             json_escape(row.category),
             json_escape(row.doc.unwrap_or("")),
-            arity_json
+            arity_json,
+            if is_option_symbol(&row.name) { "true" } else { "false" },
+            if row.option_rank > 0 { "true" } else { "false" }
         ));
     }
 

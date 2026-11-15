@@ -18,6 +18,19 @@ fn completion(code: &str, cursor: usize) -> String {
     )
 }
 
+/// A request from inside the options region of a call, as the frontend sends it: the
+/// call's head and the options it already names.
+fn completion_in_options(code: &str, cursor: usize, head: &str, used: &[&str]) -> String {
+    let used: Vec<String> = used.iter().map(|name| format!("{name:?}")).collect();
+    query(
+        "complete_request",
+        &format!(
+            "{{\"code\":{code:?},\"cursor_pos\":{cursor},\"context_head\":{head:?},\"context_used\":[{}]}}",
+            used.join(",")
+        ),
+    )
+}
+
 /// The notebook's used-name set outlives a request by design, so a test that
 /// counts names has to start from a clean notebook.
 fn reset_used() {
@@ -137,6 +150,59 @@ fn completion_finds_a_word_from_the_middle() {
     // last resort: `otran` still reaches `PlotRange`.
     let reply = completion("otran", 5);
     assert!(reply.contains("\"PlotRange\""), "{reply}");
+}
+
+#[test]
+fn completion_ranks_the_options_of_the_typed_call_first() {
+    reset_used();
+    // `Fr` in Plot's options region: Plot's own options come before an unrelated symbol
+    // of the same tier (`Framed`), which is the point of the context.
+    let code = "Plot[Sin[x], {x, -5, 5}, Fr";
+    let reply = completion_in_options(code, code.len(), "Plot", &[]);
+    let frame_label = reply.find("\"FrameLabel\"").expect("FrameLabel");
+    let framed = reply.find("\"Framed\"").expect("Framed");
+    assert!(frame_label < framed, "{reply}");
+    // The same prefix outside a call has no reason to put FrameLabel first.
+    let plain = completion("Fr", 2);
+    assert!(plain.contains("\"FrameLabel\""), "{plain}");
+}
+
+#[test]
+fn completion_demotes_an_option_the_call_already_names() {
+    reset_used();
+    // `Frame` is a Plot option and the call already sets it: the options still missing
+    // (`FrameLabel`) come first, and `Frame` still comes before a non-option.
+    let code = "Plot[Sin[x], {x, -5, 5}, Frame -> True, Fra";
+    let reply = completion_in_options(code, code.len(), "Plot", &["Frame"]);
+    let frame_label = reply.find("\"FrameLabel\"").expect("FrameLabel");
+    let frame = reply.find("\"Frame\"").expect("Frame");
+    let framed = reply.find("\"Framed\"").expect("Framed");
+    assert!(frame_label < frame, "{reply}");
+    assert!(frame < framed, "{reply}");
+}
+
+#[test]
+fn completion_marks_option_symbols_and_the_calls_options() {
+    reset_used();
+    // `Axes` is an option symbol: a chip must insert `Axes`, not `Axes[]`.
+    let reply = completion("Axe", 3);
+    assert!(
+        reply.contains("\"option\":true,\"callOption\":false"),
+        "{reply}"
+    );
+    // In Plot's options region it is also one of Plot's options: the chip adds `->`.
+    let code = "Plot[Sin[x], {x, -5, 5}, Axe";
+    let reply = completion_in_options(code, code.len(), "Plot", &[]);
+    assert!(
+        reply.contains("\"option\":true,\"callOption\":true"),
+        "{reply}"
+    );
+    // A function that is not an option is neither.
+    let reply = completion("Sin", 3);
+    assert!(
+        reply.contains("\"option\":false,\"callOption\":false"),
+        "{reply}"
+    );
 }
 
 #[test]

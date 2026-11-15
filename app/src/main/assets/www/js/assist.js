@@ -176,6 +176,9 @@ Assist.prototype.renderNoMatches = function () {
 Assist.prototype.renderSignature = function (variant, active, extra) {
   this.state = "signature";
   this.prefix = "";
+  // No name is being completed here: the sheet's Matches tab must not show the list
+  // from the last prefix.
+  this.matches = { names: [], details: [], total: 0, start: 0, end: 0 };
   let html = "";
   for (let i = 0; i < variant.length; i += 1) {
     if (i > 0) html += '<span class="woxi-sig-sep">, </span>';
@@ -217,6 +220,7 @@ Assist.prototype.showIterator = function (slot, extra) {
   const variable = iteratorVariable(slot.text) || "x";
   this.state = "iterator";
   this.prefix = "";
+  this.matches = { names: [], details: [], total: 0, start: 0, end: 0 };
   const keys = [
     { label: "Eval", action: "enter", classes: "ok", grow: 1.1, tooltip: "Evaluate this entry" },
   ];
@@ -253,7 +257,7 @@ Assist.prototype.refresh = function () {
   const extra = this.issueKeys();
   const info = this.contextFor(read);
   if (info.state === "candidates") {
-    this.requestMatches(info.span.text);
+    this.requestMatches(info.span.text, this.optionsContext(info, read));
     return;
   }
   if (info.state === "options") {
@@ -408,12 +412,30 @@ Assist.prototype.variantFor = function (head, args) {
 
 // suggestions
 
-Assist.prototype.requestMatches = function (prefix) {
+// The call whose options are being typed, when the caret is past its last declared
+// argument: the completion ranks that call's options first, and the ones the call
+// already names below the ones it does not. `optionsInCall` is the same reader the
+// options row uses to avoid offering an option twice.
+Assist.prototype.optionsContext = function (info, read) {
+  if (!info.past || !info.ctx.head || !info.ctx.call) return null;
+  // Sorted so the same call always makes the same request (and cache key).
+  const used = Object.keys(this.optionsInCall(read.code, info.ctx)).sort();
+  return { head: info.ctx.head, used: used };
+};
+
+// One key for the cache and for the request: the list depends on the options context
+// as well as on the prefix.
+Assist.prototype.matchesKey = function (prefix, limit, options) {
+  const context = options ? "@" + options.head + ":" + options.used.join(",") : "";
+  return prefix + "@" + limit + context;
+};
+
+Assist.prototype.requestMatches = function (prefix, options) {
   const self = this;
   // Set here, not in `fetchMatches`: a cached answer is still an answer for this prefix.
   this.prefix = prefix;
   const limit = this.sheetOpen ? SHEET_LIMIT : MATCH_LIMIT;
-  const key = prefix + "@" + limit;
+  const key = this.matchesKey(prefix, limit, options);
   const cached = this.cache[key];
   if (cached) {
     if (!cached.names.length) {
@@ -421,6 +443,10 @@ Assist.prototype.requestMatches = function (prefix) {
       return;
     }
     this.matches = cached;
+    // The chip details too: accepting a cached suggestion asks `infoOf` for its type and
+    // for the option flags, and a stale array from the previous prefix would answer for
+    // the wrong name (an option would be inserted as a call, `Axes[]`).
+    this.details = cached.details;
     this.state = "candidates";
     if (this.sheetOpen) this.renderSheet();
     this.setKeys(this.chipKeys(cached.names, cached.details, cached.total));
@@ -435,16 +461,21 @@ Assist.prototype.requestMatches = function (prefix) {
   const caret = read.caret || 0;
   this.timer = window.setTimeout(function () {
     self.timer = null;
-    self.fetchMatches(prefix, limit, code, caret);
+    self.fetchMatches(prefix, limit, code, caret, options, key);
   }, DEBOUNCE_MS);
 };
 
-Assist.prototype.fetchMatches = function (prefix, limit, code, caret) {
+Assist.prototype.fetchMatches = function (prefix, limit, code, caret, options, key) {
   const self = this;
   if (!this.query) return;
   const seq = ++this.seq;
   this.prefix = prefix;
-  this.query("complete_request", { code: code, cursor_pos: caret, limit: limit }).then(
+  const content = { code: code, cursor_pos: caret, limit: limit };
+  if (options) {
+    content.context_head = options.head;
+    content.context_used = options.used;
+  }
+  this.query("complete_request", content).then(
     function (reply) {
       if (seq !== self.seq || !reply || reply.status !== "ok") return;
       // The caret can move to another context while the answer is on its way (into an
@@ -466,6 +497,10 @@ Assist.prototype.fetchMatches = function (prefix, limit, code, caret) {
           doc: (extra[i] && extra[i].doc) || "",
           type: (types[i] && types[i].type) || "function",
           arity: (extra[i] && extra[i].arity) || null,
+          // An option symbol (`Axes`) is a name, not a call. `callOption` says it is an
+          // option of the call the request was made in, so a chip can add the `->` too.
+          option: !!(extra[i] && extra[i].option),
+          callOption: !!(extra[i] && extra[i].callOption),
         });
       }
       self.details = details;
@@ -477,7 +512,7 @@ Assist.prototype.fetchMatches = function (prefix, limit, code, caret) {
         start: content.cursor_start || 0,
         end: content.cursor_end || 0,
       };
-      self.cache[prefix + "@" + limit] = result;
+      self.cache[key] = result;
       if (!result.names.length) {
         self.renderNoMatches();
         return;
@@ -541,11 +576,20 @@ Assist.prototype.chipKeys = function (names, details, total) {
     keys.push({
       label: names[i],
       action: "assist",
-      detail: { kind: "accept", name: names[i], type: detail.type, arity: detail.arity },
+      detail: {
+        kind: "accept",
+        name: names[i],
+        type: detail.type,
+        arity: detail.arity,
+        option: detail.option === true,
+        callOption: detail.callOption === true,
+      },
       classes: dimmed ? "fn chip dim" : "fn chip",
       grow: 1.25,
       tooltip:
-        (detail.description || names[i]) + (dimmed ? " (" + STATUS_LABEL[detail.status] + ")" : ""),
+        (detail.description || names[i]) +
+        (detail.callOption ? " (option of this call: inserts -> )" : "") +
+        (dimmed ? " (" + STATUS_LABEL[detail.status] + ")" : ""),
     });
   }
   if (total > names.length) {
@@ -595,9 +639,10 @@ function isIdentifier(text) {
 // Short press on a function button: the call with an empty argument list and the caret
 // inside (`Integrate[]`, caret between the brackets). Accepting a chip replaces the
 // name being typed, and the selection when there is one. A pad key only replaces the
-// selection. A name that stands for a value (`Pi`, a session variable, `$Name`)
-// arrives as just itself.
-Assist.prototype.apply = function (name, type) {
+// selection. A name that stands for a value (`Pi`, a session variable, `$Name`, an
+// option symbol such as `Axes`) arrives as just itself. An option of the call the caret
+// is in arrives with its arrow (`Axes -> `), the same edit the options row makes.
+Assist.prototype.apply = function (name, type, detail) {
   const read = this.sink.read();
   if (!read) return;
   const code = read.code;
@@ -605,12 +650,12 @@ Assist.prototype.apply = function (name, type) {
     read.selStart !== undefined && read.selEnd !== undefined && read.selStart !== read.selEnd;
   let start = prefixSpan(code, read.caret).start;
   let end = selected ? read.selEnd : read.caret;
+  const context = this.contextFor(read);
   // A chip that is a whole value (`{x, -5, 5}`) fills the empty argument it is offered
   // for: with the caret between the braces of `{}`, inserting it there would leave
   // `{{x, -5, 5}}`. The pair is empty by the iterator row's definition, so its closing
   // brace is the first one after the opening.
   if (!selected && name.charAt(0) === "{") {
-    const context = this.contextFor(read);
     if (context.state === "iterator" && context.ctx.open) {
       start = context.ctx.open.open;
       const close = code.indexOf("}", start + 1);
@@ -620,9 +665,35 @@ Assist.prototype.apply = function (name, type) {
   const info = this.infoOf(name);
   if (type === undefined) type = info ? info.type : undefined;
   if (type === "variable" && this.isDefinedFunction(name)) type = "function";
-  const call = isIdentifier(name) && isCallName(name, type);
-  const insert = call ? name + "[]" : name;
-  this.sink.replace(start, end, insert, insert.length - (call ? 1 : 0));
+  const flags = detail || info || {};
+  let callOption = flags.callOption === true;
+  // The options row has no candidate list of its own (the state is `options`, not
+  // `candidates`), and a test hook may accept a name by hand: if the caret is in the
+  // options region and the call knows this option, it still gets its arrow.
+  if (!callOption && !detail && !info) {
+    const cached = context.ctx.head ? this.options[context.ctx.head] : null;
+    if (context.past && cached) {
+      for (let i = 0; i < cached.length; i += 1) {
+        if (cached[i].name === name) {
+          callOption = true;
+          break;
+        }
+      }
+    }
+  }
+  let insert;
+  let after;
+  if (callOption) {
+    // The caret is in this call's options region: the name is the left side of a rule.
+    insert = name + " -> ";
+    after = insert.length;
+  } else {
+    const option = flags.option === true;
+    const call = isIdentifier(name) && !option && isCallName(name, type);
+    insert = call ? name + "[]" : name;
+    after = insert.length - (call ? 1 : 0);
+  }
+  this.sink.replace(start, end, insert, after);
   if (this.sheetOpen) this.closeSheet();
 };
 
@@ -839,6 +910,9 @@ Assist.prototype.renderOptions = function (head, options, extra) {
   }
   this.state = "options";
   this.prefix = "";
+  // The options row is not a completion list. The sheet's Matches tab would otherwise
+  // show the list from the name that was being typed before the caret got here.
+  this.matches = { names: [], details: [], total: 0, start: 0, end: 0 };
   const keys = [
     { label: "Eval", action: "enter", classes: "ok", grow: 1.1, tooltip: "Evaluate this entry" },
   ];
@@ -856,7 +930,7 @@ Assist.prototype.renderOptions = function (head, options, extra) {
   keys.push({
     label: "\u2304",
     action: "assist",
-    detail: { kind: "more" },
+    detail: { kind: "call" },
     classes: "fn",
     grow: 0.8,
     tooltip: "Options of " + head,
@@ -1013,11 +1087,9 @@ Assist.prototype.scheduleDefinitions = function () {
 
 Assist.prototype.action = function (data) {
   if (!data) return;
-  if (data.kind === "accept") this.apply(data.name, data.type);
-  else if (data.kind === "option") {
-    const read = this.sink.read();
-    if (read) this.sink.replace(read.caret, read.caret, data.name + " -> ", data.name.length + 4);
-  } else if (data.kind === "next") this.nextSlot();
+  if (data.kind === "accept") this.apply(data.name, data.type, data);
+  else if (data.kind === "option") this.apply(data.name, undefined, { callOption: true });
+  else if (data.kind === "next") this.nextSlot();
   else if (data.kind === "call") this.openSheet("call");
   else if (data.kind === "issues") this.openSheet("issues");
   else if (data.kind === "more") this.openSheet("matches");

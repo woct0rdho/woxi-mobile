@@ -71,7 +71,7 @@ Get-WoxiLog 'plotperf'
 
 ### Typing help
 
-- `assist` dumps the bar state (`idle`, `signature`, `candidates`, `options`, `iterator`), the prefix, the first matches, the caret, the entry text and the center of every bar key in device pixels, which is what a tap test needs.
+- `assist` dumps the bar state (`idle`, `signature`, `candidates`, `options`, `iterator`), the context decision (`Plot/arg2/2 slots/past`), the prefix, the first matches, the caret, the entry text and the center of every bar key in device pixels, which is what a tap test needs.
 - `assistaccept [name]` accepts a match (the first one by default).
 - `assistsheet <all|examples|about>` opens the help sheet on that section. `assistclose` closes it.
 - `diag` logs the issues the help found: their codes, which have a fix, and the text they were found in.

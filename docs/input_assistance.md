@@ -73,6 +73,7 @@ Details that keep it predictable:
 - No call shape lives in a key. The tap always inserts `Name[]`. The arguments a function needs come from the assist's prototypes (`prototypes.js`), so a chip, a pad key and the sheet's insert skeleton cannot disagree. The old `D[|, x]`, `If[|, , ]` key shapes moved there.
 - A function whose arity is exactly zero (`NotebookDirectory`, the Mathieu group symbols) cannot wrap anything: the hold falls back to the tap, so `NotebookDirectory[]` is inserted and the text to the right is left alone.
 - Constants and literals keep the tap meaning on hold. `Pi`, `E`, `Infinity`, `$Name`, a session variable or an iterator chip such as `{x, -5, 5}` are values, not calls. Holding them does nothing extra. `Break[]`-style keys have no argument to spell out, so they behave the same way.
+- An option symbol is a name, not a call. Accepting `Axes` inserts `Axes`, never `Axes[]`. In a call's options region it inserts `Axes -> ` instead (the same edit as the options row's chips). The engine marks option symbols from `engine/data/option_symbols.txt`, generated from Woxi's own `Options[f]` declarations, so it can tell `Axes` from `Sin` even when the caret is not in a call. A zero-argument function still gets its brackets (`NotebookDirectory[]`), because `[]` is what makes it evaluate.
 - A hold with no second action is performed on release, as the tap it is. Performing it while the finger is still down looks the same to the user but not to the WebView: the end of the gesture takes the focus and the caret away from the text the press just placed (`Sin` on an empty entry, `Plot`'s selected placeholder).
 - Letters, digits and operators are not function buttons. They insert their label. A delimiter pair (`( )`, `[ ]`, `{ }`, `" "`) wraps a selection - `(x + 1)` from a selected `x + 1` - which is what a bracket key is for.
 
@@ -161,6 +162,7 @@ Noise rules, each of which came from a query that went wrong:
 - Rare names need a specific query. Names in the tail of the registry (rank 3000 and beyond), and unranked names longer than 20 characters, are matched only when the fragment is four characters, is the exact name, or abbreviates every word (`RngFlt`), or when the notebook already uses the name. Three letters then stay quiet - `Ran` gives `Range`, `RandomReal`, `RandomColor` without `RangeFilter` - while `Rang` or `RngFlt` still reach it.
 - "Already used" is remembered by the engine. It collects builtin names with Woxi's tokenizer from every evaluated statement and from the text of each typing-help request, so a name written once in the notebook outranks the prior in every later entry.
 - Package-qualified names and system variables last. `Context`Symbol` and `$Name` are real, but they are not what a phone user is typing. They stay in the sheet, after the plain names of the same tier.
+- In a call's options region, that call's own options come first. The frontend knows when the caret is past the last argument of a call (the same context that shows the options row) and sends the head and the options already written with the completion request. The engine asks Woxi for `Options[head]` (cached for builtins) and breaks ties inside the tier: an option the call does not name yet, then one it already names (repeating it is legal but rarely intended), then everything else. A better match still wins, so an option cannot outrank the name actually being typed, and the rare-name gate is skipped for options - the call has already said they are valid here. `Options[f]` is the only per-function option data Woxi ships, and its coverage is uneven (`Plot` declares about sixty, `Plot3D` declares none), so the boost only applies where Woxi knows the options.
 
 Results on the device, which is how the rules were tuned:
 
@@ -179,6 +181,11 @@ Results on the device, which is how the rules were tuned:
 | `Rng` | `Range`, `PlotRange`, `DataRange` |
 | `Rng` with `RangeFilter` used earlier in the entry | `RangeFilter`, `Range`, `PlotRange` |
 | `Ran` / `Rang` | `Range`, ... / `Range`, `RangeFilter`, `PlotRange` |
+| `Fr` inside `Sin[` | `Frame`, `FreeQ`, `Framed`, `FrameLabel` - no options context, so no boost |
+| `Fr` in `Plot[Sin[x], {x, -5, 5}, ` | `Frame`, `FrameLabel`, `FrameStyle`, `FrameTicks`, `FrameTicksStyle`, then `FreeQ` |
+| `Fra` after `Frame -> True, ` | `FrameLabel`, `FrameStyle`, `FrameTicks`, `FrameTicksStyle`, then `Frame` (already set), then `Framed` |
+| `Frame` after `Frame -> True, ` | `Frame` (an exact name still wins), then the other options |
+| `As` in `Sum[i, {i, 1, 10}, ` | `Assumptions` (a `Sum` option) first |
 
 The remaining ambiguity is between neighbors of the same band (`Integer` versus `Integers`, `Contours` versus `ContourPlot`), which alphabetical or length order settles. That is a coin flip, not a wrong answer.
 
@@ -205,11 +212,11 @@ Woxi's registry has a one-line description, sometimes an arity, real options and
 
 ## Protocol
 
-Seven messages, one envelope (`{msg_type, content}` in, `{msg_type, status, content}` out), all history-neutral:
+Eight messages, one envelope (`{msg_type, content}` in, `{msg_type, status, content}` out), all history-neutral:
 
 | Message | Answer |
 |---|---|
-| `complete_request` | matches, cursor span, per-item `status`, `kind`, `type` (`function`/`variable`) and `arity` when Woxi knows it |
+| `complete_request` | matches, cursor span, per-item `status`, `kind`, `type` (`function`/`variable`), `arity` when Woxi knows it, `option` (an option symbol such as `Axes`) and `callOption` (an option of the call in context, which accepts with `->`). In a call's options region the request also carries `context_head` and `context_used`, which rank that call's `Options[...]` first |
 | `inspect_request` | description, `status`, attributes, arity, `options` and `optionDefaults`, docs URL |
 | `is_complete_request` | `complete` / `incomplete` / `invalid` |
 | `diagnostics_request` | `status` plus items with severity, code, message and an optional `fix` |
@@ -223,12 +230,13 @@ Priorities: NORMAL for everything the user is waiting on, BACKGROUND for the one
 ## What is not implemented, and why
 
 - Association keys (`assoc["..."]`). Woxi stores associations in a separate value store. `lookup_env_as_expr` deliberately returns just the symbol for them, so reading the keys would mean evaluating user code while typing. Only a literal `<|...|>` in the same entry could be read safely, which is a narrow enough case to skip for now.
+- Option values in the bar (`Frame -> ` -> `True`/`False`, `PlotRange -> ` -> `{Full, Automatic}`, ...). The idea is a row like the iterator row: chips that insert the value verbatim, strings and lists included, rather than completing a name. The blocker is data, not UI. Woxi exposes only `Options[f]`, one declared default per option (`Frame` -> `False`, `Axes` -> `True`, `PlotRange` -> `{Full, Automatic}`). Its LSP, documentation and source have no per-option set of allowed values and no `AllowedValues`-style API. A row could start from that default, the boolean counterpart, and the values the notebook or the examples already used for the option, but it would be incomplete and sometimes misleading (`Axes -> False` is valid; `Method -> "..."` or a plot range's forms are not enumerable). A complete list needs an upstream API/table or a curated table with a stated provenance; parked until one of those exists.
 - Go to definition is in the menu and in the About card. "Find references" is still absent (the jump is the useful half).
 - Overlay squiggles, bracket matching and ghost text need a mirrored layer under the textarea. Everything above lives in the bar and the sheet instead.
 - Keyboard layout changes were proposed but not made: the plot pages still carry their 12 keys each, and no new "pattern" page exists. The only keyboard change so far is `Undo`/`Redo` on bar page 2, plus the hold gesture. `?` still inserts `?`, as before.
 
 ## Test hooks
 
-`assist` (state, prefix, matches, caret, the stored selection, text, issues, definitions, bar key positions in device pixels), `assistaccept`, `assistsheet`/`card` (tab), `assistclose`, `type` (set text without evaluating), `press` (a key by label), `caret` (`<at>` or `<start>,<end>`), `focus` (window focus, DOM focus and the entry's selection), `skeleton`, `wrap`, `diag`, `undo`, `redo`, `format`, `formatall`, `godef`.
+`assist` (state, context decision, prefix, matches, caret, the stored selection, text, issues, definitions, bar key positions in device pixels), `assistaccept`, `assistsheet`/`card` (tab), `assistclose`, `type` (set text without evaluating), `press` (a key by label), `caret` (`<at>` or `<start>,<end>`), `focus` (window focus, DOM focus and the entry's selection), `skeleton`, `wrap`, `diag`, `undo`, `redo`, `format`, `formatall`, `godef`.
 
 Device pixels, not CSS: the WebView is inset by the status bar, so a tap coordinate is `inset.top + css * dpr`.
