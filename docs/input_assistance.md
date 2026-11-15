@@ -18,8 +18,12 @@ One row, one state, still 47 dp - it is the action bar's first page, so nothing 
 - Signature shows the chosen variant's slots with the current one highlighted. Tapping it moves to the next argument. The `n/m v` key opens the call card.
 - Candidates show up to three names. `+N` opens the sheet. Names that are not implemented are dimmed, and a parameter of the definition the caret is in comes first with "parameter of this definition". When completion applies but has no answer, the bar shows the default action row instead of an empty one.
 - Options are the call's own `Options[...]`, with names already written in the call filtered out.
-- Iterator offers `{x, -5, 5}` and `{x, 0, 2 Pi}` when the caret is inside an empty `{}` in an iterator slot.
-- Issues adds one amber chip (`! 2`) when the engine found something in finished input.
+- Iterator offers `{x, -5, 5}` and `{x, 0, 2 Pi}` when the caret is inside an empty `{}` in an iterator slot. A chip fills that pair (it replaces the `{}`, it is not inserted between the braces).
+- Issues adds one amber chip (`! 2`) when the engine found something in finished input. A warning belongs to the text it was found in, so it disappears as soon as the text changes.
+
+The state is chosen by the caret's context, in this order: inside a string or a comment (or after `->`) nothing applies. A name being typed is always completion (a `Fra` in a call's options slot completes `Frame`, it does not show option rows). An empty argument past the last declared one is the options slot. An empty iterator `{}` is the iterator row. Any other caret inside a call is the signature. Outside a call the bar is idle. `Assist.contextFor` is the one place that decides this.
+
+The requests that fill a state (completion, options, diagnostics) never switch it. A late answer is applied only while the caret still asks for it: a completion list is dropped when the prefix is no longer before the caret, an options answer when the caret moved out of the options slot, and a warning is dropped when the text changed. A repaint from a late warning (`refreshBar`) follows the same context decision, so a warning arriving while the iterator row is showing adds its `!` chip to that row instead of turning it back into the signature.
 
 ## The action bar and the menu
 

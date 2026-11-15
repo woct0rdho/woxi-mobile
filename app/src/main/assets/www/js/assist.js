@@ -248,57 +248,73 @@ Assist.prototype.refresh = function () {
     return;
   }
   this.read = read;
+  this.scheduleDefinitions();
+  this.scheduleDiagnostics(read.code);
+  const extra = this.issueKeys();
+  const info = this.contextFor(read);
+  if (info.state === "candidates") {
+    this.requestMatches(info.span.text);
+    return;
+  }
+  if (info.state === "options") {
+    this.showOptions(info.ctx.head, extra);
+    return;
+  }
+  if (info.state === "iterator") {
+    this.showIterator(info.iterator, extra);
+    return;
+  }
+  if (info.state === "signature") {
+    this.renderSignature(info.variant, Math.min(info.ctx.argIndex, info.variant.length - 1), extra);
+    return;
+  }
+  this.renderIdle(extra);
+};
+
+// The one place that decides which state the bar should be in. `refresh` fills that state
+// with requests, `refreshBar` refills it from what is already cached (a warning that arrives
+// later must not turn an iterator row or an option row back into the bare signature), and a
+// late answer is only applied while the context still asks for it.
+//
+// The order is the priority: a name being typed is always a completion (`Fra` in a call's
+// options slot is the symbol, not a row of options), then an empty argument past the last
+// declared one is the options slot, then an empty iterator `{}`, then the signature.
+Assist.prototype.contextFor = function (read) {
   const code = read.code;
   const caret = read.caret;
   const ctx = scanContext(code, caret);
   const span = prefixSpan(code, caret);
-  const head = ctx.head;
-  const args = ctx.argIndex + 1;
-  const variant = this.variantFor(head, args);
-  const before = code.slice(0, caret);
-
-  this.scheduleDefinitions();
-  this.scheduleDiagnostics(code);
-  const extra = this.issueKeys();
-
-  // Inside a string or a comment there is nothing to complete.
-  if (ctx.inString || ctx.commentDepth > 0) {
-    this.renderIdle(extra);
-    return;
-  }
+  const variant = this.variantFor(ctx.head, ctx.argIndex + 1);
+  const past = !!(ctx.head && variant && ctx.argIndex >= variant.length);
+  const slot =
+    ctx.head && variant && !past ? variant[Math.min(ctx.argIndex, variant.length - 1)] : null;
+  // An empty iterator argument (`{`) is the other thing a keyboard key cannot spell in
+  // one tap. Once it has content the caret is editing that argument, and a chip would
+  // splice a second `{x, ...}` into it.
+  const iterator =
+    slot &&
+    slot.role === "iterator" &&
+    ctx.open &&
+    ctx.open.ch === "{" &&
+    code.slice(ctx.open.open + 1, caret).trim() === ""
+      ? slot
+      : null;
+  let state = "idle";
+  if (ctx.inString || ctx.commentDepth > 0) state = "idle";
   // A value after `->` is data, not a symbol name.
-  if (/->\s*$/.test(before)) {
-    this.renderIdle(extra);
-    return;
-  }
-
-  if (head && variant && ctx.argIndex >= variant.length) {
-    this.showOptions(head, extra);
-    return;
-  }
-  if (/^[A-Za-z$`]/.test(span.text)) {
-    this.requestMatches(span.text);
-    return;
-  }
-  if (head && variant) {
-    const slot = variant[Math.min(ctx.argIndex, variant.length - 1)];
-    // An empty iterator argument (`{`) is the other thing a keyboard key cannot spell
-    // in one tap. Once it has content the caret is editing that argument, and a chip
-    // would splice a second `{x, ...}` into it.
-    const emptyIterator =
-      slot &&
-      slot.role === "iterator" &&
-      ctx.open &&
-      ctx.open.ch === "{" &&
-      code.slice(ctx.open.open + 1, caret).trim() === "";
-    if (emptyIterator) {
-      this.showIterator(slot, extra);
-      return;
-    }
-    this.renderSignature(variant, Math.min(ctx.argIndex, variant.length - 1), extra);
-    return;
-  }
-  this.renderIdle(extra);
+  else if (/->\s*$/.test(code.slice(0, caret))) state = "idle";
+  else if (/^[A-Za-z$`]/.test(span.text)) state = "candidates";
+  else if (past) state = "options";
+  else if (iterator) state = "iterator";
+  else if (ctx.head && variant) state = "signature";
+  return {
+    ctx: ctx,
+    span: span,
+    variant: variant,
+    past: past,
+    iterator: iterator,
+    state: state,
+  };
 };
 
 // prototypes
@@ -431,6 +447,11 @@ Assist.prototype.fetchMatches = function (prefix, limit, code, caret) {
   this.query("complete_request", { code: code, cursor_pos: caret, limit: limit }).then(
     function (reply) {
       if (seq !== self.seq || !reply || reply.status !== "ok") return;
+      // The caret can move to another context while the answer is on its way (into an
+      // empty iterator, or onto the options slot). A list for a prefix that is no longer
+      // before the caret would paint the wrong state over the right one.
+      const now = self.sink.read();
+      if (!now || prefixSpan(now.code, now.caret).text !== prefix) return;
       const content = reply.content || {};
       const names = content.matches || [];
       const meta = content.metadata || {};
@@ -582,8 +603,20 @@ Assist.prototype.apply = function (name, type) {
   const code = read.code;
   const selected =
     read.selStart !== undefined && read.selEnd !== undefined && read.selStart !== read.selEnd;
-  const start = prefixSpan(code, read.caret).start;
-  const end = selected ? read.selEnd : read.caret;
+  let start = prefixSpan(code, read.caret).start;
+  let end = selected ? read.selEnd : read.caret;
+  // A chip that is a whole value (`{x, -5, 5}`) fills the empty argument it is offered
+  // for: with the caret between the braces of `{}`, inserting it there would leave
+  // `{{x, -5, 5}}`. The pair is empty by the iterator row's definition, so its closing
+  // brace is the first one after the opening.
+  if (!selected && name.charAt(0) === "{") {
+    const context = this.contextFor(read);
+    if (context.state === "iterator" && context.ctx.open) {
+      start = context.ctx.open.open;
+      const close = code.indexOf("}", start + 1);
+      if (close >= 0) end = close + 1;
+    }
+  }
   const info = this.infoOf(name);
   if (type === undefined) type = info ? info.type : undefined;
   if (type === "variable" && this.isDefinedFunction(name)) type = "function";
@@ -764,10 +797,14 @@ Assist.prototype.showOptions = function (head, extra) {
         for (let n = 0; n < names.length; n += 1) options.push({ name: names[n], value: "" });
       }
       self.rememberOptions(head, options);
+      // Only if the caret still asks for options of this call. It may have moved into an
+      // iterator or a name while the defaults were on their way.
       const read = self.sink.read();
       if (!read) return;
-      const ctx = scanContext(read.code, read.caret);
-      if (ctx.head === head) self.renderOptions(head, options, self.issueKeys());
+      const context = self.contextFor(read);
+      if (context.state === "options" && context.ctx.head === head) {
+        self.renderOptions(head, options, self.issueKeys());
+      }
     },
     function () {
       // Keep the signature bar. The next caret move retries.
@@ -842,6 +879,13 @@ Assist.prototype.scheduleDiagnostics = function (code) {
     this.setIssues("", []);
     return;
   }
+  // A warning describes the text it was found in. As soon as the text changes it is
+  // dropped. The check for the new text replaces it a moment later. (This keeps a stale
+  // `!` chip from riding along on the next text.) The caller repaints the bar.
+  if (this.issuesText !== code) {
+    this.issues = [];
+    this.issuesText = "";
+  }
   this.diagnosticsTimer = window.setTimeout(function () {
     self.diagnosticsTimer = null;
     const read = self.sink.read();
@@ -849,6 +893,10 @@ Assist.prototype.scheduleDiagnostics = function (code) {
     self.query("diagnostics_request", { code: code }).then(
       function (reply) {
         if (!reply || reply.status !== "ok" || !reply.content) return;
+        // The entry may have changed while the check was on its way. Its answer describes
+        // the old text and must not repaint the bar (or report its issues).
+        const now = self.sink.read();
+        if (!now || now.code !== code) return;
         const content = reply.content;
         // Unfinished input has no diagnostics: the engine says so explicitly.
         if (content.status === "incomplete") return;
@@ -872,20 +920,38 @@ Assist.prototype.setIssues = function (text, items) {
   if (this.sheetOpen && this.sheetTab === "issues") this.renderSheet();
 };
 
-// Repaint only the bar, without re-running the (debounced) analysis.
+// Repaint only the bar, without re-running the (debounced) analysis. It reaches the same
+// state `refresh` does, so a warning that arrives late keeps an iterator row, an option row
+// or a completion list instead of replacing it with the bare signature.
 Assist.prototype.refreshBar = function () {
   const read = this.sink.read();
   if (!read) return;
-  const ctx = scanContext(read.code, read.caret);
-  const variant = this.variantFor(ctx.head, ctx.argIndex + 1);
   const extra = this.issueKeys();
-  if (ctx.head && variant) {
-    this.renderSignature(variant, Math.min(ctx.argIndex, variant.length - 1), extra);
-  } else if (this.state === "candidates") {
-    this.setKeys(this.chipKeys(this.matches.names, this.matches.details, this.matches.total));
-  } else {
-    this.renderIdle(extra);
+  const info = this.contextFor(read);
+  if (info.state === "candidates") {
+    // Only the list for the name before the caret. A list for an earlier keystroke is on
+    // its way out and the request for this one will paint it, with the warning chip.
+    if (this.state !== "candidates" || this.prefix !== info.span.text) return;
+    if (this.matches.names.length) {
+      this.setKeys(this.chipKeys(this.matches.names, this.matches.details, this.matches.total));
+    } else {
+      this.renderNoMatches();
+    }
+    return;
   }
+  if (info.state === "options") {
+    this.showOptions(info.ctx.head, extra);
+    return;
+  }
+  if (info.state === "iterator") {
+    this.showIterator(info.iterator, extra);
+    return;
+  }
+  if (info.state === "signature") {
+    this.renderSignature(info.variant, Math.min(info.ctx.argIndex, info.variant.length - 1), extra);
+    return;
+  }
+  this.renderIdle(extra);
 };
 
 // definitions
