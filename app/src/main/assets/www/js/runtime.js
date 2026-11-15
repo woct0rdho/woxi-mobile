@@ -1,4 +1,4 @@
-// The app's shared runtime: the document state every component edits, the elements boot
+// The app's shared runtime: the notebook state every component edits, the elements boot
 // fills in, and the services (engine, keyboard, assist) that come and go with the activity.
 // This is deliberately not a place for behavior: components import the refs they need and
 // own their functions. Anything that is not shared state or a DOM/bridge primitive belongs in

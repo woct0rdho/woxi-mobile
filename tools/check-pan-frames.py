@@ -21,7 +21,7 @@ import sys
 from PIL import Image
 
 FRAMES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "screenshots", "pan-frames")
-# Inside the plot card's border, for a single-entry document with the keyboard up, at
+# Inside the plot card's border, for a single-entry notebook with the keyboard up, at
 # 1080x2400. The border itself is blue, so it has to stay outside the crop.
 CARD = (90, 560, 1070, 1200)
 

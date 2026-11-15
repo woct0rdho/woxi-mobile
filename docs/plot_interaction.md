@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document describes how a plot on the phone is drawn and how gestures change it: the one mechanism behind every interactive plot, what a picture the engine sends has to satisfy, what it costs, and how each claim is tested. Numbers marked 'host' were measured with a release build of woxi 0.4.0 on a desktop CPU (they exclude JNI and the WebView, so they are a lower bound for the device). Numbers marked 'device' were measured on the emulator (Android 16, API 36, x86_64).
+This page describes how a plot on the phone is drawn and how gestures change it: the one mechanism behind every interactive plot, what a picture the engine sends has to satisfy, what it costs, and how each claim is tested. Numbers marked 'host' were measured with a release build of woxi 0.4.0 on a desktop CPU (they exclude JNI and the WebView, so they are a lower bound for the device). Numbers marked 'device' were measured on the emulator (Android 16, API 36, x86_64).
 
 JavaScript is under `app/src/main/assets/www/js/`, Kotlin under `app/src/main/kotlin/com/woctordho/woximobile/`, and the engine is `engine/src/`. The web layer is ES modules, loaded by one `<script type="module">`. The plot modules are type-checked as JavaScript (`js/types.js` holds the JSDoc shapes, `pnpm types`) and their pure maths is covered by `tests/plot-maths.test.js`, `tests/plot-props.test.js`, `tests/plot-metrics.test.js`, `tests/notebook.test.js` and the engine tests.
 

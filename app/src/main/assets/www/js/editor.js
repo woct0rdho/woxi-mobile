@@ -3,7 +3,6 @@
 // module because every command writes the entry the same way. The pieces it shares (the view,
 // the caret, the history) live in `entries.js`, `typing.js` and `history.js`.
 
-import { persist } from "./documents.js";
 import {
   activeEntry,
   addEntry,
@@ -19,6 +18,7 @@ import {
 import { evaluateEntry, submitActive } from "./evaluation.js";
 import { recordEdit, redoEntry, undoEntry } from "./history.js";
 import * as WoxiKeyboard from "./keyboard.js";
+import { persist } from "./notebook-store.js";
 import { nativeCall, runtime, state, toast } from "./runtime.js";
 import { closeSheet } from "./sheets.js";
 import { refreshAssist, selectionOf, selectRange } from "./typing.js";

@@ -18,7 +18,7 @@
 //
 // Only the part of the format this app uses is handled: code cells carry one Woxi input
 // each, markdown and raw cells are skipped when reading and never written, and outputs are
-// written but ignored on load - Woxi recomputes every entry, which is what keeps a document
+// written but ignored on load - Woxi recomputes every entry, which is what keeps a notebook
 // consistent with the interpreter that opens it. A notebook of plain code cells therefore
 // round-trips through this app unchanged. Anything else keeps its code and loses the rest.
 
@@ -168,8 +168,8 @@ function outputsFor(entry, executionCount) {
   return out;
 }
 
-function serialize(doc) {
-  const entries = (doc && doc.entries) || [];
+function serialize(notebook) {
+  const entries = (notebook && notebook.entries) || [];
   const cells = [];
   let executed = 0;
   for (let i = 0; i < entries.length; i++) {
@@ -192,7 +192,7 @@ function serialize(doc) {
       metadata: {
         kernelspec: KERNELSPEC,
         language_info: LANGUAGE_INFO,
-        title: (doc && doc.title) || "Untitled",
+        title: (notebook && notebook.title) || "Untitled",
       },
       cells: cells,
     },

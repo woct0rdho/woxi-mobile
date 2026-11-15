@@ -10,7 +10,7 @@ The one visible gap left is a product inside a radical (the radical path is draw
 
 ## Scope
 
-This document is about how an evaluated result is drawn. It does not touch input, the keyboard, or plot interaction. Everything below was checked against the current sources and against the engine crate (`woxi` 0.4.0) with a probe binary, and the screenshots were taken on the emulator (Android 16, API 36, x86_64, 393*827 CSS, dpr 2.75).
+This page is about how an evaluated result is drawn. It does not touch input, the keyboard, or plot interaction. Everything below was checked against the current sources and against the engine crate (`woxi` 0.4.0) with a probe binary, and the screenshots were taken on the emulator (Android 16, API 36, x86_64, 393*827 CSS, dpr 2.75).
 
 The relevant sources are `engine/src/eval.rs` (which asks Woxi for an SVG), `engine/src/output.rs` (the output item shape), `app/src/main/assets/www/js/render-output.js` (item -> HTML) and `app/src/main/assets/www/css/app.css` (`.woxi-out-math`, `.woxi-out-text`, `.woxi-out-graphic`).
 

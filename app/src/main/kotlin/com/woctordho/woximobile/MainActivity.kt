@@ -57,12 +57,12 @@ class MainActivity : ComponentActivity() {
     var insetBottomPx = 0
         private set
 
-    private val createDocumentLauncher =
+    private val createNotebookLauncher =
         registerForActivityResult(ActivityResultContracts.CreateDocument(NOTEBOOK_MIME)) { uri ->
             bridge.onSaveResult(uri)
         }
 
-    private val openDocumentLauncher =
+    private val openNotebookLauncher =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             bridge.onOpenResult(uri)
         }
@@ -344,11 +344,11 @@ class MainActivity : ComponentActivity() {
         NativeEngine.setDark(dark)
     }
 
-    fun launchCreateDocument(name: String) {
-        createDocumentLauncher.launch(name)
+    fun launchCreateNotebook(name: String) {
+        createNotebookLauncher.launch(name)
     }
 
-    fun launchOpenDocument(mime: String) {
-        openDocumentLauncher.launch(arrayOf(NOTEBOOK_MIME, mime, "application/json", "text/plain", "*/*"))
+    fun launchOpenNotebook(mime: String) {
+        openNotebookLauncher.launch(arrayOf(NOTEBOOK_MIME, mime, "application/json", "text/plain", "*/*"))
     }
 }

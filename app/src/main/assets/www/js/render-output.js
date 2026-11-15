@@ -159,7 +159,7 @@ function manipulateHtml(item) {
 
 // The fields of a plot payload that outlive the session, as one object: what the markup
 // records and what a rebuilt controller gets back. The samples' coverage (`d`/`dy`) and
-// everything else describe the session that produced the samples, not the document. A
+// everything else describe the session that produced the samples, not the notebook. A
 // restored notebook must not claim samples it has not got. `plot-interact.js` caches this
 // same object, so the live path and the restored one cannot disagree about the shape.
 function plotSummary(plot) {

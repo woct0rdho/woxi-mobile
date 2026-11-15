@@ -5,14 +5,6 @@
 
 import * as WoxiAssist from "./assist.js";
 import {
-  loadDocumentFromText,
-  newNotebook,
-  openDocument,
-  persist,
-  restore,
-  saveDocument,
-} from "./documents.js";
-import {
   clearActive,
   duplicateActive,
   formatNotebook,
@@ -38,6 +30,14 @@ import { attachPlots, evaluateAll, submitActive } from "./evaluation.js";
 import { canRedo, canUndo, recordEdit, redoEntry, undoEntry } from "./history.js";
 import * as WoxiKeyboard from "./keyboard.js";
 import * as WoxiNotebook from "./notebook.js";
+import {
+  loadNotebookFromText,
+  newNotebook,
+  openNotebook,
+  persist,
+  restore,
+  saveNotebook,
+} from "./notebook-store.js";
 import { el, els, keepFocus, log, nativeCall, runtime, state, toast } from "./runtime.js";
 import { closeSheet, openSheet, sheetButton } from "./sheets.js";
 import { createTestAction } from "./test-hooks.js";
@@ -57,15 +57,15 @@ import { WoxiClient } from "./woxi-client.js";
 export function showMenu() {
   openSheet("Menu", function (body) {
     body.appendChild(sheetButton("New notebook", "", newNotebook));
-    body.appendChild(sheetButton("Open...", "", openDocument));
+    body.appendChild(sheetButton("Open...", "", openNotebook));
     body.appendChild(
-      sheetButton("Save", state.fileName ? state.fileName : "New document", function () {
-        saveDocument();
+      sheetButton("Save", state.fileName ? state.fileName : "New notebook", function () {
+        saveNotebook();
       })
     );
     body.appendChild(
       sheetButton("Save as...", "", function () {
-        saveDocument();
+        saveNotebook();
       })
     );
     body.appendChild(el("div", "woxi-sheet-sep"));
@@ -134,11 +134,11 @@ window.WoxiNativeCallbacks = {
     try {
       text = WoxiNotebook.base64ToUtf8(base64);
     } catch (err) {
-      toast("Cannot read document: " + (err instanceof Error ? err.message : String(err)));
+      toast("Cannot read notebook: " + (err instanceof Error ? err.message : String(err)));
       return;
     }
-    void loadDocumentFromText(text, name, evaluateAll).catch(function (err) {
-      toast("Cannot read document: " + (err instanceof Error ? err.message : String(err)));
+    void loadNotebookFromText(text, name, evaluateAll).catch(function (err) {
+      toast("Cannot read notebook: " + (err instanceof Error ? err.message : String(err)));
     });
   },
   toClipboard: undefined,
@@ -257,7 +257,7 @@ async function boot() {
       if (entry) focusInput(entry);
     },
     // The bar pages are defined in keyboard.js. Only their state (Undo/Redo dim when
-    // there is nothing to undo or redo) depends on the document, so it is answered here.
+    // there is nothing to undo or redo) depends on the notebook, so it is answered here.
     keyState: function (key) {
       const entry = activeEntry();
       if (key.action === "undo") return canUndo(entry) ? "" : "dim";

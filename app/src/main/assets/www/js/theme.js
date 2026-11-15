@@ -2,8 +2,8 @@
 // all follow one resolved light/dark mode. Changing the mode re-evaluates what is already
 // on screen because typeset SVGs carry their colors.
 
-import { persist } from "./documents.js";
 import { evaluateAll } from "./evaluation.js";
+import { persist } from "./notebook-store.js";
 import { nativeCall, state } from "./runtime.js";
 
 const DARK_QUERY = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;

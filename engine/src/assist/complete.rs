@@ -40,7 +40,7 @@ pub(crate) fn rank_band(name: &str) -> Option<u32> {
 }
 
 /// Names past this band are offered only when the query is specific (see
-/// [`is_specific`]) or when the document already uses them: about a third of the
+/// [`is_specific`]) or when the notebook already uses them: about a third of the
 /// registry, the tail that would otherwise crowd the bar while typing three letters.
 pub(crate) const RARE_BAND: u32 = 4;
 
@@ -380,7 +380,7 @@ pub(crate) struct Candidate {
     quirk: bool,
     /// The frequency band of [`rank_band`]. `None` when the registry does not rank it.
     band: Option<u32>,
-    /// Named somewhere in the document, which lifts a rare name to the front.
+    /// Named somewhere in the notebook, which lifts a rare name to the front.
     used: bool,
 }
 
@@ -392,7 +392,7 @@ pub(crate) fn order(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
         // Package-qualified names and system variables are real, but they are not what
         // a phone user is typing: they go after the plain names of a tier.
         .then_with(|| a.quirk.cmp(&b.quirk))
-        // The document's own vocabulary beats any prior.
+        // The notebook's own vocabulary beats any prior.
         .then_with(|| b.session.cmp(&a.session))
         .then_with(|| b.used.cmp(&a.used))
         .then_with(|| a.band.unwrap_or(u32::MAX).cmp(&b.band.unwrap_or(u32::MAX)))
@@ -416,7 +416,7 @@ pub(crate) fn is_specific(prefix: &str, quality: &Quality, name: &str) -> bool {
     quality.words >= word_starts(&chars).len()
 }
 
-// Symbols the user has already written in this document. The engine is the only place
+// Symbols the user has already written in this notebook. The engine is the only place
 // that sees every entry, so it collects them from evaluated statements and from the
 // typing-help requests, which carry the text around the caret.
 thread_local! {
@@ -497,7 +497,7 @@ pub(crate) fn candidates(
         let rare = band.is_some_and(|band| band >= RARE_BAND)
             || (band.is_none() && name.chars().count() > LONG_NAME);
         // Low-frequency names are matched only when the query is specific or the
-        // document already uses them. That is what keeps three typed letters from
+        // notebook already uses them. That is what keeps three typed letters from
         // listing the tail of the registry.
         if rare && !used && !is_specific(prefix, &quality, &name) {
             return;
@@ -591,7 +591,7 @@ pub(crate) fn status_name(name: &str) -> &'static str {
 
 pub(crate) fn completion_content(json: &str) -> String {
     let code = json_field_text(json, "code").unwrap_or_default();
-    // The entry is part of the document: a name written here counts as used, even if
+    // The entry is part of the notebook: a name written here counts as used, even if
     // the user has not run it yet.
     remember_usage(&code);
     let cursor = cursor_of(json, &code);

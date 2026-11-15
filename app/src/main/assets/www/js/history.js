@@ -1,8 +1,8 @@
 // The app's own undo stack: programmatic edits (keys, accepted suggestions, closed brackets)
 // are invisible to the textarea's stack, so one step per word/operator/edit is kept here.
 
-import { persist } from "./documents.js";
 import { activeEntry, autoGrow, focusInput, revealCaret, updateTitle } from "./entries.js";
+import { persist } from "./notebook-store.js";
 import { state } from "./runtime.js";
 import { refreshAssist, refreshBarState, selectionOf } from "./typing.js";
 

@@ -111,7 +111,7 @@ function attach(root, send, onFrame, seeds) {
     const view = viewOf(plots[j]);
     // A plot without a seed is restored markup from an earlier app session: its handle belongs
     // to an engine that no longer exists, so its first request would be `ExpiredHandle` and the
-    // controller would be disposed straight away. The app re-evaluates the document at boot and
+    // controller would be disposed straight away. The app re-evaluates the notebook at boot and
     // attaches the fresh picture. Until then the saved picture is shown as it is.
     if (!view || !byId[view.id]) continue;
     wire(plots[j], send, onFrame, byId[view.id]);
@@ -223,7 +223,7 @@ function wire(container, send, onFrame, seed) {
   let prepared = seed.prepared || null;
   // The range in `data-woxi-plot` is the saved picture's. A seed's scene is that picture, so the
   // range is both what the canvas drew and what was persisted: a gesture starts from a settled
-  // state. A stored view that a log axis cannot draw (an older document) is repaired before the
+  // state. A stored view that a log axis cannot draw (an older notebook) is repaired before the
   // first paint, not only at the first touch.
   let initialView = viewOf(container);
   if (initialView) {
@@ -666,7 +666,7 @@ function wire(container, send, onFrame, seed) {
         content.aspect = scene.frame[3] / scene.frame[2];
       }
       // A gesture frame needs the scene, not the markup: nothing shows the SVG, and the answer
-      // at rest brings it for the document.
+      // at rest brings it for the notebook.
       if (gestureView) content.picture = false;
     }
     return content;
@@ -786,7 +786,7 @@ function wire(container, send, onFrame, seed) {
     }
   }
 
-  // Shows a response on the canvas, and the markup it carries hidden (the document's picture).
+  // Shows a response on the canvas, and the markup it carries hidden (the notebook's picture).
   function applyItem(item, job) {
     if (item.data) {
       if (typeof item.data.lx === "boolean") logAxes = { x: item.data.lx, y: !!item.data.ly };
@@ -822,7 +822,7 @@ function wire(container, send, onFrame, seed) {
       container.innerHTML = WoxiRender.svgTag(item.svg, "woxi-graphic");
       mountLayer(box);
       if (item.plot && item.plot.x) {
-        // The attribute keeps the view and the sample capability flags. A reopened document
+        // The attribute keeps the view and the sample capability flags. A reopened notebook
         // reads it back.
         setView(container, item.plot);
       }

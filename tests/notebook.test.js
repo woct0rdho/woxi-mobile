@@ -1,4 +1,4 @@
-// The notebook file format, without the app: a document round-trips through nbformat 4 and a
+// The notebook file format, without the app: a notebook round-trips through nbformat 4 and a
 // foreign notebook's code cells survive, while its title and metadata are kept.
 
 import assert from "node:assert/strict";
@@ -29,21 +29,21 @@ test("a notebook round-trips through nbformat 4", () => {
 });
 
 test("the file is nbformat 4.5 and only code cells are taken", () => {
-  const doc = JSON.parse(serialize({ title: "T", entries: [{ input: "x = 1" }] }));
-  assert.equal(doc.nbformat, NBFORMAT);
-  assert.equal(doc.nbformat_minor, NBFORMAT_MINOR);
-  assert.equal(doc.cells.length, 1);
-  assert.equal(doc.cells[0].cell_type, "code");
+  const notebook = JSON.parse(serialize({ title: "T", entries: [{ input: "x = 1" }] }));
+  assert.equal(notebook.nbformat, NBFORMAT);
+  assert.equal(notebook.nbformat_minor, NBFORMAT_MINOR);
+  assert.equal(notebook.cells.length, 1);
+  assert.equal(notebook.cells[0].cell_type, "code");
   // A markdown cell is not executed. It is reported as skipped.
-  doc.cells.splice(0, 0, { cell_type: "markdown", source: ["# notes"], metadata: {} });
-  const parsed = parse(JSON.stringify(doc));
+  notebook.cells.splice(0, 0, { cell_type: "markdown", source: ["# notes"], metadata: {} });
+  const parsed = parse(JSON.stringify(notebook));
   assert.equal(parsed.entries.length, 1);
   assert.equal(parsed.entries[0].input, "x = 1");
   assert.equal(parsed.skippedCells, 1);
 });
 
 test("the file name helpers are stable", () => {
-  // `displayTitle` strips the extension, not the directory: it is a label for the document.
+  // `displayTitle` strips the extension, not the directory: it is a label for the notebook.
   assert.equal(displayTitle("/tmp/My Notebook.ipynb"), "/tmp/My Notebook");
   assert.equal(displayTitle("My Notebook.ipynb"), "My Notebook");
   assert.equal(displayTitle(""), "Untitled");

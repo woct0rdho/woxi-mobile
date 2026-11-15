@@ -15,7 +15,7 @@ param(
 # action|name|argument           an app harness action (tools/woxi-session.ps1)
 # wait|ms                        a pause, e.g. to let a delayed answer arrive
 #
-# The document must already be on screen: the tool does not reload the page (that would put
+# The notebook must already be on screen: the tool does not reload the page (that would put
 # the plot's appearance into the recording). Use -Reload to start from a fresh page anyway.
 #
 # Steps are separated by `;`: 'swipe|540,800,780,800,500;wait|800'.
@@ -32,7 +32,7 @@ if ($Reload) {
         throw 'the app did not answer. Start it and try again'
     }
 } elseif (-not (Test-WoxiAlive)) {
-    # No reload by default: the document (and the plot being measured) must already be on
+    # No reload by default: the notebook (and the plot being measured) must already be on
     # screen and settled. A reload would replay it and put the appearance into the recording.
     throw 'the app is not running. Start it and add the plot first'
 }

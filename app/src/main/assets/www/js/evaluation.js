@@ -3,7 +3,6 @@
 // The evaluation's output is part of the notebook, so it is persisted as it lands.
 
 import * as WoxiAssist from "./assist.js";
-import { persist } from "./documents.js";
 import {
   activeEntry,
   addEntry,
@@ -13,6 +12,7 @@ import {
   wireManipulate,
 } from "./entries.js";
 import { recordEdit } from "./history.js";
+import { persist } from "./notebook-store.js";
 import { latency as plotLatency } from "./plot-hooks.js";
 import * as WoxiPlot from "./plot-interact.js";
 import { build as buildPlotSamples } from "./plot-samples.js";
@@ -132,7 +132,7 @@ export function attachPlots(entry, items, previous) {
     requestPlot,
     function () {
       entry.output = WoxiPlot.markupOf(entry.dom.output);
-      // A picture at rest is the document's new range. Persist it when the notify is debounced.
+      // A picture at rest is the notebook's new range. Persist it when the notify is debounced.
       persist();
     },
     seeds

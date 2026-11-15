@@ -2,9 +2,9 @@
 // describes, programmatic replacements, and the bar refreshes. It also keeps the entry next
 // to the keyboard when the field is focused.
 
-import { persist } from "./documents.js";
 import { activeEntry, autoGrow, focusInput, revealCaret, updateTitle } from "./entries.js";
 import { recordEdit } from "./history.js";
+import { persist } from "./notebook-store.js";
 import { els, runtime, state } from "./runtime.js";
 
 export function selectionOf(entry) {

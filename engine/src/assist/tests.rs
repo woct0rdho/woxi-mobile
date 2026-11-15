@@ -18,8 +18,8 @@ fn completion(code: &str, cursor: usize) -> String {
     )
 }
 
-/// The document's used-name set outlives a request by design, so a test that
-/// counts names has to start from a clean document.
+/// The notebook's used-name set outlives a request by design, so a test that
+/// counts names has to start from a clean notebook.
 fn reset_used() {
     USED_SYMBOLS.with(|used| used.borrow_mut().clear());
 }
@@ -86,7 +86,7 @@ fn completion_hides_rare_names_until_the_query_is_specific() {
     assert!(reply.contains("\"RangeFilter\""), "{reply}");
     let reply = completion("RngFlt", 6);
     assert!(reply.contains("\"RangeFilter\""), "{reply}");
-    // A name the document already uses is matched at any length.
+    // A name the notebook already uses is matched at any length.
     remember_usage("RangeFilter[1, 2]");
     let reply = completion("Rng", 3);
     assert!(reply.contains("\"RangeFilter\""), "{reply}");

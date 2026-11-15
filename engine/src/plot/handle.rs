@@ -289,7 +289,7 @@ impl PlotFailure {
 /// axis-less picture for a range that includes zero (measured: `Show[LogPlot[Exp[x], {x, -5,
 /// 5}], PlotRange -> {{-5, 5}, {0, 258}}]` is 762 B with one polyline and no ticks, labels or
 /// frame), and it draws any positive bound. A gesture keeps a log range positive by scaling
-/// both bounds, so this only repairs a request from an older client or a document that stored
+/// both bounds, so this only repairs a request from an older client or a notebook that stored
 /// such a view; the reply reports the repaired range, so the client starts from it next time.
 pub(crate) const LOG_FALLBACK_DECADES: f64 = 12.0;
 

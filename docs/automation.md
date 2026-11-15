@@ -63,7 +63,7 @@ Get-WoxiLog 'plotperf'
 - `scrollto <n>` scrolls entry `n` to the top.
 - `metrics` logs the input box geometry (wrapped lines must not be clipped) and the keyboard geometry (a swipe must not resize it).
 
-### Documents
+### Notebooks
 
 - `save <name>` writes the notebook through the system file picker.
 - `loadjson <json>` loads a notebook from JSON text, as if it had been opened.

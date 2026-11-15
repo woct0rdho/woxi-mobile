@@ -3,13 +3,13 @@
 // DOM, services and plot controllers. `createTestAction` takes only the two app-level sheets it
 // cannot import (the menu and its theme options).
 
-import { loadDocumentFromText } from "./documents.js";
 import { formatEntry, formatNotebook, goToDefinition, handleKeyAction } from "./editor.js";
 import { activeEntry, addEntry, autoGrow, focusEntry, renderNotebook } from "./entries.js";
 import { evaluateAll, evaluateEntry } from "./evaluation.js";
 import { canRedo, canUndo, redoEntry, undoEntry } from "./history.js";
 import * as WoxiKeyboard from "./keyboard.js";
 import * as WoxiNotebook from "./notebook.js";
+import { loadNotebookFromText } from "./notebook-store.js";
 import { perfLine, plotAction } from "./plot-hooks.js";
 import * as WoxiPlot from "./plot-interact.js";
 import { els, log, nativeCall, runtime, state } from "./runtime.js";
@@ -559,7 +559,7 @@ export function createTestAction(menu) {
           log("loadjson: no argument");
           return;
         }
-        void loadDocumentFromText(argument, "Test.ipynb", evaluateAll).catch(function (err) {
+        void loadNotebookFromText(argument, "Test.ipynb", evaluateAll).catch(function (err) {
           log("loadjson: " + err.message);
         });
         log("loadjson: loaded");

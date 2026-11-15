@@ -100,7 +100,7 @@ class NativeBridge(
         return clip.getItemAt(0).coerceToText(activity).toString()
     }
 
-    // documents (Storage Access Framework)
+    // notebook files (Storage Access Framework)
 
     // @param name suggested file name, e.g. `Untitled.ipynb`
     // @param base64 notebook bytes (UTF-8 JSON, the .ipynb text)
@@ -113,13 +113,13 @@ class NativeBridge(
         activity.runOnUiThread {
             pendingSaveBytes = Base64.decode(base64, Base64.DEFAULT)
             pendingSaveName = name
-            activity.launchCreateDocument(name)
+            activity.launchCreateNotebook(name)
         }
     }
 
     @JavascriptInterface
     fun openFile() {
-        activity.runOnUiThread { activity.launchOpenDocument("application/x-ipynb+json") }
+        activity.runOnUiThread { activity.launchOpenNotebook("application/x-ipynb+json") }
     }
 
     fun onSaveResult(uri: Uri?) {
