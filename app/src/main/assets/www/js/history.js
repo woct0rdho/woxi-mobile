@@ -2,7 +2,7 @@
 // are invisible to the textarea's stack, so one step per word/operator/edit is kept here.
 
 import { persist } from "./documents.js";
-import { activeEntry, autoGrow, updateTitle } from "./entries.js";
+import { activeEntry, autoGrow, focusInput, revealCaret, updateTitle } from "./entries.js";
 import { state } from "./runtime.js";
 import { refreshAssist, refreshBarState, selectionOf } from "./typing.js";
 
@@ -77,9 +77,10 @@ function applyHistory(entry, snapshot) {
   entry.caret = caret;
   entry.selStart = selStart;
   entry.selEnd = selEnd;
-  input.focus();
+  focusInput(entry);
   input.setSelectionRange(selStart, selEnd);
   autoGrow(input);
+  revealCaret(entry);
   state.dirty = true;
   updateTitle();
   persist();

@@ -53,6 +53,24 @@ class NativeBridge(
         }
     }
 
+    // The window focus, not a DOM element's: a WebView takes it only when a finger lands
+    // in it, and a text caret is drawn only for a focused window. A notebook that has just
+    // opened, or one whose sheet, menu or file picker was closed, has a focused textarea
+    // (the DOM's `activeElement`) but no caret until this asks for the window again.
+    @JavascriptInterface
+    fun focusWebView() {
+        activity.runOnUiThread {
+            webView?.requestFocus()
+        }
+    }
+
+    // The page has finished booting: the automation actions that arrived while it was loading
+    // can run (see MainActivity.handleTestIntent).
+    @JavascriptInterface
+    fun testReady() {
+        activity.onTestPageReady()
+    }
+
     @JavascriptInterface
     fun toast(message: String) {
         activity.runOnUiThread {

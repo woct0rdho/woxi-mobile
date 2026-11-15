@@ -31,6 +31,8 @@ The bar is the keyboard's first two pages, four keys each. The menu is the sheet
 | 2 (cell) | Undo, Redo, Insert, Delete | no keyboard shortcuts on a phone. Insert and Delete are the two cell edits, next to each other |
 | 3 (text) | Cut, Copy, Paste, Format | selection edits, plus normalizing the entry |
 
+The clipboard keys read and write the Android clipboard, the same one the hardware Ctrl+C/X/V use: the bridge is an access path (the Web clipboard APIs need permissions and user activation a WebView does not reliably give), not a second clipboard.
+
 | Menu | Why not the bar |
 |---|---|
 | New notebook, Open, Save, Save as | file-level, rare |
@@ -67,9 +69,10 @@ Details that keep it predictable:
 - No call shape lives in a key. The tap always inserts `Name[]`. The arguments a function needs come from the assist's prototypes (`prototypes.js`), so a chip, a pad key and the sheet's insert skeleton cannot disagree. The old `D[|, x]`, `If[|, , ]` key shapes moved there.
 - A function whose arity is exactly zero (`NotebookDirectory`, the Mathieu group symbols) cannot wrap anything: the hold falls back to the tap, so `NotebookDirectory[]` is inserted and the text to the right is left alone.
 - Constants and literals keep the tap meaning on hold. `Pi`, `E`, `Infinity`, `$Name`, a session variable or an iterator chip such as `{x, -5, 5}` are values, not calls. Holding them does nothing extra. `Break[]`-style keys have no argument to spell out, so they behave the same way.
+- A hold with no second action is performed on release, as the tap it is. Performing it while the finger is still down looks the same to the user but not to the WebView: the end of the gesture takes the focus and the caret away from the text the press just placed (`Sin` on an empty entry, `Plot`'s selected placeholder).
 - Letters, digits and operators are not function buttons. They insert their label. A delimiter pair (`( )`, `[ ]`, `{ }`, `" "`) wraps a selection - `(x + 1)` from a selected `x + 1` - which is what a bracket key is for.
 
-The keyboard fires the hold after 380 ms, cancels on 10 px of movement (so a flick is still a flick), and suppresses the tap only when the handler actually did something.
+The keyboard fires the hold after 380 ms, cancels on 10 px of movement (so a flick is still a flick), and replaces the click when the hold wrote something itself or when the release performs the tap it turned out to be.
 
 ## Backspace
 
@@ -77,9 +80,17 @@ Backspace deletes one character, or a whole empty pair (`()`, `[]`, `{}`, `""`, 
 
 ## Where the caret is
 
-The bar describes the caret, so the caret has to be known even when the field has no DOM focus. Two facts make that non-obvious on Android:
+The caret is the textarea's own, drawn by the WebView. The app does not draw a second one. Two Android facts decide whether it is visible:
+- A caret is drawn only while the window has the focus, and a WebView takes the window focus only when a finger lands in it. A notebook that has just opened - or one whose menu, sheet or file picker has just closed - can have a focused textarea (`document.activeElement`) and still show no caret at all. `focusEntry` therefore asks the shell for the window focus (`WoxiNative.focusWebView`, `WebView.requestFocus()`) whenever it is missing, at boot and after a document is opened, so the caret is there before the first tap in the text.
+- Pressing a control gives that control the DOM focus, and a focused button draws no caret. Every key, every sheet row and the Menu/Options buttons cancel the press's default action (the `keepFocus` helper, or the same listener written into each key), so the entry keeps the focus while the user types, opens a sheet or accepts a suggestion. `closeSheet` gives the focus back when something else took it (the native file picker, a window switch).
+
+With the focus kept, the field's own selection is the source of truth for the bar, for every key and for copy/cut. A caret moved with the handle and a range dragged over text are the same native selection the next key replaces or wraps, exactly as native typing would, and a tap in the textarea and a key press act on the same caret.
+
+Two mechanical details make that hold:
 - A caret-handle drag fires `selectionchange` and nothing else. No click, no keyup, no `select`. The app therefore listens on the document, records the new selection on the entry and refreshes the bar (coalesced at 40 ms, so a drag is one refresh at the end rather than sixty in flight).
-- Tapping this keyboard's keys blurs the textarea, and some WebViews then report the selection as 0. Every entry therefore keeps its own `caret`/`selStart`/`selEnd`, updated on `selectionchange`, `keyup`, `click`, `select`, `focus`, `input` and every programmatic edit. A focused field is still the source of truth. A blurred one acts on the recorded copy.
+- A command writes the value and then places the caret, which the native code does not follow: a caret below the last visible line of a capped field would sit outside the box, in a field scrolled to its start. `revealCaret` recycles the focus (blur, then focus - without `preventScroll`, which cancels the scroll inside the field too) after the value has grown, and only for a focused field whose content overflows, so a caret that is already on screen stays put.
+
+A field can still lose the focus on purpose: a plot drag or a `Manipulate` slider owns the finger. Every entry keeps its own `caret`/`selStart`/`selEnd`, updated on `selectionchange`, `keyup`, `click`, `select`, `focus`, `input` and every programmatic edit, and the next key or command gives the field the focus back (`focusInput`) before it edits, so the caret reappears where the text went. A rebuilt entry (insert, delete, duplicate, open) puts its stored selection back, so rebuilding no longer drops the caret at the end of the text.
 
 One reader (`selectionOf`) serves every path that inserts, deletes, copies or accepts, so those cannot drift apart again. A function key or a suggestion replaces a selection on a tap and wraps it on a hold, which is why the bar can happily show completion for the text before a selection (`sxyz` with `xyz` selected completes `s`).
 
@@ -98,7 +109,31 @@ A step ends at:
 
 The snapshot also keeps the selection it replaced, so undo puts a replaced selection back (as VSCode does). Redo does the same in reverse. `Undo` and `Redo` live on bar page 2 and are dimmed when there is nothing to undo or redo respectively - the state comes from the app's own stack, which is exact, because every edit on this keyboard goes through it (a hardware keyboard's edits are captured by `beforeinput`).
 
+Why not the browser's stack? Every in-app key writes the textarea's value from script, which the browser's undo stack does not see at all. It also dies with the textarea on every notebook rebuild (inserting or deleting an entry), and it exposes no `canUndo`/`canRedo` for the bar's dim state. The hardware shortcuts are routed to this stack instead (see Hardware keyboard), so the field never has two histories.
+
 Why not the editor models? VSCode pushes an undo stop from every cursor-moving command (`pushStackElement` in `coreCommands.ts`), so a typing run between caret moves is one step. Vim groups per typed command (`:help undo-blocks`), which for `i ... Esc` is the whole insert. Both are tuned for a keyboard and a large file. Here every key is an explicit tap on a short expression, and the common repair is "undo the last name/number I tapped", so the step is the word. `Ctrl-G u`-style finer control has no key on this keyboard. A shorter pause is the way to ask for a smaller step.
+
+## Hardware keyboard
+
+A physical keyboard edits the same entry as the app keyboard: Android hands printable keys to the active IME connection, so the WebView applies them itself and the page learns about the text through `beforeinput`/`input` (the key event it also gets is `Unidentified`). That means the caret, the selection, the assist bar and the clipboard are the native ones, and the two input methods interleave freely: a letter typed after the `Sin` key lands inside `Sin[]`, and an in-app key pressed while Shift+arrows made a selection replaces that selection exactly like a tap.
+
+| Key | What it does |
+|---|---|
+| characters, Backspace/Delete, arrows, Home/End | native editing. Each edit is recorded by `beforeinput` as one step of the app's history, so the bar's Undo/Redo stay exact |
+| Enter | the Eval key (`submitActive`) |
+| Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | the app's Undo/Redo, so there is one history |
+| Ctrl+A / Ctrl+C / Ctrl+X / Ctrl+V | native editing, on the same Android clipboard as the bar's Cut/Copy/Paste |
+| Tab / Shift+Tab | kept in the entry: a focused key draws no caret and swallows the next letter |
+| Escape | closes the sheet on top (the assistance sheet first, then Menu/Options), like Android's Back |
+
+A modal sheet (Menu, Options) blurs the entry while it is open. Otherwise a physical keyboard edits the page behind the sheet - invisibly, and through the IME, where `preventDefault` on the key event does not reach (the text arrives as a commit, not as a key press). Closing the sheet restores the caret and the selection. The assistance sheet is deliberately not modal to typing: its list filters as the entry changes.
+
+What is not the same as the app keyboard:
+- The bar's Delete deletes the entry. The hardware Delete deletes the next character, as in any text field. (The hardware Backspace is the bar's `<-`.)
+- A physical `Sin` types the letters. It does not insert the call. The completion bar offers `Sin[]` as it does after app-key typing.
+- Shift and Caps Lock are the platform's: they do not light the app keyboard's Shift key and do not change what its keys insert. The app's letters page keeps its own one-shot/locked state.
+- Shift+Enter is not intercepted (the app keyboard has no newline key), so the field inserts a newline where the WebView reports the Shift modifier. Enter alone evaluates.
+- IME composition (a CJK keyboard, predictive text) is not treated specially: each composition update is one undo step.
 
 ## Matching: finding a name without noise
 
@@ -190,6 +225,6 @@ Priorities: NORMAL for everything the user is waiting on, BACKGROUND for the one
 
 ## Test hooks
 
-`assist` (state, prefix, matches, caret, the stored selection, text, issues, definitions, bar key positions in device pixels), `assistaccept`, `assistsheet`/`card` (tab), `assistclose`, `type` (set text without evaluating), `press` (a key by label), `caret` (`<at>` or `<start>,<end>`), `skeleton`, `wrap`, `diag`, `undo`, `redo`, `format`, `formatall`, `godef`.
+`assist` (state, prefix, matches, caret, the stored selection, text, issues, definitions, bar key positions in device pixels), `assistaccept`, `assistsheet`/`card` (tab), `assistclose`, `type` (set text without evaluating), `press` (a key by label), `caret` (`<at>` or `<start>,<end>`), `focus` (window focus, DOM focus and the entry's selection), `skeleton`, `wrap`, `diag`, `undo`, `redo`, `format`, `formatall`, `godef`.
 
 Device pixels, not CSS: the WebView is inset by the status bar, so a tap coordinate is `inset.top + css * dpr`.

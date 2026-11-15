@@ -28,16 +28,17 @@ import {
   addEntry,
   autoGrowAll,
   focusEntry,
+  focusInput,
   renderNotebook,
   setActive,
   setHooks,
   updateTitle,
 } from "./entries.js";
 import { attachPlots, evaluateAll, submitActive } from "./evaluation.js";
-import { canRedo, canUndo, recordEdit } from "./history.js";
+import { canRedo, canUndo, recordEdit, redoEntry, undoEntry } from "./history.js";
 import * as WoxiKeyboard from "./keyboard.js";
 import * as WoxiNotebook from "./notebook.js";
-import { el, els, log, runtime, state, toast } from "./runtime.js";
+import { el, els, keepFocus, log, nativeCall, runtime, state, toast } from "./runtime.js";
 import { closeSheet, openSheet, sheetButton } from "./sheets.js";
 import { createTestAction } from "./test-hooks.js";
 import { setTheme } from "./theme.js";
@@ -146,6 +147,9 @@ window.WoxiNativeCallbacks = {
 function hideSplash() {
   els.splash.className = "woxi-hidden";
   document.getElementById("woxi-app").className = "";
+  // The automation actions that arrived while the page was booting wait for this (see
+  // MainActivity.handleTestIntent).
+  nativeCall("testReady");
 }
 
 // Connects the entry view's user events to the modules that implement them.
@@ -164,8 +168,21 @@ function wireEntryHooks() {
       persist();
       refreshAssist();
     },
-    onBeforeInput: function (entry) {
-      recordEdit(entry, "type");
+    onBeforeInput: function (entry, event) {
+      const type = event && event.inputType ? event.inputType : "";
+      // The app owns the undo stack, and its undo shortcut is routed there (see the entry's
+      // keydown). A native undo that slips through is not an edit to record.
+      if (type === "historyUndo" || type === "historyRedo") return;
+      const kind = type.indexOf("delete") === 0 ? "delete" : "type";
+      // `beforeinput` cannot see where an edit ends, but an insertion knows: the caret lands
+      // after the inserted text, which is what lets the next hardware key join its word.
+      const input = entry.dom ? entry.dom.input : null;
+      const start = input ? input.selectionStart : null;
+      const after =
+        type === "insertText" && typeof event.data === "string" && start !== null
+          ? start + event.data.length
+          : undefined;
+      recordEdit(entry, kind, after);
     },
     onBlur: function () {
       setTimeout(refreshAssist, 0);
@@ -174,6 +191,8 @@ function wireEntryHooks() {
       recordSelection(entry, true);
     },
     onSubmit: submitActive,
+    onUndo: undoEntry,
+    onRedo: redoEntry,
     attachPlots: attachPlots,
   });
 }
@@ -209,8 +228,17 @@ async function boot() {
       }
     }
   });
-  document.getElementById("woxi-btn-menu").addEventListener("click", showMenu);
-  document.getElementById("woxi-btn-options").addEventListener("click", showOptions);
+  // The hardware keyboard's Escape is this app's Back: close the sheet on top.
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") return;
+    if (runtime.assist && runtime.assist.sheetOpen) {
+      runtime.assist.closeSheet();
+      return;
+    }
+    if (els.overlay && els.overlay.className.indexOf("woxi-hidden") < 0) closeSheet();
+  });
+  keepFocus(document.getElementById("woxi-btn-menu")).addEventListener("click", showMenu);
+  keepFocus(document.getElementById("woxi-btn-options")).addEventListener("click", showOptions);
 
   wireEntryHooks();
 
@@ -220,6 +248,14 @@ async function boot() {
     },
     onAction: handleKeyAction,
     onLongPress: handleKeyLongPress,
+    // A held key has already written its skeleton (or waits to be pressed as a tap) while
+    // the finger is down. The bar is rebuilt under that finger, and the browser's end of
+    // gesture can leave the focus on the key or on nothing. The entry keeps the caret, so
+    // it takes the focus back once the gesture is over.
+    onHoldRelease: function () {
+      const entry = activeEntry();
+      if (entry) focusInput(entry);
+    },
     // The bar pages are defined in keyboard.js. Only their state (Undo/Redo dim when
     // there is nothing to undo or redo) depends on the document, so it is answered here.
     keyState: function (key) {
@@ -285,11 +321,26 @@ async function boot() {
     return entry.input.trim();
   });
   if (hasInput) await evaluateAll();
-  else focusEntry(state.entries[0]);
+  // Whichever notebook was loaded, it is now ready to be typed into: the active entry
+  // owns the caret, so the caret is visible before the first tap in the text.
+  focusEntry(state.entries[0]);
 }
 
+const runTestAction = createTestAction({ showMenu: showMenu, showOptions: showOptions });
+
 window.WoxiApp = {
-  testAction: createTestAction({ showMenu: showMenu, showOptions: showOptions }),
+  // Nothing shown on screen says why a harness action did nothing, so a failing one is
+  // reported in the log that the harness reads back. The `done` line is what the device
+  // harness waits for instead of sleeping: it marks the moment the action has run.
+  testAction: function (action, argument) {
+    try {
+      runTestAction(action, argument);
+    } catch (err) {
+      log("test action " + action + " failed: " + (err && err.message ? err.message : String(err)));
+    } finally {
+      log("test: done " + action);
+    }
+  },
   onNativeBack: function () {
     if (els.overlay && els.overlay.className.indexOf("woxi-hidden") < 0) {
       closeSheet();

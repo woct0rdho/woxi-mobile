@@ -102,5 +102,7 @@ export async function loadDocumentFromText(text, fileName, evaluateAll) {
   }
   toast("Evaluating...");
   await evaluateAll();
+  // The opened notebook is ready to be typed into, like a fresh one.
+  focusEntry(state.entries[0]);
   toast("Opened " + (fileName || "notebook"));
 }

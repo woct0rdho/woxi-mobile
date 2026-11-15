@@ -41,6 +41,18 @@ export function el(tag, cls, text) {
   return node;
 }
 
+// A button is a command, not a field. Left to itself a button takes the focus on press,
+// which blurs the entry: its caret, its selection handles and the assist bar all switch
+// to a control that has none. Cancelling the press keeps the focus where the text is
+// going, and the click still arrives.
+export function keepFocus(node) {
+  if (!node) return node;
+  node.addEventListener("mousedown", function (event) {
+    event.preventDefault();
+  });
+  return node;
+}
+
 // Calls a method on the injected Java object. The object is a proxy, so the
 // method must be invoked directly (`.apply`/`typeof` checks do not work on it)
 // and a failure inside the error path must not re-enter this function.

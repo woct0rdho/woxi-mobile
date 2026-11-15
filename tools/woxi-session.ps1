@@ -16,8 +16,9 @@ $script:WoxiPackage = 'com.woctordho.woximobile'
 $script:WoxiLogCursor = 0
 
 function Get-WoxiLogRaw {
-  # adb returns one multi-line string. Split it so Select-String matches lines.
-  return ((Invoke-Adb -Arguments @('logcat', '-d', '-s', 'Woxi:*')) -split "`n")
+  # adb returns one multi-line string. Split it so Select-String matches lines (the lines
+  # end in CRLF on Windows, and a stray CR breaks an anchored pattern).
+  return ((Invoke-Adb -Arguments @('logcat', '-d', '-s', 'Woxi:*')) -split '\r?\n')
 }
 
 # All logcat lines (every tag), split, for diagnosing the WebView.
@@ -45,19 +46,27 @@ function Invoke-WoxiAction([string]$action, [string]$argument = '') {
   Invoke-Adb -Arguments @('shell', $cmd) | Out-Null
 }
 
-# Sends an action and returns the web-layer lines that appeared because of it.
+# Sends an action and returns the web-layer lines that appeared because of it. The page marks
+# the end of every action with `test: done <action>`, counted rather than matched so a repeated
+# action waits for its own line and not for an earlier one.
 function Invoke-WoxiActionWait([string]$action, [string]$argument = '', [int]$timeoutSec = 12) {
-  $before = (Get-WoxiLogRaw | Measure-Object).Count
+  $marker = 'test: done ' + [regex]::Escape($action) + '$'
+  $doneCount = { @(Get-WoxiLogRaw | Select-String -Pattern $marker).Count }
+  $beforeAll = (Get-WoxiLogRaw | Measure-Object).Count
+  $beforeDone = & $doneCount
   Invoke-WoxiAction $action $argument
   $deadline = (Get-Date).AddSeconds($timeoutSec)
   while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 700
-    $all = Get-WoxiLogRaw
-    if (($all | Measure-Object).Count -gt $before) {
-      $new = @($all | Select-Object -Skip $before | ForEach-Object { ConvertTo-WoxiText $_ })
-      $web = @($new | Where-Object { $_ -notmatch '^test action:|^page started:|^page finished:|^resource error:' -and $_ })
-      if ($web.Count -gt 0) { return $web }
+    if ((& $doneCount) -gt $beforeDone) {
+      $all = Get-WoxiLogRaw
+      $new = @($all | Select-Object -Skip $beforeAll | ForEach-Object { ConvertTo-WoxiText $_ })
+      return @(
+        $new | Where-Object {
+          $_ -notmatch '^(web: )?(test action:|test: done |page started:|page finished:|resource error:)' -and $_
+        }
+      )
     }
+    Start-Sleep -Milliseconds 100
   }
   return @('(no reply within ' + $timeoutSec + 's)')
 }
@@ -75,18 +84,8 @@ function Wait-WoxiLog([string]$pattern, [int]$timeoutSec = 30) {
 }
 
 function Test-WoxiAlive {
-  $before = (Get-WoxiLogRaw | Measure-Object).Count
-  Invoke-WoxiAction 'kb'
-  $deadline = (Get-Date).AddSeconds(20)
-  while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 500
-    $all = Get-WoxiLogRaw
-    if (($all | Measure-Object).Count -gt $before) {
-      $new = @($all | Select-Object -Skip $before | ForEach-Object { ConvertTo-WoxiText $_ })
-      if (($new | Where-Object { $_ -match 'kb: page=' }).Count -gt 0) { return $true }
-    }
-  }
-  return $false
+  $new = Invoke-WoxiActionWait 'kb' '' 20
+  return @($new | Where-Object { $_ -match 'kb: page=' }).Count -gt 0
 }
 
 # True when the system is refusing to start the WebView's sandboxed renderer for our

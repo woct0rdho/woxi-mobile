@@ -3,7 +3,7 @@
 // to the keyboard when the field is focused.
 
 import { persist } from "./documents.js";
-import { activeEntry, autoGrow, updateTitle } from "./entries.js";
+import { activeEntry, autoGrow, focusInput, revealCaret, updateTitle } from "./entries.js";
 import { recordEdit } from "./history.js";
 import { els, runtime, state } from "./runtime.js";
 
@@ -69,8 +69,10 @@ export function replaceRange(start, end, text, caretAfter) {
   entry.selStart = caret;
   entry.selEnd = caret;
   input.setSelectionRange(caret, caret);
+  focusInput(entry);
   entry.input = input.value;
   autoGrow(input);
+  revealCaret(entry);
   state.dirty = true;
   updateTitle();
   persist();
@@ -83,6 +85,8 @@ export function setCaret(offset) {
   const input = entry.dom.input;
   const at = Math.max(0, Math.min(offset, input.value.length));
   input.setSelectionRange(at, at);
+  focusInput(entry);
+  revealCaret(entry);
   entry.caret = at;
   entry.selStart = at;
   entry.selEnd = at;
@@ -95,8 +99,9 @@ export function selectRange(start, end) {
   const input = entry.dom.input;
   start = Math.max(0, Math.min(start, input.value.length));
   end = Math.max(start, Math.min(end, input.value.length));
-  input.focus();
+  focusInput(entry);
   input.setSelectionRange(start, end);
+  revealCaret(entry);
   entry.caret = end;
   entry.selStart = start;
   entry.selEnd = end;

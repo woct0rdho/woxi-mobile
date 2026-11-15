@@ -3,7 +3,7 @@
 // `docs/plot_interaction.md`). A sign that flips or an anchor that drifts shows up here without a
 // device, an engine or an APK.
 //
-// Run with `pnpm test` (or `node --test tests/`).
+// Run with `pnpm test` (or `node --test "tests/*.test.js"`).
 
 import assert from "node:assert/strict";
 import fs from "node:fs";

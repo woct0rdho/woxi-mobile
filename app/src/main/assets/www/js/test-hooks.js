@@ -204,6 +204,27 @@ export function createTestAction(menu) {
       case "dom":
         log("dom: " + domSummary());
         break;
+      case "focus": {
+        // Where the caret is and whether the field that owns it has the focus that makes it
+        // blink. `document.hasFocus` is the window's own focus: without it a focused field
+        // draws no caret at all.
+        const focusedEntry = activeEntry();
+        const element = document.activeElement;
+        const input = focusedEntry && focusedEntry.dom ? focusedEntry.dom.input : null;
+        log(
+          "focus: window=" +
+            document.hasFocus() +
+            " active=" +
+            (element ? element.tagName + "." + (element.className || "") : "none") +
+            " input=" +
+            (input ? element === input : "none") +
+            " sel=" +
+            (input
+              ? input.selectionStart + ".." + input.selectionEnd + " of " + input.value.length
+              : "-")
+        );
+        break;
+      }
       case "assist": {
         // Dump the context bar, so a device test can assert on what the user sees.
         const assistRead = readActiveText();

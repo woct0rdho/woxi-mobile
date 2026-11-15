@@ -11,6 +11,10 @@ adb shell am start -n com.woctordho.woximobile/.MainActivity --es woxi_action du
 adb shell am start -n com.woctordho.woximobile/.MainActivity --es woxi_action keys --es woxi_arg Plot
 ```
 
+An action is applied as soon as the page is usable, not after a fixed delay: the web layer reports when boot has finished (after the engine starts), and actions that arrive while a page is loading - on launch, or after `reload` - wait in order for it. Each action ends with a `test: done <action>` log line, so a harness can wait for the action itself rather than for a guessed duration. The log line is also how a failing action is seen (its exception is logged before the marker).
+
+The hardware keyboard is driven the same way: `adb shell input text 'Sin'` types text (through the active IME, like a physical keyboard), `adb shell input keyevent KEYCODE_TAB` presses one key, and `adb shell input keycombination 113 54` presses Ctrl+Z. A test of the mix types here, taps an in-app key with `keys`, and checks the entry and the caret with `dump` and `focus`.
+
 `tools/woxi-session.ps1` wraps this (`Start-WoxiSession`, `Invoke-WoxiAction`, `Invoke-WoxiActionWait`, `Wait-WoxiLog`, `Get-WoxiLog`) and retries a session until the page answers. Dot-source it to get the functions. It finds adb through `WOXI_ADB` (a full path), then `PATH`, then `ANDROID_HOME`/`ANDROID_SDK_ROOT`/Android Studio's default SDK. `WOXI_ADB_SERIAL` picks the device, otherwise the one attached device is used, so no serial is baked in. `tools/test-device.ps1` builds on it to feed whole expressions through the hook:
 
 ```pwsh
@@ -34,6 +38,7 @@ Get-WoxiLog 'plotperf'
 - `add <text>` appends a new entry with that source and evaluates it, logging the setup and evaluation timings.
 - `type <text>` sets the active entry's text without evaluating it or moving focus, which is what the typing help needs to see a partial expression.
 - `caret <at>` puts the caret at a character offset. `caret <start>,<end>` selects a range, the way the selection handles would.
+- `focus` logs whether the window has the focus that draws the caret (`window=`), which element the DOM focuses (`active=`), whether it is the active entry's textarea, and that textarea's selection.
 - `key <enter|plot|solve|back>` presses one of the keyboard's action keys.
 - `keys <label>` presses a key by its label, exactly as a tap would: the current page wins, otherwise the first page or bar page with that label. It logs the input, the caret, shift and the entry count.
 - `press <label>` presses a key by label through the same tap path and logs which page it came from.

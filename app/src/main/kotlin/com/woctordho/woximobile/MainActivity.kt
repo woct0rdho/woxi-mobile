@@ -47,6 +47,10 @@ class MainActivity : ComponentActivity() {
     private var pageLoaded = false
     private var loadAttempts = 0
 
+    // Test actions wait in this queue until the page says it is ready (see handleTestIntent).
+    private val pendingTestActions = ArrayDeque<Pair<String, String>>()
+    private var testReady = false
+
     // Current system-bar insets in pixels. The web layer reads these via the bridge.
     var insetTopPx = 0
         private set
@@ -83,14 +87,41 @@ class MainActivity : ComponentActivity() {
     // Automation hook used during development: `adb shell am start -n
     // com.woctordho.woximobile/.MainActivity --es woxi_action save` runs the matching
     // action in the web layer. Harmless in normal use (no extra -> no-op).
+    //
+    // An action waits for the page to be usable instead of for a fixed delay: the web layer
+    // reports when boot has finished (after the engine starts), and actions that arrive while
+    // the page is loading - on launch, or after a `reload` - are queued in order for that
+    // moment. When the page is already up, an action runs at once.
     private fun handleTestIntent(intent: Intent?) {
         val action = intent?.getStringExtra("woxi_action") ?: return
         val argument = intent.getStringExtra("woxi_arg") ?: ""
+        Log.w(TAG, "test action: $action $argument")
+        if (!testReady) {
+            pendingTestActions.addLast(action to argument)
+            return
+        }
+        runTestAction(action, argument)
+    }
+
+    private fun runTestAction(
+        action: String,
+        argument: String,
+    ) {
         val script =
             "window.WoxiApp && WoxiApp.testAction(" + JSONObject.quote(action) +
                 "," + JSONObject.quote(argument) + ")"
-        Log.w(TAG, "test action: $action $argument")
-        webView.postDelayed({ webView.evaluateJavascript(script, null) }, 1200)
+        webView.evaluateJavascript(script, null)
+    }
+
+    // Called by the web layer once boot has finished (NativeBridge.testReady).
+    internal fun onTestPageReady() {
+        runOnUiThread {
+            testReady = true
+            while (pendingTestActions.isNotEmpty()) {
+                val (action, argument) = pendingTestActions.removeFirst()
+                runTestAction(action, argument)
+            }
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -144,6 +175,9 @@ class MainActivity : ComponentActivity() {
                     favicon: android.graphics.Bitmap?,
                 ) {
                     Log.w(TAG, "page started: " + url)
+                    // A reload (from the harness or the app) starts a page that is not ready
+                    // yet: test actions wait for the next ready report.
+                    testReady = false
                 }
 
                 override fun onPageFinished(

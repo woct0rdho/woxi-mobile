@@ -388,10 +388,23 @@ Keyboard.prototype.makeKey = function (key) {
   btn.setAttribute("data-key", key.label);
   if (key.action === "shift") btn.setAttribute("data-base", classes);
 
+  // A key is a way to type into the entry, not a field of its own. Left to itself a
+  // button takes the focus on press, which blurs the textarea, drops the caret and the
+  // selection handles, and makes the next key speak about a field that no longer has
+  // them. Cancelling the press keeps the focus where the text is going. The click still
+  // arrives.
+  btn.addEventListener("mousedown", function (event) {
+    event.preventDefault();
+  });
+
   // Holding a key is "more than a tap": a symbol key inserts the call's skeleton, a
-  // suggestion chip wraps the selection. The handler says whether it did anything, so
-  // a hold with no second action still ends as a normal tap.
+  // suggestion chip wraps the selection. When there is no such second action the hold is
+  // the tap, but it is performed on release: a press that runs while the finger is still
+  // down is followed by the browser's end-of-gesture handling, which takes the focus and
+  // the selection away from the little caret the press just placed.
   let holdTimer = null;
+  let holdDone = false;
+  let tapOnRelease = false;
   let holdX = 0;
   let holdY = 0;
   const cancelHold = function () {
@@ -408,9 +421,16 @@ Keyboard.prototype.makeKey = function (key) {
       holdX = touch.clientX;
       holdY = touch.clientY;
       cancelHold();
+      holdDone = false;
+      tapOnRelease = false;
       holdTimer = setTimeout(function () {
         holdTimer = null;
-        if (self.handlers.onLongPress(key)) suppressClicksUntil = Date.now() + 400;
+        const answer = self.handlers.onLongPress(key);
+        if (answer === "tap") tapOnRelease = true;
+        else if (answer) {
+          holdDone = true;
+          suppressClicksUntil = Date.now() + 400;
+        }
       }, LONG_PRESS_MS);
     },
     { passive: true }
@@ -433,8 +453,31 @@ Keyboard.prototype.makeKey = function (key) {
     },
     { passive: true }
   );
-  btn.addEventListener("touchend", cancelHold, { passive: true });
-  btn.addEventListener("touchcancel", cancelHold, { passive: true });
+  btn.addEventListener(
+    "touchend",
+    function () {
+      cancelHold();
+      if (!tapOnRelease && !holdDone) return;
+      const tapped = tapOnRelease;
+      tapOnRelease = false;
+      holdDone = false;
+      // The gesture is over. Any click it still delivers is the one being replaced (and a
+      // click can arrive much later than the 400 ms that were set when the hold fired).
+      suppressClicksUntil = Date.now() + 400;
+      if (tapped) self.press(key);
+      if (self.handlers.onHoldRelease) self.handlers.onHoldRelease(key);
+    },
+    { passive: true }
+  );
+  btn.addEventListener(
+    "touchcancel",
+    function () {
+      cancelHold();
+      holdDone = false;
+      tapOnRelease = false;
+    },
+    { passive: true }
+  );
 
   btn.addEventListener("click", function (event) {
     event.preventDefault();

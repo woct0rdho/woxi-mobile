@@ -9,9 +9,10 @@ import {
   addEntry,
   autoGrow,
   focusEntry,
+  focusInput,
   renderNotebook,
+  revealCaret,
   scrollEntryIntoView,
-  setActive,
   updateTitle,
   wireManipulate,
 } from "./entries.js";
@@ -52,8 +53,11 @@ function insertText(text, caretOffset, key) {
   entry.selStart = caret;
   entry.selEnd = caret;
   input.setSelectionRange(caret, caret);
+  focusInput(entry);
   entry.input = input.value;
   autoGrow(input);
+  // Growing resets the scroll position, so the caret is revealed afterwards.
+  revealCaret(entry);
   state.dirty = true;
   updateTitle();
   persist();
@@ -71,7 +75,8 @@ function runTemplate(text) {
   entry.selEnd = text.length;
   entry.dom.input.setSelectionRange(text.length, text.length);
   autoGrow(entry.dom.input);
-  entry.dom.input.focus();
+  focusInput(entry);
+  revealCaret(entry);
   state.dirty = true;
   updateTitle();
   persist();
@@ -116,8 +121,10 @@ function backspace() {
   entry.selStart = start;
   entry.selEnd = start;
   input.setSelectionRange(start, start);
+  focusInput(entry);
   entry.input = input.value;
   autoGrow(input);
+  revealCaret(entry);
   state.dirty = true;
   updateTitle();
   persist();
@@ -126,22 +133,26 @@ function backspace() {
 
 function handleKeyLongPress(key) {
   if (!key || !runtime.assist) return false;
+  let wrapped = false;
   // A suggestion chip carries its name and what the engine knows about it.
   if (key.action === "assist" && key.detail && key.detail.kind === "accept") {
-    return runtime.assist.wrap(key.detail.name, key.detail.arity, key.detail.type) === true;
-  }
-  // A symbol key whose insert has no caret marker is a complete call (`Break[]`): it
-  // has no argument to spell out or wrap, so the hold is a plain tap.
-  if (
+    wrapped = runtime.assist.wrap(key.detail.name, key.detail.arity, key.detail.type) === true;
+  } else if (
+    // A symbol key whose insert has no caret marker is a complete call (`Break[]`): it
+    // has no argument to spell out or wrap.
     !key.action &&
     key.classes &&
     key.classes.indexOf("fn") >= 0 &&
     key.label &&
     (key.insert === undefined || key.insert.indexOf("|") >= 0)
   ) {
-    return runtime.assist.applySkeleton(key.label) === true;
+    wrapped = runtime.assist.applySkeleton(key.label) === true;
   }
-  return false;
+  if (wrapped) return true;
+  // A hold with nothing to wrap is the tap. The keyboard performs it on release, so the
+  // caret it places survives the end of the gesture. Returning the answer it expects is
+  // what asks for that.
+  return "tap";
 }
 
 function newEntryBelow() {
@@ -176,7 +187,7 @@ function deleteActive() {
   const index = state.entries.indexOf(entry);
   state.entries.splice(index, 1);
   renderNotebook();
-  setActive(state.entries[Math.min(index, state.entries.length - 1)]);
+  focusEntry(state.entries[Math.min(index, state.entries.length - 1)]);
   state.dirty = true;
   updateTitle();
   persist();
@@ -236,7 +247,9 @@ function clipboardOp(op) {
   entry.selStart = entry.caret;
   entry.selEnd = entry.caret;
   input.setSelectionRange(entry.caret, entry.caret);
+  focusInput(entry);
   autoGrow(input);
+  revealCaret(entry);
   state.dirty = true;
   updateTitle();
   persist();
@@ -282,6 +295,12 @@ function rewriteEntry(entry, text) {
   entry.selEnd = caret;
   entry.dom.input.setSelectionRange(caret, caret);
   autoGrow(entry.dom.input);
+  // Formatting every entry in the notebook must not move the caret into the ones that
+  // are not being edited.
+  if (entry.id === state.activeId) {
+    focusInput(entry);
+    revealCaret(entry);
+  }
   state.dirty = true;
   updateTitle();
   persist();

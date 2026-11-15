@@ -6,7 +6,7 @@
 // functions they exercise never touch the DOM or the bridge. A device test can only catch the
 // failures here by eye.
 //
-// Run with `pnpm test` (or `node --test tests/`).
+// Run with `pnpm test` (or `node --test "tests/*.test.js"`).
 
 import assert from "node:assert/strict";
 import fs from "node:fs";

@@ -11,10 +11,12 @@ const hooks = {
   onActive: function (entry) {},
   onFocus: function (entry) {},
   onInput: function (entry) {},
-  onBeforeInput: function (entry) {},
+  onBeforeInput: function (entry, event) {},
   onBlur: function () {},
   onSelection: function (entry) {},
   onSubmit: function () {},
+  onUndo: function () {},
+  onRedo: function () {},
   attachPlots: function (entry, items, seed) {},
 };
 
@@ -126,15 +128,19 @@ export function buildEntry(entry) {
   input.setAttribute("autocorrect", "off");
   input.setAttribute("inputmode", "none"); // the app brings its own keyboard
   input.addEventListener("focus", function () {
+    // `revealCaret` recycles the focus to scroll the caret into view. That is not a change
+    // of entry, so it must not re-run the app's focus work for every key.
+    if (entry.revealing) return;
     setActive(entry);
     nativeCall("hideKeyboard");
     autoGrow(input);
     hooks.onFocus(entry);
   });
   // Only real input (a hardware keyboard, a system paste) reaches these. Programmatic
-  // edits are recorded by the helpers that make them.
-  input.addEventListener("beforeinput", function () {
-    hooks.onBeforeInput(entry);
+  // edits are recorded by the helpers that make them. The event says what kind of edit it
+  // is, so a hardware deletion is an undo step of the same kind as the Backspace key.
+  input.addEventListener("beforeinput", function (event) {
+    hooks.onBeforeInput(entry, event);
   });
   input.addEventListener("input", function () {
     entry.input = input.value;
@@ -152,16 +158,40 @@ export function buildEntry(entry) {
   // A blur fires before the tap that caused it completes, so the bar is refreshed
   // after both have run: a key press must land on the keys it was aimed at.
   input.addEventListener("blur", function () {
-    hooks.onBlur();
+    if (!entry.revealing) hooks.onBlur();
   });
-  // The caret must survive taps on the in-app keyboard buttons (which move the
-  // focus away from the textarea on some WebView versions).
+  // The bar follows the native selection: a caret moved with the handle, a word picked by a
+  // double tap, or a range dragged out is reported by one of these before the next key
+  // reads it.
   ["keyup", "click", "select", "focus"].forEach(function (type) {
     input.addEventListener(type, function () {
       hooks.onSelection(entry);
     });
   });
   input.addEventListener("keydown", function (event) {
+    // One history, not two. Chrome's native undo would leave the bar's Undo/Redo
+    // describing text that is no longer in the field, and the in-app keys step the app's
+    // stack, so the hardware shortcuts step it too.
+    if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) hooks.onRedo();
+        else hooks.onUndo();
+        return;
+      }
+      if (key === "y" && !event.shiftKey) {
+        event.preventDefault();
+        hooks.onRedo();
+        return;
+      }
+    }
+    // Tab must not take the focus out of the field: the keys and the sheet rows are
+    // commands, and a focused key draws no caret and swallows the next letter.
+    if (event.key === "Tab") {
+      event.preventDefault();
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       hooks.onSubmit();
@@ -176,9 +206,18 @@ export function buildEntry(entry) {
   root.appendChild(main);
 
   entry.dom = { root: root, num: num, input: input, output: output };
+  // A rebuilt box starts with its caret at the end of the text. Put the entry's own caret
+  // and selection back, so a rebuild (inserting, deleting or duplicating an entry) leaves
+  // the caret where the user left it instead of at the end of the expression.
   if (entry.caret === null || entry.caret === undefined || entry.caret > input.value.length) {
     entry.caret = input.value.length;
   }
+  let selStart =
+    entry.selStart === null || entry.selStart === undefined ? entry.caret : entry.selStart;
+  let selEnd = entry.selEnd === null || entry.selEnd === undefined ? entry.caret : entry.selEnd;
+  selStart = Math.max(0, Math.min(selStart, input.value.length));
+  selEnd = Math.max(selStart, Math.min(selEnd, input.value.length));
+  input.setSelectionRange(selStart, selEnd);
   return root;
 }
 
@@ -278,7 +317,38 @@ export function wireManipulateBlock(block) {
 export function focusEntry(entry) {
   if (!entry || !entry.dom) return;
   setActive(entry);
-  entry.dom.input.focus();
+  focusInput(entry);
+}
+
+// Gives the entry the caret. Two things have to line up, and only the first one is the
+// web layer's to keep: the field holds the DOM focus, so the next key, the selection and
+// the assist bar all speak about this entry, and the window has the focus, without which
+// the field draws no caret whatever its DOM state. The WebView takes the window focus only
+// when a finger lands in it, so the shell is asked for it whenever it is missing.
+export function focusInput(entry) {
+  if (!entry || !entry.dom) return;
+  const input = entry.dom.input;
+  const hadWindowFocus = document.hasFocus();
+  if (document.activeElement !== input) input.focus({ preventScroll: true });
+  if (!hadWindowFocus) nativeCall("focusWebView");
+}
+
+// A textarea scrolls to the caret when the user types into it and when it is focused, but
+// a command that writes the value and then places the caret gets neither: a key pressed
+// past the last visible line leaves the caret below the box, in a field that is scrolled
+// to its start. Recycling the focus is how the native code is asked to bring the caret
+// back. `preventScroll` must stay off here, since it also cancels the scroll inside the
+// field. Only a field that is focused and whose content overflows has anything to reveal,
+// and the native scroll is minimal, so a caret that is already on screen stays put.
+export function revealCaret(entry) {
+  if (!entry || !entry.dom) return;
+  const input = entry.dom.input;
+  if (document.activeElement !== input) return;
+  if (input.scrollHeight <= input.clientHeight + 2) return;
+  entry.revealing = true;
+  input.blur();
+  input.focus();
+  entry.revealing = false;
 }
 
 export function scrollEntryIntoView(entry) {
