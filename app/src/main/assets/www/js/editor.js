@@ -6,22 +6,22 @@
 import {
   activeEntry,
   addEntry,
-  autoGrow,
   focusEntry,
-  focusInput,
   renderNotebook,
-  revealCaret,
   scrollEntryIntoView,
+  selectionOf,
+  setEntrySelection,
   updateTitle,
   wireManipulate,
 } from "./entries.js";
-import { evaluateEntry, submitActive } from "./evaluation.js";
-import { recordEdit, redoEntry, undoEntry } from "./history.js";
-import * as WoxiKeyboard from "./keyboard.js";
+import { attachPlots, clearOutput, evaluateEntry, submitActive } from "./evaluation.js";
+import { redoEntry, undoEntry } from "./history.js";
+import { EXAMPLES } from "./keyboard-pages.js";
 import { persist } from "./notebook-store.js";
+import * as WoxiPlot from "./plot-interact.js";
 import { nativeCall, runtime, state, toast } from "./runtime.js";
 import { closeSheet } from "./sheets.js";
-import { refreshAssist, selectionOf, selectRange } from "./typing.js";
+import { replaceInEntry, selectRange } from "./typing.js";
 
 const EMPTY_PAIRS = ["()", "[]", "{}", '""'];
 
@@ -44,48 +44,31 @@ function insertText(text, caretOffset, key) {
     text = text.slice(0, at) + value.slice(start, end) + text.slice(at);
     after = 0;
   }
-  const caret = start + Math.max(0, text.length - after);
   // One character is typing and joins the current word. A pair or a whole call is one
-  // structural step of its own.
-  recordEdit(entry, text.length > 1 ? "edit" : "type", caret);
-  input.value = value.slice(0, start) + text + value.slice(end);
-  entry.caret = caret;
-  entry.selStart = caret;
-  entry.selEnd = caret;
-  input.setSelectionRange(caret, caret);
-  focusInput(entry);
-  entry.input = input.value;
-  autoGrow(input);
-  // Growing resets the scroll position, so the caret is revealed afterwards.
-  revealCaret(entry);
-  state.dirty = true;
-  updateTitle();
-  persist();
-  refreshAssist();
+  // structural step of its own. The shared writer records, focuses, grows, persists
+  // and refreshes the assist.
+  replaceInEntry(entry, start, end, text, text.length - after, text.length > 1 ? "edit" : "type");
 }
 
 function runTemplate(text) {
   const entry = activeEntry();
   if (!entry || !entry.dom) return;
-  recordEdit(entry, "edit");
-  entry.dom.input.value = text;
-  entry.input = text;
-  entry.caret = text.length;
-  entry.selStart = text.length;
-  entry.selEnd = text.length;
-  entry.dom.input.setSelectionRange(text.length, text.length);
-  autoGrow(entry.dom.input);
-  focusInput(entry);
-  revealCaret(entry);
-  state.dirty = true;
-  updateTitle();
-  persist();
-  void evaluateEntry(entry);
+  if (state.evaluating) {
+    toast("Evaluation in progress");
+    return;
+  }
+  state.evaluating = true;
+  replaceInEntry(entry, 0, entry.dom.input.value.length, text, text.length, "edit");
+  void evaluateEntry(entry)
+    .catch(function () {})
+    .finally(function () {
+      state.evaluating = false;
+    });
 }
 
 function gatherTemplates() {
   const list = [];
-  const examples = WoxiKeyboard.EXAMPLES || [];
+  const examples = EXAMPLES || [];
   for (let i = 0; i < examples.length; i += 1) {
     const example = examples[i];
     if (!example.insert) continue;
@@ -115,20 +98,8 @@ function backspace() {
   }
   // Deleting a pair is one structural step. Deleting one character joins the previous
   // deletion of the same word, like typing does.
-  recordEdit(entry, end - start > 1 ? "edit" : "delete", start);
-  input.value = input.value.slice(0, start) + input.value.slice(end);
-  entry.caret = start;
-  entry.selStart = start;
-  entry.selEnd = start;
-  input.setSelectionRange(start, start);
-  focusInput(entry);
-  entry.input = input.value;
-  autoGrow(input);
-  revealCaret(entry);
-  state.dirty = true;
-  updateTitle();
-  persist();
-  refreshAssist();
+  if (start === end) return;
+  replaceInEntry(entry, start, end, "", 0, end - start > 1 ? "edit" : "delete");
 }
 
 function handleKeyLongPress(key) {
@@ -136,7 +107,14 @@ function handleKeyLongPress(key) {
   let wrapped = false;
   // A suggestion chip carries its name and what the engine knows about it.
   if (key.action === "assist" && key.detail && key.detail.kind === "accept") {
-    wrapped = runtime.assist.wrap(key.detail.name, key.detail.arity, key.detail.type) === true;
+    wrapped =
+      runtime.assist.wrap(
+        key.detail.name,
+        key.detail.arity,
+        key.detail.type,
+        key.detail.option === true,
+        key.detail.callOption === true
+      ) === true;
   } else if (
     // A symbol key whose insert has no caret marker is a complete call (`Break[]`): it
     // has no argument to spell out or wrap.
@@ -150,9 +128,8 @@ function handleKeyLongPress(key) {
   }
   if (wrapped) return true;
   // A hold with nothing to wrap is the tap. The keyboard performs it on release, so the
-  // caret it places survives the end of the gesture. Returning the answer it expects is
-  // what asks for that.
-  return "tap";
+  // caret it places survives the end of the gesture. `false` says no skeleton was written.
+  return false;
 }
 
 function newEntryBelow() {
@@ -166,9 +143,13 @@ function newEntryBelow() {
 function duplicateActive() {
   const entry = activeEntry();
   if (!entry || !entry.dom) return;
+  // The copied markup addresses the same plot handles. Seed the new controllers with
+  // what the original already has, or the duplicate is a still picture.
+  const seeds = WoxiPlot.seedsOf(entry.dom.output);
   const copy = addEntry(entry.input, { index: state.entries.indexOf(entry) + 1 });
   copy.output = entry.output;
   copy.dom.output.innerHTML = entry.output || "";
+  attachPlots(copy, null, seeds);
   wireManipulate(copy.dom.root);
   focusEntry(copy);
   scrollEntryIntoView(copy);
@@ -196,16 +177,15 @@ function deleteActive() {
 function clearActive() {
   const entry = activeEntry();
   if (!entry || !entry.dom) return;
-  recordEdit(entry, "edit");
-  entry.dom.input.value = "";
-  entry.dom.output.innerHTML = "";
-  entry.input = "";
-  entry.output = "";
-  entry.caret = 0;
-  entry.selStart = 0;
-  entry.selEnd = 0;
-  entry.dom.input.setSelectionRange(0, 0);
-  autoGrow(entry.dom.input);
+  const input = entry.dom.input;
+  const hasText = input.value.length > 0;
+  const hasOutput = entry.dom.output.innerHTML !== "";
+  if (!hasText && !hasOutput) return;
+  if (hasText) replaceInEntry(entry, 0, input.value.length, "", 0, "edit");
+  clearOutput(entry);
+  entry.input = input.value;
+  setEntrySelection(entry, 0, 0);
+  input.setSelectionRange(0, 0);
   focusEntry(entry);
   state.dirty = true;
   updateTitle();
@@ -240,19 +220,8 @@ function clipboardOp(op) {
     toast("Copied");
     return;
   }
-  recordEdit(entry, "edit");
-  input.value = end > start ? input.value.slice(0, start) + input.value.slice(end) : "";
-  entry.input = input.value;
-  entry.caret = end > start ? start : 0;
-  entry.selStart = entry.caret;
-  entry.selEnd = entry.caret;
-  input.setSelectionRange(entry.caret, entry.caret);
-  focusInput(entry);
-  autoGrow(input);
-  revealCaret(entry);
-  state.dirty = true;
-  updateTitle();
-  persist();
+  if (end > start) replaceInEntry(entry, start, end, "", 0, "edit");
+  else replaceInEntry(entry, 0, input.value.length, "", 0, "edit");
   toast("Cut");
 }
 
@@ -273,37 +242,19 @@ function mapCaret(before, after, caret) {
 
 async function formatCodes(codes) {
   if (!runtime.engine) return codes;
-  try {
-    const reply = await runtime.engine.query("format_request", { codes: codes });
-    const formatted = reply?.status === "ok" ? reply.content?.codes : null;
-    if (!formatted || formatted.length !== codes.length) return codes;
-    return formatted;
-  } catch {
-    return codes;
-  }
+  const reply = await runtime.engine.query("format_request", { codes: codes }).catch(() => null);
+  const formatted = reply?.status === "ok" ? reply.content?.codes : null;
+  if (!formatted || formatted.length !== codes.length) return codes;
+  return formatted;
 }
 
 function rewriteEntry(entry, text) {
   const before = entry.dom.input.value;
   const selection = selectionOf(entry);
   const caret = mapCaret(before, text, selection.caret);
-  recordEdit(entry, "edit");
-  entry.dom.input.value = text;
-  entry.input = text;
-  entry.caret = caret;
-  entry.selStart = caret;
-  entry.selEnd = caret;
-  entry.dom.input.setSelectionRange(caret, caret);
-  autoGrow(entry.dom.input);
   // Formatting every entry in the notebook must not move the caret into the ones that
-  // are not being edited.
-  if (entry.id === state.activeId) {
-    focusInput(entry);
-    revealCaret(entry);
-  }
-  state.dirty = true;
-  updateTitle();
-  persist();
+  // are not being edited. `replaceInEntry` focuses only the active entry.
+  replaceInEntry(entry, 0, before.length, text, caret, "edit");
 }
 
 async function formatEntry() {
@@ -311,12 +262,17 @@ async function formatEntry() {
   if (!entry || !entry.dom || !entry.dom.input.value.trim()) return;
   const text = entry.dom.input.value;
   const codes = await formatCodes([text]);
+  // The user may type while the formatter runs. Never replace a newer text with a
+  // formatted copy of the older one.
+  if (entry.dom.input.value !== text) {
+    toast("Entry changed; not formatted");
+    return;
+  }
   if (!codes[0] || codes[0] === text) {
     toast("Already formatted");
     return;
   }
   rewriteEntry(entry, codes[0]);
-  refreshAssist();
   toast("Formatted");
 }
 
@@ -325,20 +281,25 @@ async function formatNotebook() {
     return entry.dom && entry.dom.input.value.trim();
   });
   if (!entries.length) return;
-  const codes = entries.map(function (entry) {
+  const before = entries.map(function (entry) {
     return entry.dom.input.value;
   });
-  const formatted = await formatCodes(codes);
+  const formatted = await formatCodes(before);
   let changed = 0;
+  let skipped = 0;
   for (let i = 0; i < entries.length; i += 1) {
-    if (!formatted[i] || formatted[i] === entries[i].dom.input.value) continue;
+    if (entries[i].dom.input.value !== before[i]) {
+      skipped += 1;
+      continue;
+    }
+    if (!formatted[i] || formatted[i] === before[i]) continue;
     rewriteEntry(entries[i], formatted[i]);
     changed += 1;
   }
-  refreshAssist();
-  toast(
-    changed ? "Formatted " + changed + (changed === 1 ? " entry" : " entries") : "Already formatted"
-  );
+  const changedText = changed
+    ? "Formatted " + changed + (changed === 1 ? " entry" : " entries")
+    : "Already formatted";
+  toast(skipped ? changedText + "; skipped " + skipped + " changed" : changedText);
 }
 
 function jumpToDefinition(name) {
@@ -398,12 +359,8 @@ function handleKeyAction(action, data) {
 }
 
 export {
-  backspace,
   clearActive,
-  clipboardOp,
-  deleteActive,
   duplicateActive,
-  formatCodes,
   formatEntry,
   formatNotebook,
   gatherTemplates,
@@ -412,8 +369,5 @@ export {
   handleKeyLongPress,
   insertText,
   jumpToDefinition,
-  mapCaret,
-  newEntryBelow,
-  rewriteEntry,
   runTemplate,
 };

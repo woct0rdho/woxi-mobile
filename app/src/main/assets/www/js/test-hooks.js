@@ -3,18 +3,82 @@
 // DOM, services and plot controllers. `createTestAction` takes only the two app-level sheets it
 // cannot import (the menu and its theme options).
 
-import { formatEntry, formatNotebook, goToDefinition, handleKeyAction } from "./editor.js";
-import { activeEntry, addEntry, autoGrow, focusEntry, renderNotebook } from "./entries.js";
+import { formatEntry, formatNotebook, goToDefinition } from "./editor.js";
+import {
+  activeEntry,
+  addEntry,
+  autoGrow,
+  focusEntry,
+  renderNotebook,
+  selectionOf,
+  setEntrySelection,
+} from "./entries.js";
 import { evaluateAll, evaluateEntry } from "./evaluation.js";
 import { canRedo, canUndo, redoEntry, undoEntry } from "./history.js";
-import * as WoxiKeyboard from "./keyboard.js";
+import { SHIFT_NAMES } from "./keyboard.js";
+import { BARS, CONTEXT_PAGE, PAGES } from "./keyboard-pages.js";
 import * as WoxiNotebook from "./notebook.js";
 import { loadNotebookFromText } from "./notebook-store.js";
 import { perfLine, plotAction } from "./plot-hooks.js";
 import * as WoxiPlot from "./plot-interact.js";
+import { refreshAssist } from "./refresh.js";
 import { els, log, nativeCall, runtime, state } from "./runtime.js";
 import { resolveTheme, setTheme } from "./theme.js";
-import { readActiveText, refreshAssist, selectRange } from "./typing.js";
+import { readActiveText, selectRange } from "./typing.js";
+
+// The key on the page or bar page currently on screen, if any. A label can exist on
+// several pages. A tap can only reach the visible one.
+function findVisibleKey(label) {
+  const page = PAGES[runtime.keyboard.pageId];
+  for (let i = 0; page && i < page.keys.length; i++) {
+    const key = page.keys[i];
+    if (key.label === label || key.shiftLabel === label) return { key: key, page: page.id };
+  }
+  const barKeys = runtime.keyboard.barKeysOf(runtime.keyboard.barPage);
+  for (let k = 0; k < barKeys.length; k++) {
+    if (barKeys[k].label === label) {
+      return { key: barKeys[k], page: "bar" + (runtime.keyboard.barPage + 1) };
+    }
+  }
+  return null;
+}
+
+// Put text in the active entry the way a user would leave it after typing: focused, with
+// the caret at the end and both the model and the textarea agreeing on the selection.
+function setActiveText(text) {
+  const entry = activeEntry();
+  if (!entry || !entry.dom) return null;
+  entry.dom.input.value = text;
+  entry.input = text;
+  setEntrySelection(entry, text.length, text.length);
+  entry.dom.input.focus();
+  entry.dom.input.setSelectionRange(text.length, text.length);
+  autoGrow(entry.dom.input);
+  return entry;
+}
+
+// Every key on every page and bar page, so the device harness can press one by label.
+// The context page lives on the Keyboard instance rather than in BARS. Pass it in to
+// search what is on screen.
+function findKey(label, contextKeys) {
+  for (const id of Object.keys(PAGES)) {
+    const keys = PAGES[id].keys;
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i].label === label || keys[i].shiftLabel === label) {
+        return { key: keys[i], page: id };
+      }
+    }
+  }
+  const barPages = contextKeys ? [contextKeys, ...BARS.slice(CONTEXT_PAGE + 1)] : BARS;
+  for (let b = 0; b < barPages.length; b++) {
+    for (let k = 0; k < barPages[b].length; k++) {
+      if (barPages[b][k].label === label) {
+        return { key: barPages[b][k], page: "bar" + (b + 1) };
+      }
+    }
+  }
+  return null;
+}
 
 function domSummary() {
   let outputs = 0;
@@ -71,16 +135,11 @@ export function createTestAction(menu) {
     }
     switch (action) {
       case "insert": {
-        const entry = activeEntry();
-        if (!entry || !entry.dom) {
+        const entry = setActiveText(argument || "");
+        if (!entry) {
           log("insert: no active entry");
           return;
         }
-        entry.dom.input.value = argument || "";
-        entry.input = argument || "";
-        entry.caret = entry.input.length; // keep the caret at the end, as a user would
-        entry.dom.input.focus();
-        autoGrow(entry.dom.input);
         if (argument) {
           void evaluateEntry(entry).then(
             function () {
@@ -94,19 +153,13 @@ export function createTestAction(menu) {
         break;
       }
       case "type": {
-        // Puts text in the active entry without evaluating it: what the user has typed
+        // Put text in the active entry without evaluating it: what the user has typed
         // so far, for the assist bar to describe.
-        const typedEntry = activeEntry();
-        if (!typedEntry || !typedEntry.dom) {
+        const typedEntry = setActiveText(argument || "");
+        if (!typedEntry) {
           log("type: no entry");
           break;
         }
-        typedEntry.dom.input.value = argument || "";
-        typedEntry.input = argument || "";
-        typedEntry.caret = typedEntry.input.length;
-        typedEntry.dom.input.focus();
-        typedEntry.dom.input.setSelectionRange(typedEntry.caret, typedEntry.caret);
-        autoGrow(typedEntry.dom.input);
         refreshAssist();
         log("type: " + typedEntry.input);
         break;
@@ -133,12 +186,11 @@ export function createTestAction(menu) {
                 "ms eval=" +
                 Math.round(nowMs() - tEval) +
                 "ms engine=" +
-                added.engineMs +
-                "ms render=" +
-                added.renderMs +
-                "ms json=" +
-                added.bytesJson +
-                "B"
+                (added.perf ? added.perf.engineMs + "ms" : "-") +
+                " render=" +
+                (added.perf ? added.perf.renderMs + "ms" : "-") +
+                " json=" +
+                (added.perf ? added.perf.bytesJson + "B" : "-")
             );
           },
           function (err) {
@@ -147,38 +199,27 @@ export function createTestAction(menu) {
         );
         break;
       }
-      case "key": {
-        // Simulate one of the keyboard action keys: enter | plot | solve | back.
-        handleKeyAction(argument || "enter");
-        log("key: " + argument);
-        break;
-      }
       case "keys": {
         // Press a keyboard key by its label, exactly as a tap would: a key on the current
         // page wins, otherwise the first page/bar page that has that label.
-        const here = WoxiKeyboard.PAGES[runtime.keyboard.pageId];
-        let found = null;
-        for (let k = 0; here && k < here.keys.length; k++) {
-          if (here.keys[k].label === argument) {
-            found = { key: here.keys[k], page: here.id };
-            break;
-          }
-        }
-        if (!found) found = WoxiKeyboard.findKey(argument);
+        let found = findVisibleKey(argument);
+        if (!found) found = findKey(argument, runtime.keyboard.contextKeys);
         if (!found) {
           log("keys: no key labeled " + argument);
           return;
         }
         runtime.keyboard.press(found.key);
+        const now = activeEntry();
+        const selection = now && now.dom ? selectionOf(now) : null;
         log(
           "keys: " +
             argument +
             " page=" +
             found.page +
             " input=" +
-            (activeEntry() && activeEntry().dom ? activeEntry().dom.input.value : "") +
+            (now && now.dom ? now.dom.input.value : "") +
             " caret=" +
-            (activeEntry() && activeEntry().dom ? activeEntry().caret : "?") +
+            (selection ? selection.caret : "?") +
             " shift=" +
             runtime.keyboard.shift +
             " entries=" +
@@ -232,14 +273,13 @@ export function createTestAction(menu) {
           log("assist: none");
           break;
         }
-        let insets = {};
-        try {
-          insets = JSON.parse(window.WoxiNative.getInsets());
-        } catch (err) {
-          insets = {};
-        }
         const dpr = window.devicePixelRatio || 1;
-        const insetTop = insets.top || 0;
+        const insetTop =
+          parseFloat(
+            window
+              .getComputedStyle(window.document.documentElement)
+              .getPropertyValue("--woxi-inset-top")
+          ) || 0;
         const barKeys = document.querySelectorAll("#woxi-kb-actions .woxi-key");
         const barRects = [];
         for (let bk = 0; bk < barKeys.length; bk += 1) {
@@ -249,40 +289,32 @@ export function createTestAction(menu) {
               "@" +
               Math.round((keyRect.left + keyRect.width / 2) * dpr) +
               "," +
-              Math.round(insetTop + (keyRect.top + keyRect.height / 2) * dpr)
+              Math.round((insetTop + keyRect.top + keyRect.height / 2) * dpr)
           );
         }
+        const decision = runtime.assist.contextFor(assistRead);
+        const candidates = runtime.assist.candidates;
+        const past = !!(decision.variant && decision.ctx.argIndex >= decision.variant.length);
         log(
           "assist: state=" +
-            runtime.assist.state +
+            decision.state +
             ' prefix="' +
-            runtime.assist.prefix +
+            (candidates ? candidates.prefix : "") +
             '"' +
             " context=" +
-            (function () {
-              // What the bar's own decision function makes of this text and caret, so a
-              // test can see why a row is showing.
-              const decision = runtime.assist.contextFor(assistRead);
-              return (
-                (decision.ctx.head || "-") +
-                "/arg" +
-                decision.ctx.argIndex +
-                "/" +
-                (decision.variant ? decision.variant.length + " slots" : "no variant") +
-                "/" +
-                (decision.past ? "past" : "inside") +
-                "/" +
-                decision.state
-              );
-            })() +
+            (decision.ctx.head || "-") +
+            "/arg" +
+            decision.ctx.argIndex +
+            "/" +
+            (decision.variant ? decision.variant.length + " slots" : "no variant") +
+            "/" +
+            (past ? "past" : "inside") +
             " matches=" +
-            (runtime.assist.matches && runtime.assist.matches.names
-              ? runtime.assist.matches.names.slice(0, 6).join(",")
-              : "") +
+            (candidates && candidates.names ? candidates.names.slice(0, 6).join(",") : "") +
             " caret=" +
             assistRead.caret +
             " chips=" +
-            (runtime.assist.details || [])
+            (candidates && candidates.details ? candidates.details : [])
               .slice(0, 3)
               .map(function (detail) {
                 return (
@@ -296,13 +328,13 @@ export function createTestAction(menu) {
             " stored=" +
             (function () {
               const now = activeEntry();
-              return now ? now.caret + "/" + now.selStart + "/" + now.selEnd : "-";
+              return now ? now.selStart + "/" + now.selEnd : "-";
             })() +
             ' text="' +
             assistRead.code.slice(0, 40) +
             '"' +
             " issues=" +
-            runtime.assist.issues.length +
+            runtime.assist.issues.items.length +
             " defs=" +
             runtime.assist.definitions.length +
             " bar=" +
@@ -335,8 +367,9 @@ export function createTestAction(menu) {
           log("assistaccept: no assist");
           break;
         }
+        const candidates = runtime.assist.candidates;
         const acceptName =
-          argument || (runtime.assist.matches.names.length ? runtime.assist.matches.names[0] : "");
+          argument || (candidates && candidates.names.length ? candidates.names[0] : "");
         if (!acceptName) {
           log("assistaccept: no match");
           break;
@@ -350,10 +383,10 @@ export function createTestAction(menu) {
           log("assistsheet: no assist");
           break;
         }
-        runtime.assist.openSheet(argument || "all");
+        runtime.assist.openSheet(argument || "matches");
         log(
           "assistsheet: " +
-            (argument || "all") +
+            (argument || "matches") +
             " rows=" +
             document.querySelectorAll(
               "#woxi-assist-body [data-assist-insert],#woxi-assist-body [data-assist-template]"
@@ -364,17 +397,6 @@ export function createTestAction(menu) {
       case "assistclose": {
         if (runtime.assist) runtime.assist.closeSheet();
         log("assistclose");
-        break;
-      }
-      case "press": {
-        // Presses one of the keyboard's keys by label, through the same path a tap takes.
-        const pressed = WoxiKeyboard.findKey(argument);
-        if (!pressed) {
-          log("press: no key " + argument);
-          break;
-        }
-        runtime.keyboard.press(pressed.key);
-        log("press: " + argument + " page=" + pressed.page);
         break;
       }
       case "undo": {
@@ -410,19 +432,19 @@ export function createTestAction(menu) {
         }
         log(
           "diag: items=" +
-            runtime.assist.issues.length +
+            runtime.assist.issues.items.length +
             " codes=" +
-            runtime.assist.issues
+            runtime.assist.issues.items
               .map(function (issue) {
                 return issue.code;
               })
               .join(",") +
             " fixes=" +
-            runtime.assist.issues.filter(function (issue) {
+            runtime.assist.issues.items.filter(function (issue) {
               return issue.fix;
             }).length +
             ' checked="' +
-            runtime.assist.issuesText.slice(0, 30) +
+            runtime.assist.issues.code.slice(0, 30) +
             '"'
         );
         break;
@@ -458,22 +480,6 @@ export function createTestAction(menu) {
         }
         runtime.assist.wrap(argument || "Simplify");
         log("wrap: " + (argument || "Simplify"));
-        break;
-      }
-      case "card": {
-        if (!runtime.assist) {
-          log("card: none");
-          break;
-        }
-        runtime.assist.openSheet(argument || "call");
-        log(
-          "card: " +
-            (argument || "call") +
-            " rows=" +
-            document.querySelectorAll(
-              "#woxi-assist-body [data-assist-example],#woxi-assist-body [data-assist-variant],#woxi-assist-body [data-assist-option]"
-            ).length
-        );
         break;
       }
       case "caret": {
@@ -549,14 +555,14 @@ export function createTestAction(menu) {
               plot +
               " | out=" +
               text +
-              (item.engineMs === undefined
+              (item.perf === undefined
                 ? ""
                 : " | engine=" +
-                  item.engineMs +
+                  item.perf.engineMs +
                   "ms render=" +
-                  item.renderMs +
+                  item.perf.renderMs +
                   "ms json=" +
-                  item.bytesJson +
+                  item.perf.bytesJson +
                   "B") +
               (WoxiPlot.perf(plotEl) ? " | perf=" + perfLine(WoxiPlot.perf(plotEl)) : "")
           );
@@ -746,7 +752,7 @@ export function createTestAction(menu) {
           "shift: state=" +
             runtime.keyboard.shift +
             " (" +
-            ["off", "one shot", "locked"][runtime.keyboard.shift] +
+            SHIFT_NAMES[runtime.keyboard.shift] +
             ")"
         );
         break;
@@ -774,9 +780,9 @@ export function createTestAction(menu) {
         break;
       case "rebuild": {
         // Rebuilds the notebook from the output HTML it keeps, the way deleting an entry or a
-        // restored session does. The plots are re-attached without the samples their evaluation
-        // carried, so each comes back as markup alone (`plotstate` shows `prepared: false`) and
-        // has to ask for them again on its first gesture.
+        // restored session does. `renderNotebook` hands the controllers' seeds to the new
+        // elements, so a plot that was live comes back drawn. One that never had a controller
+        // stays static markup.
         renderNotebook();
         log("rebuild: " + state.entries.length + " entries");
         break;

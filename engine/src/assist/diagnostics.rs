@@ -1,6 +1,6 @@
 //! Diagnostics: Woxi's own analysis of one entry, with the fix a spelling hint implies.
 
-use crate::assist::complete::remember_usage;
+use crate::assist::complete::byte_to_utf16;
 use crate::assist::status::is_complete_status;
 use crate::json::{json_escape, json_field_text};
 
@@ -14,7 +14,6 @@ pub(crate) fn diagnostics_content(json: &str) -> String {
     use woxi::lsp::analysis;
 
     let code = json_field_text(json, "code").unwrap_or_default();
-    remember_usage(&code);
     let status = is_complete_status(&code);
     if status == "incomplete" {
         return "{\"status\":\"incomplete\",\"items\":[]}".to_string();
@@ -40,24 +39,17 @@ pub(crate) fn diagnostics_content(json: &str) -> String {
                         ",\"fix\":{{\"label\":\"Replace with {}\",\"insert\":\"{}\",\"start\":{},\"end\":{}}}",
                         json_escape(suggestion),
                         json_escape(suggestion),
-                        token.start,
-                        token.end
+                        byte_to_utf16(&code, token.start),
+                        byte_to_utf16(&code, token.end)
                     );
                 }
             }
         }
         rows.push(format!(
-            "{{\"start\":{},\"end\":{},\"severity\":\"{severity}\",\"code\":\"{}\",\"message\":\"{}\"{fix}}}",
-            item.range.0,
-            item.range.1,
+            "{{\"severity\":\"{severity}\",\"code\":\"{}\",\"message\":\"{}\"{fix}}}",
             json_escape(item.code),
             json_escape(&item.message)
         ));
     }
-    format!(
-        " {{\"status\":\"{status}\",\"items\":[{}]}}",
-        rows.join(",")
-    )
-    .trim_start()
-    .to_string()
+    format!("{{\"status\":\"{status}\",\"items\":[{}]}}", rows.join(","))
 }

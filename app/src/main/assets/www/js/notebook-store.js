@@ -2,11 +2,12 @@
 // operations behind New / Open / Save. The entries live in the shared `state`. This module
 // only reads and replaces the list and asks the entry view to render it.
 
-import { addEntry, autoGrowAll, focusEntry, updateTitle } from "./entries.js";
+import { addEntry, autoGrowAll, focusEntry, renderNotebook, updateTitle } from "./entries.js";
 import * as WoxiNotebook from "./notebook.js";
 import { log, nativeCall, runtime, state, toast } from "./runtime.js";
 
 const STORAGE_KEY = "woxi.notebook.v1";
+const PERSIST_DEBOUNCE_MS = 250;
 let persistTimer = null;
 
 export function persist() {
@@ -26,7 +27,7 @@ export function persist() {
     } catch (err) {
       log("persist failed: " + err.message);
     }
-  }, 250);
+  }, PERSIST_DEBOUNCE_MS);
 }
 
 export function restore() {
@@ -45,7 +46,7 @@ export function restore() {
       state.settings.theme = data.settings.theme;
     }
     state.entries = (data.entries || []).map(function (entry) {
-      return { id: state.nextId++, input: String(entry.input || ""), collapsed: false };
+      return { id: state.nextId++, input: String(entry.input || "") };
     });
     return state.entries.length > 0;
   } catch (err) {
@@ -59,6 +60,11 @@ export function newNotebook() {
   state.fileName = null;
   state.entries = [];
   state.dirty = false;
+  // The entries and the engine session are new. Nothing the assist learned about the
+  // previous notebook (definitions, options, cached matches) applies to this one.
+  runtime.assist?.invalidate();
+  // The native side remembers the last SAF file. A new notebook must not overwrite it.
+  nativeCall("clearNotebookFile");
   addEntry("", {});
   focusEntry(state.entries[0]);
   updateTitle();
@@ -70,11 +76,11 @@ export function newNotebook() {
   }
 }
 
-export function saveNotebook() {
+export function saveNotebook(asNew) {
   const name = state.fileName || WoxiNotebook.suggestFileName(state.title);
   const json = WoxiNotebook.serialize(state);
   const base64 = WoxiNotebook.utf8ToBase64(json);
-  nativeCall("saveFile", name, base64, WoxiNotebook.MIME);
+  nativeCall(asNew ? "saveFileAs" : "saveFile", name, base64);
 }
 
 export function openNotebook() {
@@ -91,11 +97,17 @@ export async function loadNotebookFromText(text, fileName, evaluateAll) {
   state.entries = [];
   state.nextId = 1;
   notebook.entries.forEach(function (entry) {
-    addEntry(entry.input, {});
+    addEntry(entry.input, { render: false });
   });
+  if (state.entries.length) renderNotebook();
+  else addEntry("", {});
   state.dirty = false;
   updateTitle();
   persist();
+  // The assist's definitions, options and completion cache described the old entries.
+  // `evaluateAll` would clear them per evaluated entry, but an empty notebook never gets
+  // there, so do it before the new notebook is evaluated.
+  runtime.assist?.invalidate();
   autoGrowAll();
   if (notebook.skippedCells) {
     log("opened " + fileName + ": skipped " + notebook.skippedCells + " non-code cell(s)");

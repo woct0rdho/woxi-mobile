@@ -22,7 +22,7 @@ fn main() {
     let mut names = BTreeSet::new();
     let mut heads = 0usize;
     let mut with_options = 0usize;
-    for name in woxi::evaluator::functions::get_builtin_function_names() {
+    for name in woxi::evaluator::functions::all_builtin_symbol_names() {
         if !woxi::evaluator::dispatch::arg_count::takes_options(name) {
             continue;
         }

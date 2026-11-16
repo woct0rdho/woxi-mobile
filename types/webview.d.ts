@@ -18,7 +18,7 @@ declare global {
       [name: string]: ((...args: any[]) => void) | undefined;
     };
     WoxiApp?: {
-      testAction: (action: string, argument?: string) => void;
+      testAction?: (action: string, argument?: string) => void;
       onNativeBack: () => boolean;
     };
   }

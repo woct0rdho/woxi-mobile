@@ -16,7 +16,7 @@
       // first run
     }
     if (mode === 'light') dark = false;
-    else if (mode !== 'dark') dark = !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches;
+    else if (mode !== 'dark') dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
   })();
 </script>

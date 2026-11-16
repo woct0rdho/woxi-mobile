@@ -2,45 +2,30 @@
 // describes, programmatic replacements, and the bar refreshes. It also keeps the entry next
 // to the keyboard when the field is focused.
 
-import { activeEntry, autoGrow, focusInput, revealCaret, updateTitle } from "./entries.js";
+import {
+  activeEntry,
+  autoGrow,
+  focusInput,
+  revealCaret,
+  selectionOf,
+  setEntrySelection,
+  updateTitle,
+} from "./entries.js";
 import { recordEdit } from "./history.js";
 import { persist } from "./notebook-store.js";
-import { els, runtime, state } from "./runtime.js";
+import { refreshAssist } from "./refresh.js";
+import { els, state } from "./runtime.js";
 
-export function selectionOf(entry) {
-  const input = entry.dom.input;
-  const length = input.value.length;
-  let caret = entry.caret;
-  let selStart = entry.selStart;
-  let selEnd = entry.selEnd;
-  if (
-    window.document.activeElement === input &&
-    input.selectionStart !== null &&
-    input.selectionStart !== undefined
-  ) {
-    caret = input.selectionStart;
-    selStart = input.selectionStart;
-    selEnd = input.selectionEnd;
-  }
-  if (caret === null || caret === undefined) caret = length;
-  if (selStart === null || selStart === undefined) selStart = caret;
-  if (selEnd === null || selEnd === undefined) selEnd = caret;
-  caret = Math.max(0, Math.min(caret, length));
-  selStart = Math.max(0, Math.min(selStart, length));
-  selEnd = Math.max(selStart, Math.min(selEnd, length));
-  return { caret: caret, selStart: selStart, selEnd: selEnd };
-}
-
-export function recordSelection(entry, immediate) {
+export function recordSelection(entry) {
   const input = entry.dom.input;
   if (input.selectionStart === null || input.selectionStart === undefined) return;
+  const caret = input.selectionStart;
   let end = input.selectionEnd;
-  if (end === null || end === undefined) end = input.selectionStart;
-  entry.caret = input.selectionStart;
-  entry.selStart = input.selectionStart;
-  entry.selEnd = end;
-  if (immediate) refreshAssist();
-  else refreshAssistSoon();
+  if (end === null || end === undefined) end = caret;
+  const unchanged = entry.selStart === caret && entry.selEnd === end;
+  setEntrySelection(entry, caret, end);
+  if (unchanged) return;
+  refreshAssistSoon();
 }
 
 export function readActiveText() {
@@ -55,28 +40,37 @@ export function readActiveText() {
   };
 }
 
-export function replaceRange(start, end, text, caretAfter) {
-  const entry = activeEntry();
+export function replaceInEntry(entry, start, end, text, caretAfter, kind) {
   if (!entry || !entry.dom) return;
-  recordEdit(entry, "edit");
   const input = entry.dom.input;
   const value = input.value;
   start = Math.max(0, Math.min(start, value.length));
   end = Math.max(start, Math.min(end, value.length));
-  input.value = value.slice(0, start) + text + value.slice(end);
+  const next = value.slice(0, start) + text + value.slice(end);
+  // A key at the start of a field, or a command that rewrites the same text, is not
+  // an edit: it must not add an undo step.
+  if (next === value) return;
   const caret = start + (caretAfter === undefined ? text.length : caretAfter);
-  entry.caret = caret;
-  entry.selStart = caret;
-  entry.selEnd = caret;
+  recordEdit(entry, kind || "edit", caret);
+  input.value = next;
+  setEntrySelection(entry, caret, caret);
   input.setSelectionRange(caret, caret);
-  focusInput(entry);
   entry.input = input.value;
   autoGrow(input);
-  revealCaret(entry);
+  if (entry.id === state.activeId) {
+    focusInput(entry);
+    revealCaret(entry);
+  }
   state.dirty = true;
   updateTitle();
   persist();
   refreshAssist();
+}
+
+export function replaceRange(start, end, text, caretAfter) {
+  const entry = activeEntry();
+  if (!entry) return;
+  replaceInEntry(entry, start, end, text, caretAfter, "edit");
 }
 
 export function setCaret(offset) {
@@ -87,9 +81,7 @@ export function setCaret(offset) {
   input.setSelectionRange(at, at);
   focusInput(entry);
   revealCaret(entry);
-  entry.caret = at;
-  entry.selStart = at;
-  entry.selEnd = at;
+  setEntrySelection(entry, at, at);
   refreshAssist();
 }
 
@@ -102,23 +94,14 @@ export function selectRange(start, end) {
   focusInput(entry);
   input.setSelectionRange(start, end);
   revealCaret(entry);
-  entry.caret = end;
-  entry.selStart = start;
-  entry.selEnd = end;
+  setEntrySelection(entry, start, end);
   refreshAssist();
 }
 
-export function refreshBarState() {
-  if (runtime.keyboard) runtime.keyboard.refreshKeyStates();
-}
-
-export function refreshAssist() {
-  if (runtime.assist) runtime.assist.refresh();
-}
-
-export function refreshAssistLater() {
-  setTimeout(refreshAssist, 0);
-}
+const SELECTION_DEBOUNCE_MS = 40;
+const LIFT_MS = 40;
+const LIFT_MARGIN = 12;
+const LIFT_TOLERANCE = 1;
 
 let selectionRefresh = null;
 export function refreshAssistSoon() {
@@ -126,7 +109,7 @@ export function refreshAssistSoon() {
   selectionRefresh = setTimeout(function () {
     selectionRefresh = null;
     refreshAssist();
-  }, 40);
+  }, SELECTION_DEBOUNCE_MS);
 }
 
 export function liftEntry(entry) {
@@ -136,7 +119,7 @@ export function liftEntry(entry) {
     const rect = root.getBoundingClientRect();
     const view = els.notebook.getBoundingClientRect();
     if (rect.height >= view.height) return;
-    const below = rect.bottom - (view.bottom - 12);
-    if (below < -1) root.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, 40);
+    const below = rect.bottom - (view.bottom - LIFT_MARGIN);
+    if (below < -LIFT_TOLERANCE) root.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, LIFT_MS);
 }

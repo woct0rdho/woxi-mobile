@@ -15,7 +15,8 @@
 //
 // Key shape: a `KeySpec` (see `types.js`). `insert` uses `|` to mark the caret.
 
-import { BARS, EXAMPLES, NEXT, OPPOSITE, PAGES } from "./keyboard-pages.js";
+import { BARS, CONTEXT_PAGE, NEXT, OPPOSITE, PAGES } from "./keyboard-pages.js";
+import { el, keepFocus } from "./runtime.js";
 
 const SWIPE_MIN = 26; // px before a drag counts as a swipe
 const SLIDE_MS = 90; // how long a flick takes to slide a page in
@@ -25,12 +26,23 @@ const RUBBER = 0.35; // how far the pages follow a swipe at the end of an axis
 const SHIFT_DOUBLE_TAP = 450; // ms, two taps within this window lock shift
 const LONG_PRESS_MS = 380; // ms before a held key fires its second action
 const LONG_PRESS_SLOP = 10; // px of movement that turns a hold into a swipe
+const CLICK_GUARD_MS = 400; // a swipe or hold must not also press the key under the finger
+const SLIDE_FALLBACK_MS = 80; // extra time after the CSS transition before forcing the end
 const SHIFT_GLYPH = "\u21E7"; // hollow arrow: arms one capital
 const SHIFT_GLYPH_LOCKED = "\u2B06"; // filled arrow: caps lock
 const SHIFT_OFF = 0;
 const SHIFT_ONESHOT = 1; // affects the next key only
 const SHIFT_LOCKED = 2; // stays on, like caps lock
-let suppressClicksUntil = 0; // a swipe must not also press the key under the finger
+const SHIFT_NAMES = ["off", "one shot", "locked"];
+
+// The touch with the given identifier, or null. A keyboard gesture owns one finger.
+// Another finger on the same surface must not move or end it.
+function touchById(list, id) {
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].identifier === id) return list[i];
+  }
+  return null;
+}
 
 // Splits 'Sin[|]' into the text to insert and the caret offset from the end.
 // A backslash escapes the marker, so '\\|' inserts a literal `|` - the Alternatives
@@ -50,19 +62,12 @@ function parseInsert(spec) {
   const head = marker < 0 ? spec : spec.slice(0, marker);
   const tail = marker < 0 ? "" : spec.slice(marker + 1);
   const after = tail.replace(/\\\|/g, "|");
-  return { text: (head + after).replace(/\\\|/g, "|"), caret: after.length };
-}
-
-function el(tag, cls, text) {
-  const node = document.createElement(tag);
-  if (cls) node.className = cls;
-  if (text !== undefined) node.textContent = text;
-  return node;
+  return { text: head.replace(/\\\|/g, "|") + after, caret: after.length };
 }
 
 // Shift changes what a key shows and inserts: on the letters page letters become
 // capitals, `\u03B8` becomes `\u03C6`, and the symbol keys switch to their paired operator
-// (`;` -> `;;`, `_` -> `__`, `/.` -> `//.`, `{ }` -> `<| |>` hmm see the table). Keys on
+// (`;` -> `;;`, `_` -> `__`, `/.` -> `//.`. See the page table for the rest). Keys on
 // the other pages carry no shifted form, so shift leaves them alone.
 function labelFor(key, shifted) {
   if (!shifted) return key.label;
@@ -74,6 +79,7 @@ function labelFor(key, shifted) {
 function insertFor(key, shifted) {
   if (shifted && key.shiftInsert !== undefined) return key.shiftInsert;
   if (key.insert !== undefined) return key.insert;
+  if (key.call) return key.label + "[|]";
   return labelFor(key, shifted);
 }
 
@@ -88,13 +94,6 @@ Keyboard.prototype.watch = function (view, surface) {
     startX = 0,
     startY = 0;
 
-  const touchById = function (list, id) {
-    for (let i = 0; i < list.length; i++) {
-      if (list[i].identifier === id) return list[i];
-    }
-    return null;
-  };
-
   view.addEventListener(
     "touchstart",
     function (event) {
@@ -103,14 +102,18 @@ Keyboard.prototype.watch = function (view, surface) {
       if (active !== null && !touchById(event.touches, active)) {
         active = null;
         dir = null;
-        if (self.slide) self.finishSlide(false);
+        if (self.slide) self.finishSlide();
       }
       if (active !== null || event.changedTouches.length !== 1) return;
       // Recover the same way when a slide was left behind without a finger on it.
       if (self.slide) {
-        if (self.slide.animating) return;
-        self.finishSlide(false);
+        if (self.slide.timer) return;
+        self.finishSlide();
       }
+      // A new gesture starts here. The click guard only has to cover the click of the
+      // gesture that just ended. Keeping the timestamp longer would swallow a deliberate
+      // tap on the next key.
+      self.suppressClicksUntil = 0;
       const t = event.changedTouches[0];
       active = t.identifier;
       startX = t.clientX;
@@ -132,7 +135,7 @@ Keyboard.prototype.watch = function (view, surface) {
         const horizontal = Math.abs(dx) > Math.abs(dy);
         if (surface === "bar" && !horizontal) return; // the bar only slides sideways
         dir = horizontal ? (dx < 0 ? "left" : "right") : dy < 0 ? "up" : "down";
-        suppressClicksUntil = Date.now() + 400; // the drag must not press a key
+        self.suppressClicksUntil = Date.now() + CLICK_GUARD_MS; // the drag must not press a key
         self.beginSlide(surface, dir);
       }
       const along = dir === "left" || dir === "right" ? dx : dy;
@@ -163,8 +166,9 @@ Keyboard.prototype.layerOf = function (surface) {
 };
 
 // The page a swipe in `dir` would show, or null when the axis ends here (the bar loops,
-// so it always has a target). Mirrors applySwipe/applyBarSwipe without changing state.
-Keyboard.prototype.peek = function (surface, dir) {
+// so it always has a target). One function for the drag animation and the commit, so a
+// slide cannot animate to one page and land on another.
+Keyboard.prototype.targetOf = function (surface, dir) {
   if (surface === "bar") {
     if (dir !== "left" && dir !== "right") return null;
     const count = BARS.length;
@@ -176,29 +180,23 @@ Keyboard.prototype.peek = function (surface, dir) {
 
 // Prepares a transition: the incoming page is built into a layer that waits off-view.
 Keyboard.prototype.beginSlide = function (surface, dir) {
-  const target = this.peek(surface, dir);
-  const axis = dir === "left" || dir === "right" ? "x" : "y";
+  const target = this.targetOf(surface, dir);
   const box = this.viewOf(surface).getBoundingClientRect();
   const layer = el(
     "div",
-    surface === "bar"
-      ? "woxi-kb-slide woxi-kb-actions woxi-kb-incoming"
-      : "woxi-kb-slide woxi-kb-keys woxi-kb-incoming"
+    surface === "bar" ? "woxi-kb-slide woxi-kb-actions" : "woxi-kb-slide woxi-kb-keys"
   );
   this.slide = {
     surface: surface,
     dir: dir,
-    axis: axis,
     target: target,
-    forward: dir === "left" || dir === "up",
-    size: axis === "x" ? box.width : box.height,
+    size: dir === "left" || dir === "right" ? box.width : box.height,
     progress: 0,
-    velocity: 0,
-    lastProgress: 0,
     lastTime: Date.now(),
+    speed: 0,
     startTime: Date.now(),
-    animating: false,
-    current: this.layerOf(surface),
+    committed: false,
+    barDirty: false,
     incoming: null,
     timer: 0,
   };
@@ -221,14 +219,17 @@ Keyboard.prototype.beginSlide = function (surface, dir) {
 Keyboard.prototype.updateSlideTransform = function () {
   const slide = this.slide;
   if (!slide) return;
+  const horizontal = slide.dir === "left" || slide.dir === "right";
+  const forward = slide.dir === "left" || slide.dir === "up";
+  const size = slide.size;
   const progress = slide.target === null ? slide.progress * RUBBER : slide.progress;
-  const fn = slide.axis === "x" ? "translateX(" : "translateY(";
+  const fn = horizontal ? "translateX(" : "translateY(";
   // The two layers move in opposite directions: the current page leaves toward the
   // swipe direction, the incoming one arrives from the far edge (and both are on screen
   // while the transition runs).
-  const current = slide.forward ? -progress : progress;
-  const incoming = slide.forward ? slide.size - progress : progress - slide.size;
-  slide.current.style.transform = fn + current + "px)";
+  const current = forward ? -progress : progress;
+  const incoming = forward ? size - progress : progress - size;
+  this.layerOf(slide.surface).style.transform = fn + current + "px)";
   if (slide.incoming) slide.incoming.style.transform = fn + incoming + "px)";
 };
 
@@ -236,8 +237,7 @@ Keyboard.prototype.moveSlide = function (progress, time) {
   const slide = this.slide;
   if (!slide) return;
   const dt = Math.max(1, time - slide.lastTime);
-  slide.velocity = (progress - slide.lastProgress) / dt;
-  slide.lastProgress = progress;
+  slide.speed = (progress - slide.progress) / dt;
   slide.lastTime = time;
   slide.progress = Math.max(0, progress);
   this.updateSlideTransform();
@@ -248,50 +248,61 @@ Keyboard.prototype.endSlide = function (time) {
   const slide = this.slide;
   if (!slide) return;
   const elapsed = Math.max(1, time - slide.startTime);
-  const speed = Math.max(Math.abs(slide.velocity), Math.abs(slide.progress) / elapsed);
+  const speed = Math.max(Math.abs(slide.speed), Math.abs(slide.progress) / elapsed);
   const commit =
     slide.target !== null && (slide.progress > slide.size * COMMIT_RATIO || speed > FLICK_SPEED);
   if (commit) this.applySlideState();
-  this.animateSlide(commit ? slide.size : 0, commit);
+  this.animateSlide(commit ? slide.size : 0);
 };
 
 // Flick without a finger: the automation hooks drive the same path a tap-swipe does.
 Keyboard.prototype.flick = function (surface, dir) {
-  if (this.slide) this.finishSlide(false);
-  if (!this.beginSlide(surface, dir)) return false;
+  if (this.slide) this.finishSlide();
+  if (!this.beginSlide(surface, dir)) {
+    // `beginSlide` created the rubber-band layer even though the axis has no target.
+    // Clear it or the surface stays in the dragging state and swallows clicks.
+    this.finishSlide();
+    return false;
+  }
   this.applySlideState();
-  this.animateSlide(this.slide.size, true);
+  this.animateSlide(this.slide.size);
   return true;
 };
 
 // Applies the state change of the slide that is being committed.
 Keyboard.prototype.applySlideState = function () {
   const slide = this.slide;
+  slide.committed = true;
   if (slide.surface === "bar") this.barPage = slide.target;
   else this.applySwipe(slide.dir);
-  this.slides = (this.slides || 0) + 1;
 };
 
-Keyboard.prototype.animateSlide = function (progress, commit) {
+Keyboard.prototype.animateSlide = function (progress) {
   const slide = this.slide;
   const self = this;
   const view = this.viewOf(slide.surface);
+  const current = this.layerOf(slide.surface);
   view.classList.remove("woxi-kb-dragging");
-  slide.animating = true; // from here on nothing may disturb the slide
-  void slide.current.offsetWidth; // start the transition from the dragged spot
+  void current.offsetWidth; // start the transition from the dragged spot
   slide.progress = progress;
   this.updateSlideTransform();
+  // The CSS transition is disabled for reduced motion, so waiting for its end would
+  // leave the surface in the slide state (and swallow the next tap) for nothing.
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    this.finishSlide();
+    return;
+  }
   const onEnd = function (event) {
-    if (event.target === slide.current) done();
+    if (event.target === current) done();
   };
   const done = function () {
     clearTimeout(slide.timer);
-    slide.current.removeEventListener("transitionend", onEnd);
+    current.removeEventListener("transitionend", onEnd);
     // A timer or transition from an earlier slide must never end a newer one.
-    if (self.slide === slide) self.finishSlide(commit);
+    if (self.slide === slide) self.finishSlide();
   };
-  slide.current.addEventListener("transitionend", onEnd);
-  slide.timer = setTimeout(done, SLIDE_MS + 80);
+  current.addEventListener("transitionend", onEnd);
+  slide.timer = setTimeout(done, SLIDE_MS + SLIDE_FALLBACK_MS);
 };
 
 // Puts the layers back to rest and renders the (possibly new) page in place.
@@ -300,16 +311,24 @@ Keyboard.prototype.finishSlide = function () {
   if (!slide) return;
   this.slide = null;
   const view = this.viewOf(slide.surface);
+  const current = this.layerOf(slide.surface);
   // Reset the layers with the transition switched off: otherwise the reset itself would
   // animate and the viewport would briefly show a half-empty page after every swipe.
   view.classList.add("woxi-kb-dragging");
-  slide.current.style.transform = "";
-  void slide.current.offsetWidth;
+  current.style.transform = "";
+  void current.offsetWidth;
   if (slide.incoming && slide.incoming.parentNode) {
     slide.incoming.parentNode.removeChild(slide.incoming);
   }
-  if (slide.surface === "bar") this.renderBar();
-  else this.renderPad();
+  // A spring-back leaves the current page on screen. Only rebuild when the page
+  // changed or the context page changed while the finger was down. A committed slide
+  // always needs the rest-state DOM for its new page.
+  if (slide.surface === "bar") {
+    if (slide.committed || slide.barDirty) this.renderBar();
+  } else {
+    if (slide.committed) this.renderPad();
+    if (slide.barDirty) this.renderBar();
+  }
   view.classList.remove("woxi-kb-dragging");
 };
 function Keyboard(handlers) {
@@ -318,14 +337,16 @@ function Keyboard(handlers) {
   this.actionsEl = document.getElementById("woxi-kb-actions");
   this.padView = document.getElementById("woxi-kb-pad-view");
   this.barView = document.getElementById("woxi-kb-bar-view");
+  this.padView.style.setProperty("--woxi-slide-ms", SLIDE_MS + "ms");
+  this.barView.style.setProperty("--woxi-slide-ms", SLIDE_MS + "ms");
   this.pageId = "math";
   this.back = null; // { page, dir } - the step the opposite swipe undoes
   this.barPage = 0;
+  this.contextKeys = null; // page 1 while the assist is bound
   this.shift = SHIFT_OFF;
   this.lastShiftTap = 0;
-  this.shiftKeys = [];
   this.slide = null; // the transition that is running, or the one being dragged
-  this.slides = 0; // committed transitions, for the test hooks
+  this.suppressClicksUntil = 0; // a swipe/hold must not also press the key under the finger
   this.watch(this.padView, "pad");
   this.watch(this.barView, "bar");
   this.renderBar();
@@ -367,10 +388,14 @@ Keyboard.prototype.keyClasses = function (key) {
 // Re-applies the state classes to the bar on screen. The buttons are not replaced: a
 // button that disappears under a finger never fires its click.
 Keyboard.prototype.refreshKeyStates = function () {
-  if (!this.barKeys || this.slide) return;
+  if (this.slide) {
+    this.slide.barDirty = true;
+    return;
+  }
+  const keys = this.barKeysOf(this.barPage);
   const buttons = this.actionsEl.children;
-  for (let i = 0; i < buttons.length && i < this.barKeys.length; i += 1) {
-    const classes = this.keyClasses(this.barKeys[i]);
+  for (let i = 0; i < buttons.length && i < keys.length; i += 1) {
+    const classes = this.keyClasses(keys[i]);
     if (buttons[i].className !== classes) buttons[i].className = classes;
   }
 };
@@ -380,22 +405,22 @@ Keyboard.prototype.makeKey = function (key) {
   const classes = this.keyClasses(key);
   const btn = el("button", classes);
   // The context bar renders rich labels (the signature highlights the argument the
-  // caret is in). Every other key is plain text.
+  // caret is in). Every other key is plain text. A shift key shows its mode.
   if (key.html !== undefined) btn.innerHTML = key.html;
-  else btn.textContent = labelFor(key, this.shiftApplies());
+  else if (key.action === "shift") {
+    btn.textContent = this.shift === SHIFT_LOCKED ? SHIFT_GLYPH_LOCKED : SHIFT_GLYPH;
+  } else btn.textContent = labelFor(key, this.shiftApplies());
   btn.type = "button";
   if (key.tooltip) btn.title = key.tooltip;
   btn.setAttribute("data-key", key.label);
-  if (key.action === "shift") btn.setAttribute("data-base", classes);
+  if (key.action === "shift") {
+    if (this.shift === SHIFT_ONESHOT) btn.className += " woxi-key-on";
+    if (this.shift === SHIFT_LOCKED) btn.className += " woxi-key-locked";
+  }
 
-  // A key is a way to type into the entry, not a field of its own. Left to itself a
-  // button takes the focus on press, which blurs the textarea, drops the caret and the
-  // selection handles, and makes the next key speak about a field that no longer has
-  // them. Cancelling the press keeps the focus where the text is going. The click still
-  // arrives.
-  btn.addEventListener("mousedown", function (event) {
-    event.preventDefault();
-  });
+  // A key is a way to type into the entry, not a field of its own. See `keepFocus`:
+  // cancelling the press keeps the caret in the entry, and the click still arrives.
+  keepFocus(btn);
 
   // Holding a key is "more than a tap": a symbol key inserts the call's skeleton, a
   // suggestion chip wraps the selection. When there is no such second action the hold is
@@ -403,8 +428,8 @@ Keyboard.prototype.makeKey = function (key) {
   // down is followed by the browser's end-of-gesture handling, which takes the focus and
   // the selection away from the little caret the press just placed.
   let holdTimer = null;
-  let holdDone = false;
-  let tapOnRelease = false;
+  let holdAction = ""; // "" when there is none, "tap" for the release, "fired" when written
+  let holdId = null; // the finger that owns the hold; other fingers are ignored
   let holdX = 0;
   let holdY = 0;
   const cancelHold = function () {
@@ -418,18 +443,21 @@ Keyboard.prototype.makeKey = function (key) {
     function (event) {
       if (event.touches.length !== 1 || !self.handlers.onLongPress) return;
       const touch = event.touches[0];
+      holdId = touch.identifier;
       holdX = touch.clientX;
       holdY = touch.clientY;
       cancelHold();
-      holdDone = false;
-      tapOnRelease = false;
+      holdAction = "";
       holdTimer = setTimeout(function () {
         holdTimer = null;
-        const answer = self.handlers.onLongPress(key);
-        if (answer === "tap") tapOnRelease = true;
-        else if (answer) {
-          holdDone = true;
-          suppressClicksUntil = Date.now() + 400;
+        const fired = self.handlers.onLongPress(key);
+        if (fired) {
+          holdAction = "fired";
+          self.suppressClicksUntil = Date.now() + CLICK_GUARD_MS;
+        } else {
+          // No skeleton was written: the hold is the tap, performed on release so the
+          // caret survives the end of the gesture.
+          holdAction = "tap";
         }
       }, LONG_PRESS_MS);
     },
@@ -438,8 +466,8 @@ Keyboard.prototype.makeKey = function (key) {
   btn.addEventListener(
     "touchmove",
     function (event) {
-      if (!holdTimer) return;
-      const touch = event.touches.length ? event.touches[0] : null;
+      if (!holdTimer || holdId === null) return;
+      const touch = touchById(event.touches, holdId);
       if (!touch) {
         cancelHold();
         return;
@@ -455,26 +483,28 @@ Keyboard.prototype.makeKey = function (key) {
   );
   btn.addEventListener(
     "touchend",
-    function () {
+    function (event) {
+      if (holdId !== null && !touchById(event.changedTouches, holdId)) return;
       cancelHold();
-      if (!tapOnRelease && !holdDone) return;
-      const tapped = tapOnRelease;
-      tapOnRelease = false;
-      holdDone = false;
+      const action = holdAction;
+      holdAction = "";
+      holdId = null;
+      if (!action) return;
       // The gesture is over. Any click it still delivers is the one being replaced (and a
-      // click can arrive much later than the 400 ms that were set when the hold fired).
-      suppressClicksUntil = Date.now() + 400;
-      if (tapped) self.press(key);
+      // click can arrive much later than the guard set when the hold fired).
+      self.suppressClicksUntil = Date.now() + CLICK_GUARD_MS;
+      if (action === "tap") self.press(key);
       if (self.handlers.onHoldRelease) self.handlers.onHoldRelease(key);
     },
     { passive: true }
   );
   btn.addEventListener(
     "touchcancel",
-    function () {
+    function (event) {
+      if (holdId !== null && !touchById(event.changedTouches, holdId)) return;
       cancelHold();
-      holdDone = false;
-      tapOnRelease = false;
+      holdAction = "";
+      holdId = null;
     },
     { passive: true }
   );
@@ -483,7 +513,7 @@ Keyboard.prototype.makeKey = function (key) {
     event.preventDefault();
     // A drag or a running slide owns the surface. A stray tap (often a second finger)
     // must not press a key under it.
-    if (Date.now() < suppressClicksUntil || self.slide) return;
+    if (Date.now() < self.suppressClicksUntil || self.slide) return;
     self.press(key);
   });
   return btn;
@@ -496,12 +526,13 @@ Keyboard.prototype.renderBar = function () {
 
 // Fills `into` with the buttons of one bar page. The context page changes while the
 // user types (see `setBarKeys`), so its column widths come from the keys themselves.
+Keyboard.prototype.barKeysOf = function (barPage) {
+  return barPage === CONTEXT_PAGE && this.contextKeys ? this.contextKeys : BARS[barPage];
+};
+
 Keyboard.prototype.buildBar = function (barPage, into) {
   const self = this;
-  const keys = BARS[barPage];
-  // The keys of the page on screen, so `refreshKeyStates` can update their classes
-  // without rebuilding them.
-  if (into === this.actionsEl) this.barKeys = keys;
+  const keys = this.barKeysOf(barPage);
   into.className = "woxi-kb-slide woxi-kb-actions";
   into.innerHTML = "";
   into.setAttribute("data-bar", String(barPage + 1));
@@ -520,22 +551,23 @@ Keyboard.prototype.buildBar = function (barPage, into) {
   });
 };
 
-// Replaces one bar page. The context page is rebuilt on every keystroke. When it is
-// the page on screen it is redrawn at once, and a running slide picks up the new keys
-// when it finishes (it reads BARS again).
+// Replaces the context page. It is rebuilt on every keystroke. When it is the page on
+// screen it is redrawn at once, and a running slide picks up the new keys when it
+// finishes (it reads the stored context keys).
 /**
- * @param {number} index
  * @param {import('./types.js').KeySpec[]} keys
  */
-Keyboard.prototype.setBarKeys = function (index, keys) {
-  if (!BARS[index]) return;
-  BARS[index] = keys;
-  if (this.barPage === index && !this.slide) this.renderBar();
+Keyboard.prototype.setBarKeys = function (keys) {
+  this.contextKeys = keys;
+  if (this.slide) {
+    this.slide.barDirty = true;
+    return;
+  }
+  if (this.barPage === CONTEXT_PAGE) this.renderBar();
 };
 
 Keyboard.prototype.renderPad = function () {
   this.keysEl.className = "woxi-kb-slide woxi-kb-keys";
-  this.shiftKeys = [];
   this.buildPage(this.pageId, this.keysEl);
 };
 
@@ -549,14 +581,8 @@ Keyboard.prototype.buildPage = function (pageId, into) {
   into.style.gridTemplateColumns = "repeat(" + page.cols + ", 1fr)";
   for (let i = 0; i < page.keys.length; i++) {
     const node = this.makeKey(page.keys[i]);
-    if (into === this.keysEl && page.keys[i].action === "shift") this.shiftKeys.push(node);
     into.appendChild(node);
   }
-  if (into === this.keysEl) this.updateShiftKeys();
-};
-
-Keyboard.prototype.currentPageId = function () {
-  return this.pageId;
 };
 
 // Shift applies to the letters page only. Other pages always insert what they show.
@@ -568,20 +594,16 @@ Keyboard.prototype.shiftApplies = function () {
 
 // Applies a swipe to the state only (no rendering). true when the page changed.
 Keyboard.prototype.applySwipe = function (dir) {
-  if (this.back && this.back.dir === OPPOSITE[dir]) {
-    // The exact opposite of the swipe that led here: go back, and let the undo be
-    // undone again by the opposite swipe.
-    const left = this.pageId;
-    this.pageId = this.back.page;
-    this.back = { page: left, dir: dir };
-  } else {
-    const next = NEXT[this.pageId][dir];
-    if (!next) return false; // end of the axis: nothing changes, the step is kept
-    this.back = { page: this.pageId, dir: dir };
-    this.pageId = next;
-  }
+  const target = this.targetOf("pad", dir);
+  if (target === null) return false; // end of the axis: nothing changes, the step is kept
+  const left = this.pageId;
+  this.pageId = target;
+  // The page just left is what the opposite swipe undoes. The next opposite swipe can
+  // put it back, so every swipe is reversible.
+  this.back = { page: left, dir: dir };
   // A one-shot shift belongs to the page it was armed on. A lock survives (caps lock).
   if (this.shift === SHIFT_ONESHOT) this.shift = SHIFT_OFF;
+  this.lastShiftTap = 0;
   return true;
 };
 
@@ -610,23 +632,13 @@ Keyboard.prototype.toggleShift = function () {
   this.renderPad(); // the letters change with the mode
 };
 
-Keyboard.prototype.updateShiftKeys = function () {
-  for (let i = 0; i < this.shiftKeys.length; i++) {
-    const node = this.shiftKeys[i];
-    let classes = node.getAttribute("data-base") || "woxi-key woxi-key-fn";
-    if (this.shift === SHIFT_ONESHOT) classes += " woxi-key-on";
-    if (this.shift === SHIFT_LOCKED) classes += " woxi-key-locked";
-    node.className = classes;
-    // Hollow arrow while armed, filled arrow while locked (as on phone keyboards).
-    node.textContent = this.shift === SHIFT_LOCKED ? SHIFT_GLYPH_LOCKED : SHIFT_GLYPH;
-  }
-};
-
 Keyboard.prototype.press = function (key) {
   if (key.action === "shift") {
     this.toggleShift();
     return;
   }
+  // Two shift taps only lock when no other key was typed in between.
+  this.lastShiftTap = 0;
   if (key.action) {
     if (this.handlers.onAction) this.handlers.onAction(key.action, key.detail);
     return;
@@ -650,7 +662,8 @@ Keyboard.prototype.describe = function () {
   for (let i = 0; i < page.keys.length; i++)
     labels.push(labelFor(page.keys[i], this.shiftApplies()));
   const bar = [];
-  for (let b = 0; b < BARS[this.barPage].length; b++) bar.push(BARS[this.barPage][b].label);
+  const barKeys = this.barKeysOf(this.barPage);
+  for (let b = 0; b < barKeys.length; b++) bar.push(barKeys[b].label);
   const padBox = this.keysEl.getBoundingClientRect();
   const barBox = this.actionsEl.getBoundingClientRect();
   return (
@@ -662,8 +675,6 @@ Keyboard.prototype.describe = function () {
     this.shift +
     " cols=" +
     page.cols +
-    " slides=" +
-    this.slides +
     " bar=" +
     (this.barPage + 1) +
     "/" +
@@ -681,22 +692,4 @@ Keyboard.prototype.describe = function () {
   );
 };
 
-// Every key on every page and bar page, so tests can press a key by its label.
-function findKey(label) {
-  for (const id in PAGES) {
-    if (!Object.prototype.hasOwnProperty.call(PAGES, id)) continue;
-    const keys = PAGES[id].keys;
-    for (let i = 0; i < keys.length; i++) {
-      if (keys[i].label === label || keys[i].shiftLabel === label)
-        return { key: keys[i], page: id };
-    }
-  }
-  for (let b = 0; b < BARS.length; b++) {
-    for (let k = 0; k < BARS[b].length; k++) {
-      if (BARS[b][k].label === label) return { key: BARS[b][k], page: "bar" + (b + 1) };
-    }
-  }
-  return null;
-}
-
-export { BARS, EXAMPLES, findKey, Keyboard, NEXT, OPPOSITE, PAGES, parseInsert };
+export { Keyboard, SHIFT_NAMES };

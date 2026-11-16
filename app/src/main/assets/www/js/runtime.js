@@ -26,12 +26,14 @@ export const els = {
   splash: null,
 };
 
-// Refs to the activity's services. They are replaced when the engine restarts or the
-// keyboard is bound, so they live in an object rather than as module bindings.
+// Refs to the activity's services, set once during boot. They live in an object rather
+// than as module bindings because a module cannot assign an imported binding. A page
+// reload builds a fresh page and a fresh set.
 export const runtime = {
   engine: null,
   keyboard: null,
   assist: null,
+  automation: false,
 };
 
 export function el(tag, cls, text) {
@@ -64,18 +66,7 @@ export function nativeCall(name, ...args) {
   const bridge = window.WoxiNative;
   if (!bridge) return undefined;
   try {
-    switch (args.length) {
-      case 0:
-        return bridge[name]();
-      case 1:
-        return bridge[name](args[0]);
-      case 2:
-        return bridge[name](args[0], args[1]);
-      case 3:
-        return bridge[name](args[0], args[1], args[2]);
-      default:
-        return undefined;
-    }
+    return bridge[name](...args);
   } catch (err) {
     if (window.console) window.console.log("[woxi] native " + name + " failed: " + err.message);
     return undefined;
@@ -115,6 +106,7 @@ window.addEventListener("unhandledrejection", function (event) {
 });
 
 let toastTimer = null;
+const TOAST_MS = 1900;
 export function toast(message) {
   if (!els.toast) return;
   els.toast.textContent = message;
@@ -122,5 +114,5 @@ export function toast(message) {
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(function () {
     els.toast.className = "woxi-hidden";
-  }, 1900);
+  }, TOAST_MS);
 }

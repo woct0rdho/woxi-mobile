@@ -6,12 +6,12 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
-import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.widget.Toast
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import kotlin.concurrent.thread
 
 // JavaScript bridge exposed to the web layer as `window.WoxiNative`.
 //
@@ -22,11 +22,22 @@ class NativeBridge(
 ) {
     companion object {
         private const val TAG = "Woxi"
+        private const val PREFS_NOTEBOOK_URI = "notebook_uri"
     }
 
+    private class PendingSave(
+        val bytes: ByteArray,
+        val name: String,
+    )
+
+    @Volatile
     private var webView: WebView? = null
-    private var pendingSaveBytes: ByteArray? = null
-    private var pendingSaveName: String? = null
+
+    private var pendingSave: PendingSave? = null
+
+    @Volatile
+    private var notebookUri: Uri? = null
+    private val prefs by lazy { activity.getSharedPreferences("woxi-files", Context.MODE_PRIVATE) }
 
     fun attach(view: WebView) {
         webView = view
@@ -39,18 +50,6 @@ class NativeBridge(
     fun log(message: String) {
         // Log.d is filtered out for third-party apps on some OEM ROMs.
         Log.w(TAG, "web: $message")
-    }
-
-    // The app uses its own math keyboard (`inputmode="none"` keeps the system IME away).
-    // This is a safety net for WebView versions that still raise the IME on focus.
-    @JavascriptInterface
-    fun hideKeyboard() {
-        activity.runOnUiThread {
-            val view = activity.currentFocus ?: webView
-            if (view == null) return@runOnUiThread
-            val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.hideSoftInputFromWindow(view.windowToken, 0)
-        }
     }
 
     // The window focus, not a DOM element's: a WebView takes it only when a finger lands
@@ -71,8 +70,7 @@ class NativeBridge(
         activity.onTestPageReady()
     }
 
-    @JavascriptInterface
-    fun toast(message: String) {
+    private fun showToast(message: String) {
         activity.runOnUiThread {
             Toast.makeText(activity, message, Toast.LENGTH_SHORT).show()
         }
@@ -108,35 +106,105 @@ class NativeBridge(
     fun saveFile(
         name: String,
         base64: String,
-        mime: String,
+    ) {
+        val bytes = runCatching { Base64.decode(base64, Base64.DEFAULT) }.getOrNull() ?: return
+        val uri = currentNotebookUri()
+        if (uri == null) {
+            saveViaPicker(name, bytes)
+            return
+        }
+        writeNotebook(uri, bytes, name)
+    }
+
+    // Save as always asks for a new document, even when a notebook is already open.
+    @JavascriptInterface
+    fun saveFileAs(
+        name: String,
+        base64: String,
+    ) {
+        val bytes = runCatching { Base64.decode(base64, Base64.DEFAULT) }.getOrNull() ?: return
+        saveViaPicker(name, bytes)
+    }
+
+    private fun saveViaPicker(
+        name: String,
+        bytes: ByteArray,
     ) {
         activity.runOnUiThread {
-            pendingSaveBytes = Base64.decode(base64, Base64.DEFAULT)
-            pendingSaveName = name
+            pendingSave = PendingSave(bytes, name)
             activity.launchCreateNotebook(name)
         }
     }
 
     @JavascriptInterface
+    fun clearNotebookFile() {
+        notebookUri = null
+        prefs.edit().remove(PREFS_NOTEBOOK_URI).apply()
+    }
+
+    @JavascriptInterface
     fun openFile() {
-        activity.runOnUiThread { activity.launchOpenNotebook("application/x-ipynb+json") }
+        activity.runOnUiThread { activity.launchOpenNotebook() }
     }
 
     fun onSaveResult(uri: Uri?) {
-        val bytes = pendingSaveBytes
-        val name = pendingSaveName ?: "Untitled.ipynb"
-        pendingSaveBytes = null
-        pendingSaveName = null
-        if (uri == null || bytes == null) {
-            callJs("onSaveComplete", "false", name)
+        val pending = pendingSave
+        pendingSave = null
+        if (uri == null || pending == null) {
+            callJs("onSaveComplete", "false", pending?.name ?: "Untitled.ipynb")
             return
         }
-        val ok =
-            runCatching {
-                activity.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
-                    ?: error("cannot open output stream")
-            }.isSuccess
-        callJs("onSaveComplete", if (ok) "true" else "false", displayName(uri) ?: name)
+        writeNotebook(uri, pending.bytes, pending.name)
+    }
+
+    // Writes on a worker thread: the notebook is small, but a provider can block for
+    // longer than the UI should. The callback and the remembered URI go back to the UI
+    // thread.
+    private fun writeNotebook(
+        uri: Uri,
+        bytes: ByteArray,
+        name: String,
+    ) {
+        thread(name = "woxi-save") {
+            val ok =
+                runCatching {
+                    activity.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                        ?: error("cannot open output stream")
+                }.isSuccess
+            val display = displayName(uri) ?: name
+            activity.runOnUiThread {
+                if (ok) rememberNotebookUri(uri)
+                callJs("onSaveComplete", if (ok) "true" else "false", display)
+            }
+        }
+    }
+
+    private fun currentNotebookUri(): Uri? {
+        notebookUri?.let { return it }
+        val stored = prefs.getString(PREFS_NOTEBOOK_URI, null) ?: return null
+        return runCatching { Uri.parse(stored) }.getOrNull()?.also { notebookUri = it }
+    }
+
+    private fun rememberNotebookUri(uri: Uri) {
+        notebookUri = uri
+        prefs.edit().putString(PREFS_NOTEBOOK_URI, uri.toString()).apply()
+        persistUriPermission(uri)
+    }
+
+    // A document picked through SAF is usable again after a restart only if its grant is
+    // persisted. Try the combined grant first. Some providers grant only one direction.
+    private fun persistUriPermission(uri: Uri) {
+        val flags =
+            listOf(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        for (flag in flags) {
+            if (runCatching { activity.contentResolver.takePersistableUriPermission(uri, flag) }.isSuccess) {
+                return
+            }
+        }
     }
 
     fun onOpenResult(uri: Uri?) {
@@ -153,12 +221,13 @@ class NativeBridge(
             }
         result
             .onSuccess { bytes ->
+                rememberNotebookUri(uri)
                 val name = displayName(uri) ?: "Untitled.ipynb"
                 callJs("onFileOpened", name, Base64.encodeToString(bytes, Base64.NO_WRAP))
             }.onFailure { error ->
                 Log.w(TAG, "open failed", error)
                 callJs("onFileOpened", "", "")
-                toast("Could not read file: ${error.message}")
+                showToast("Could not read file: ${error.message}")
             }
     }
 
@@ -177,11 +246,6 @@ class NativeBridge(
     @JavascriptInterface
     fun setTheme(theme: String) {
         activity.runOnUiThread { activity.applyTheme(theme) }
-    }
-
-    @JavascriptInterface
-    fun setBackHandlerActive(active: Boolean) {
-        activity.runOnUiThread { activity.setBackHandlerActive(active) }
     }
 
     // Evaluates a notebook entry (or re-renders a Manipulate) and answers with the
@@ -212,8 +276,8 @@ class NativeBridge(
         }
     }
 
-    // Typing help: completion, symbol inspection, completeness. Same reply envelope as
-    // the plot messages.
+    // Typing help: completion, inspection, completeness, diagnostics, prototypes, definitions,
+    // formatting and the catalog. Same reply envelope as the plot messages.
     @JavascriptInterface
     fun queryRequest(
         id: Int,
@@ -223,15 +287,6 @@ class NativeBridge(
             callJs("onEngineResult", id.toString(), json)
         }
     }
-
-    // System-bar insets in pixels, so the web layer can pad the keyboard itself.
-    @JavascriptInterface
-    fun getInsets(): String =
-        JSONObject()
-            .apply {
-                put("top", activity.insetTopPx)
-                put("bottom", activity.insetBottomPx)
-            }.toString()
 
     // helpers
 

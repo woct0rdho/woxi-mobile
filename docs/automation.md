@@ -4,12 +4,14 @@ Two ways to drive the app without a finger, and the emulator setup the gesture w
 
 ## Automation hooks
 
-The web layer exposes `window.WoxiApp.testAction(action, argument)`, and `MainActivity.handleTestIntent()` drives it from an intent extra, so the app can be driven on a device without touching the screen:
+The web layer exposes `window.WoxiApp.testAction(action, argument)` on the automation page, and `MainActivity.handleTestIntent()` drives it from an intent extra, so the app can be driven on a device without touching the screen:
 
 ```pwsh
 adb shell am start -n com.woctordho.woximobile/.MainActivity --es woxi_action dump
 adb shell am start -n com.woctordho.woximobile/.MainActivity --es woxi_action keys --es woxi_arg Plot
 ```
+
+The intent hook and the JS test hooks are development features: they only run when Gradle builds with `-PwoxiAutomation=true` (the device tools do this). A release built without that property ignores `woxi_action`, and the page is loaded without the automation flag, so `test-hooks.js` is not fetched and `WoxiApp.testAction` is not exposed.
 
 An action is applied as soon as the page is usable, not after a fixed delay: the web layer reports when boot has finished (after the engine starts), and actions that arrive while a page is loading - on launch, or after `reload` - wait in order for it. Each action ends with a `test: done <action>` log line, so a harness can wait for the action itself rather than for a guessed duration. The log line is also how a failing action is seen (its exception is logged before the marker).
 
@@ -34,14 +36,12 @@ Get-WoxiLog 'plotperf'
 
 ### Entries and text
 
-- `insert <text>` puts the text in the active entry, focuses it and leaves the caret at the end. It does not evaluate.
+- `insert <text>` puts the text in the active entry, focuses it, leaves the caret at the end and evaluates it.
 - `add <text>` appends a new entry with that source and evaluates it, logging the setup and evaluation timings.
-- `type <text>` sets the active entry's text without evaluating it or moving focus, which is what the typing help needs to see a partial expression.
+- `type <text>` sets the active entry's text without evaluating it, focusing the field so the typing help sees the live selection.
 - `caret <at>` puts the caret at a character offset. `caret <start>,<end>` selects a range, the way the selection handles would.
 - `focus` logs whether the window has the focus that draws the caret (`window=`), which element the DOM focuses (`active=`), whether it is the active entry's textarea, and that textarea's selection.
-- `key <enter|plot|solve|back>` presses one of the keyboard's action keys.
-- `keys <label>` presses a key by its label, exactly as a tap would: the current page wins, otherwise the first page or bar page with that label. It logs the input, the caret, shift and the entry count.
-- `press <label>` presses a key by label through the same tap path and logs which page it came from.
+- `keys <label>` presses a key by its label, exactly as a tap would: the current page wins, otherwise the first page or bar page with that label. It logs the page, the input, the caret, shift and the entry count.
 - `format` formats the active entry. `formatall` formats every entry.
 - `wrap <name>` wraps the input in a function (default `Simplify`). `skeleton <name>` inserts the argument skeleton for one (default `Plot`).
 - `undo` and `redo` step the active entry's text history and log whether either is still possible.
@@ -58,7 +58,7 @@ Get-WoxiLog 'plotperf'
 - `theme <system|light|dark>` sets the theme and logs the resolved one.
 - `reload` reloads the page, which is how a WebView in a bad state is cleared without reinstalling.
 - `sheet` opens the menu. `options` opens the options sheet.
-- `card <section>` opens the assistance card on a section and logs how many rows it has.
+- `assistsheet <matches|examples|call|about|issues>` opens the help sheet on that section. The default is Matches. `assistclose` closes it.
 - `slider [fraction]` nudges the first `Manipulate` slider to that fraction of its range (default 0.75), which checks live re-rendering.
 - `scrollto <n>` scrolls entry `n` to the top.
 - `metrics` logs the input box geometry (wrapped lines must not be clipped) and the keyboard geometry (a swipe must not resize it).
@@ -71,9 +71,9 @@ Get-WoxiLog 'plotperf'
 
 ### Typing help
 
-- `assist` dumps the bar state (`idle`, `signature`, `candidates`, `options`, `iterator`), the context decision (`Plot/arg2/2 slots/past`), the prefix, the first matches, the caret, the entry text and the center of every bar key in device pixels, which is what a tap test needs.
+- `assist` dumps the context state (`idle`, `signature`, `candidates`, `options`, `iterator`), the full context decision (`Plot/arg2/2 slots/past`), the candidate prefix and first matches, the caret, the entry text and the center of every bar key in device pixels, which is what a tap test needs.
 - `assistaccept [name]` accepts a match (the first one by default).
-- `assistsheet <all|examples|about>` opens the help sheet on that section. `assistclose` closes it.
+- `assistsheet <matches|examples|call|about|issues>` opens the help sheet on that section. The default is Matches. `assistclose` closes it.
 - `diag` logs the issues the help found: their codes, which have a fix, and the text they were found in.
 
 ### Plots

@@ -52,11 +52,11 @@
 //! could later talk to a real kernel unchanged:
 //!
 //! ```json
-//! {"msg_type":"complete_request","content":{"code":"Plo","cursor_pos":3,"limit":24}}
+//! {"msg_type":"complete_request","content":{"code":"Plo","cursor_pos":3,"limit":24,"notebook_codes":["Plo"]}}
 //! {"msg_type":"complete_reply","status":"ok","content":{
 //!   "matches":["Plot","Plot3D"],"cursor_start":0,"cursor_end":3,
 //!   "metadata":{"_jupyter_types_experimental":[{"text":"Plot",...}],
-//!               "_woxi":[{"implemented":1,"category":"plotting","doc":"..."}]}}}
+//!               "_woxi":[{"status":"implemented","category":"plotting","arity":[1,2],"option":false,"callOption":false}]}}}
 //! ```
 //!
 //! `catalog_request` is a Woxi extension (Jupyter has no message for the whole
@@ -132,7 +132,13 @@ pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_evaluateAll<'f
     _class: JClass<'frame>,
     input: JString<'frame>,
 ) -> jstring {
-    with_string(unowned, input, evaluate_all)
+    with_string(unowned, input, |text| {
+        let result = evaluate_all(text);
+        // `Options[f] = ...` can arrive in this entry. Do not let a cached option name
+        // set outlive the evaluation that defined it.
+        crate::assist::complete::clear_option_cache();
+        result
+    })
 }
 
 #[no_mangle]
@@ -150,6 +156,9 @@ pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_evaluateManipu
                 Ok(value) => value,
                 Err(_) => "{\"text\":\"interpreter panicked\"}".to_string(),
             };
+        // A Manipulate body can define `Options[f]` too. The option-name cache must not
+        // outlive that evaluation.
+        crate::assist::complete::clear_option_cache();
         write_string(env, &result)
     })
 }
@@ -179,6 +188,7 @@ pub extern "system" fn Java_com_woctordho_woximobile_NativeEngine_clear<'frame>(
 ) {
     let _ = std::panic::catch_unwind(clear_plot_views);
     let _ = std::panic::catch_unwind(woxi::clear_state);
+    let _ = std::panic::catch_unwind(crate::assist::complete::clear_usage);
 }
 
 #[no_mangle]

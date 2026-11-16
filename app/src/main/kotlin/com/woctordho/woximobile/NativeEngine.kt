@@ -37,7 +37,6 @@ object NativeEngine {
     private external fun setDarkMode(enabled: Boolean)
 
     // Kinds of work the frontend can ask for.
-    const val KIND_TEXT = "text"
     const val KIND_RESET = "reset"
     const val KIND_MANIPULATE = "manipulate"
 
@@ -166,14 +165,13 @@ object NativeEngine {
         }
     }
 
-    // Answers one typing-help message: completion, symbol inspection, or whether the
-    // entry is complete (see the JNI header). Replies share the plot envelope, so the
-    // frontend has one code path for both.
+    // Answers one typing-help message: completion, inspection, completeness, diagnostics,
+    // prototypes, definitions, formatting or the catalog (see the JNI header). Replies
+    // share the plot envelope, so the frontend has one code path for both.
     //
-    // These run at NORMAL priority, not INTERACTIVE: interactive work drops queued
-    // background re-sampling, and a completion on every keystroke would keep a plot
-    // from ever refining. They still overtake background work, and a gesture frame
-    // still overtakes them.
+    // Most run at NORMAL priority, not INTERACTIVE: interactive work overtakes queued
+    // background re-sampling, and a completion on every keystroke must not make a plot
+    // wait behind the typing. The catalog is a one-off BACKGROUND request.
     fun query(
         request: String,
         callback: (String) -> Unit,

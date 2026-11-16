@@ -64,7 +64,7 @@ function Invoke-AppAction {
 
 if (-not $NoBuild) {
     Write-Host '=== building ==='
-    $build = & .\gradlew.bat :app:assembleRelease --no-daemon --console=plain 2>&1 | Out-String
+    $build = & .\gradlew.bat :app:assembleRelease --no-daemon --console=plain -PwoxiAutomation=true 2>&1 | Out-String
     if ($build -notmatch 'BUILD SUCCESSFUL') { Write-Host $build; throw 'build failed' }
     Write-Host '=== installing ==='
     Write-Host (Invoke-Adb -Arguments @('install', '-r', (Join-Path $repo 'app\build\outputs\apk\release\app-release.apk')))

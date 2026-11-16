@@ -1,7 +1,7 @@
 //! Inspect: the description, status, attributes, arity and options of one symbol.
 
 use crate::assist::complete::{
-    category_of, cursor_of, identifier_at_cursor, is_symbol_name, status_name,
+    category_of, cursor_of, identifier_at_cursor, is_builtin_name, is_symbol_name, status_name,
 };
 use crate::json::{json_escape, json_field_text};
 use woxi::syntax::Expr;
@@ -50,6 +50,15 @@ pub(crate) fn attributes_of(name: &str) -> Vec<String> {
     if !is_symbol_name(name) {
         return Vec::new();
     }
+    // The built-in table is static. Evaluating `Attributes[name]` for it would run the
+    // interpreter on every inspect. User symbols still need the evaluation.
+    if is_builtin_name(name) {
+        return woxi::evaluator::get_builtin_attributes(name)
+            .to_vec()
+            .into_iter()
+            .map(String::from)
+            .collect();
+    }
     let Ok(value) = woxi::interpret_to_expr(&format!("Attributes[{name}]")) else {
         return Vec::new();
     };
@@ -70,13 +79,18 @@ pub(crate) fn inspect_content(json: &str) -> String {
     let cursor = cursor_of(json, &code);
     let name = identifier_at_cursor(&code, cursor);
     if !is_symbol_name(name) {
-        return "{\"found\":false,\"data\":{},\"metadata\":{}}".to_string();
+        return "{\"found\":false,\"metadata\":{}}".to_string();
     }
 
-    let implemented = !woxi::evaluator::functions::is_known_wolfram_function(name);
     let description = woxi::evaluator::functions::get_builtin_function_info(name)
         .map(|info| info.description.to_string())
         .unwrap_or_default();
+    // `found` is what the About card uses to decide between the builtin's card and the
+    // notebook's own definition. A user-defined symbol is reported by `definitions_request`,
+    // not by the builtin registry. It must not be presented as a builtin with an empty
+    // description. The metadata is still filled in: the call card uses a user head's arity
+    // and options even when it has no builtin documentation.
+    let found = is_builtin_name(name);
     let (category, doc) = category_of(name);
     let options = options_of(name);
     let arity = woxi::evaluator::dispatch::arg_count::get_arg_count_range(name);
@@ -86,31 +100,6 @@ pub(crate) fn inspect_content(json: &str) -> String {
         None => "null".to_string(),
     };
 
-    let mut lines = vec![name.to_string()];
-    if !description.is_empty() {
-        lines.push(description.clone());
-    }
-    if !options.is_empty() {
-        let names: Vec<&str> = options.iter().map(|(option, _)| option.as_str()).collect();
-        lines.push(format!("Options: {}", names.join(", ")));
-    }
-    if let Some((min, max)) = arity {
-        lines.push(if max == usize::MAX {
-            format!("{min} or more arguments")
-        } else if min == max {
-            format!("{min} argument(s)")
-        } else {
-            format!("{min} to {max} arguments")
-        });
-    }
-    if let Some(url) = doc {
-        lines.push(url.to_string());
-    }
-
-    let option_json: Vec<String> = options
-        .iter()
-        .map(|(option, _)| format!("\"{}\"", json_escape(option)))
-        .collect();
     let default_json: Vec<String> = options
         .iter()
         .map(|(option, default)| {
@@ -122,17 +111,15 @@ pub(crate) fn inspect_content(json: &str) -> String {
         .map(|attribute| format!("\"{}\"", json_escape(attribute)))
         .collect();
     format!(
-        "{{\"found\":true,\"data\":{{\"text/plain\":\"{}\"}},\"metadata\":{{\"_woxi\":{{\"name\":\"{}\",\"description\":\"{}\",\"implemented\":{},\"status\":\"{}\",\"attributes\":[{}],\"category\":\"{}\",\"doc\":\"{}\",\"arity\":{},\"options\":[{}],\"optionDefaults\":[{}]}}}}}}",
-        json_escape(&lines.join("\n")),
+        "{{\"found\":{},\"metadata\":{{\"_woxi\":{{\"name\":\"{}\",\"description\":\"{}\",\"status\":\"{}\",\"attributes\":[{}],\"category\":\"{}\",\"doc\":\"{}\",\"arity\":{},\"optionDefaults\":[{}]}}}}}}",
+        found,
         json_escape(name),
         json_escape(&description),
-        if implemented { 1 } else { 0 },
         status_name(name),
         attribute_json.join(","),
         json_escape(category),
         json_escape(doc.unwrap_or("")),
         arity_json,
-        option_json.join(","),
         default_json.join(",")
     )
 }

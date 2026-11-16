@@ -1,4 +1,6 @@
-use crate::assist::complete::{rank_band, remember_usage, RANKS, USED_SYMBOLS};
+use crate::assist::complete::{
+    clear_usage, rank_band, remember_notebook_usage, remember_usage, was_used, RANKS,
+};
 use crate::assist::query_request;
 
 fn reset() {
@@ -34,7 +36,7 @@ fn completion_in_options(code: &str, cursor: usize, head: &str, used: &[&str]) -
 /// The notebook's used-name set outlives a request by design, so a test that
 /// counts names has to start from a clean notebook.
 fn reset_used() {
-    USED_SYMBOLS.with(|used| used.borrow_mut().clear());
+    clear_usage();
 }
 
 #[test]
@@ -138,8 +140,8 @@ fn completion_finds_a_word_from_the_middle() {
     assert!(reply.contains("\"PlotRange\""), "{reply}");
     let reply = completion("pts", 3);
     assert!(reply.contains("\"PlotPoints\""), "{reply}");
-    // The fuzzy tier is a fallback: when the prefix already has answers it stays
-    // out of the list, which is what keeps it quiet.
+    // The weak tier is a fallback: when the sharper tiers have answers it stays out
+    // of the list, which is what keeps it quiet.
     let reply = completion("Pl", 2);
     assert!(!reply.contains("\"ParametricPlot\""), "{reply}");
     // A word abbreviation beats a mid-word fragment: `lot` reads `Locator`'s word
@@ -246,12 +248,33 @@ fn inspect_reports_options_without_touching_history() {
     assert!(reply.contains("plotting"), "{reply}");
     let after = woxi::get_last_output().map(|expr| format!("{expr:?}"));
     assert_eq!(before, after, "inspect must not record Out[] history");
-    // A name that is only known to Wolfram is reported as not implemented.
+    // A name that is only known to Wolfram is reported as unsupported.
     let reply = query(
         "inspect_request",
         "{\"code\":\"PacletInstall\",\"cursor_pos\":5}",
     );
-    assert!(reply.contains("\"implemented\":0"), "{reply}");
+    assert!(
+        reply.contains("\"status\":\"not_planned\"")
+            || reply.contains("\"status\":\"not_implemented\""),
+        "{reply}"
+    );
+}
+
+#[test]
+fn inspect_distinguishes_builtins_from_user_symbols() {
+    reset();
+    let reply = query(
+        "inspect_request",
+        "{\"code\":\"ZzzUndefinedSymbol\",\"cursor_pos\":5}",
+    );
+    assert!(reply.contains("\"found\":false"), "{reply}");
+    let _ = woxi::interpret("myUserSymbol = 1");
+    let reply = query(
+        "inspect_request",
+        "{\"code\":\"myUserSymbol\",\"cursor_pos\":5}",
+    );
+    assert!(reply.contains("\"found\":false"), "{reply}");
+    assert!(reply.contains("\"name\":\"myUserSymbol\""), "{reply}");
 }
 
 #[test]
@@ -292,6 +315,37 @@ fn catalog_and_unknown_queries() {
     assert!(reply.contains("\"version\":"), "{reply}");
     let reply = query("complete_dance", "{}");
     assert!(reply.contains("UnknownMessage"), "{reply}");
+}
+
+#[test]
+fn completion_converts_javascript_offsets_after_non_ascii_text() {
+    reset_used();
+    // `θS`: the caret after S is UTF-16 offset 2 but UTF-8 byte offset 3.
+    // The reply's cursor span is back in JavaScript units.
+    let reply = completion("θS", 2);
+    assert!(reply.contains("\"cursor_start\":1"), "{reply}");
+    assert!(reply.contains("\"cursor_end\":2"), "{reply}");
+    assert!(reply.contains("\"Sin\""), "{reply}");
+}
+
+#[test]
+fn definitions_convert_byte_ranges_after_non_ascii_text() {
+    reset_used();
+    let reply = query("definitions_request", "{\"codes\":[\"θ; f[x_] := x\"]}");
+    // The name starts at byte 4 but UTF-16 unit 3. `full` ends at byte 14 / unit 13.
+    assert!(reply.contains("\"name\":\"f\""), "{reply}");
+    assert!(reply.contains("\"start\":3,\"end\":4"), "{reply}");
+    assert!(reply.contains("\"full\":[3,13]"), "{reply}");
+}
+
+#[test]
+fn diagnostics_convert_fix_ranges_after_non_ascii_text() {
+    reset_used();
+    let reply = query("diagnostics_request", "{\"code\":\"θ; Plott[x]\"}");
+    assert!(reply.contains("\"code\":\"spelling\""), "{reply}");
+    // `Plott` starts at byte 4 but UTF-16 unit 3. Its end is unit 8.
+    assert!(reply.contains("\"start\":3,\"end\":8"), "{reply}");
+    assert!(reply.contains("\"insert\":\"Plot\""), "{reply}");
 }
 
 #[test]
@@ -341,4 +395,77 @@ fn definitions_carry_parameters() {
     // whole assignment.
     assert!(reply.contains("\"start\":0,\"end\":1"), "{reply}");
     assert!(reply.contains("\"full\":[0,20]"), "{reply}");
+}
+
+#[test]
+fn definitions_find_patterns_in_compound_expressions() {
+    let reply = query(
+        "definitions_request",
+        "{\"codes\":[\"f[x_ + y_] := x + y\"]}",
+    );
+    assert!(reply.contains("\"params\":[\"x\",\"y\"]"), "{reply}");
+}
+
+#[test]
+fn is_complete_understands_associations() {
+    let reply = query("is_complete_request", "{\"code\":\"<|a -> 1\"}");
+    assert!(reply.contains("\"status\":\"incomplete\""), "{reply}");
+    let reply = query("is_complete_request", "{\"code\":\"<|a -> 1|>\"}");
+    assert!(reply.contains("\"status\":\"complete\""), "{reply}");
+}
+
+#[test]
+fn clearing_the_session_forgets_the_used_vocabulary() {
+    reset_used();
+    remember_usage("Sin[x]");
+    assert!(was_used("Sin"));
+    clear_usage();
+    assert!(!was_used("Sin"));
+}
+
+#[test]
+fn notebook_usage_follows_the_current_text() {
+    reset_used();
+    remember_notebook_usage("{\"notebook_codes\":[\"Sin[x]\",\"\"]}");
+    assert!(was_used("Sin"));
+    remember_notebook_usage("{\"notebook_codes\":[\"Cos[x]\",\"Sin[x]\"]}");
+    assert!(was_used("Cos"));
+    assert!(was_used("Sin"));
+    // Removing Sin from the notebook removes its ranking boost again.
+    remember_notebook_usage("{\"notebook_codes\":[\"Cos[x]\"]}");
+    assert!(!was_used("Sin"));
+    assert!(was_used("Cos"));
+    // Emptying the notebook clears the vocabulary even when every entry is an empty string.
+    remember_notebook_usage("{\"notebook_codes\":[\"\"]}");
+    assert!(!was_used("Cos"));
+}
+
+#[test]
+fn completion_keeps_long_session_names_reachable() {
+    reset();
+    reset_used();
+    // A long user-defined function has no registry band and would be caught by the
+    // rare-name gate if session symbols were treated like the registry's tail.
+    let name = "myVeryLongSessionFunction";
+    let _ = woxi::interpret(&format!("{name}[t_] := t"));
+    let reply = completion("myV", 3);
+    assert!(reply.contains(name), "{reply}");
+}
+
+#[test]
+fn completion_prefers_a_short_name_inside_the_same_band() {
+    reset_used();
+    // `Integer` and `IntegerQ` are prefix matches in the same frequency band. The
+    // shorter name wins. `Integrate` is in a better band and still comes first.
+    let reply = completion("Int", 3);
+    let integer = reply.find("\"Integer\"").expect("Integer");
+    let integer_q = reply.find("\"IntegerQ\"").expect("IntegerQ");
+    assert!(integer < integer_q, "{reply}");
+}
+
+#[test]
+fn catalog_reports_the_interpreter_version() {
+    let reply = query("catalog_request", "{}");
+    assert!(reply.contains("\"version\":\"0.4.0\""), "{reply}");
+    assert!(reply.contains("\"total\":"), "{reply}");
 }

@@ -10,14 +10,8 @@
 // This module turns them into the HTML the notebook renders, and re-creates the
 // Manipulate controls that live-update their view.
 
+import { escapeHtml } from "./html.js";
 import * as shape from "./svg-shape.js";
-function escapeHtml(text) {
-  return String(text ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 // Typeset SVGs carry width/height but often no viewBox, so CSS cannot scale them.
 // Add one and a class hook before handing them to the notebook.

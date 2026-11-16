@@ -9,6 +9,7 @@ import {
   duplicateActive,
   formatNotebook,
   gatherTemplates,
+  goToDefinition,
   handleKeyAction,
   handleKeyLongPress,
   insertText,
@@ -38,21 +39,24 @@ import {
   restore,
   saveNotebook,
 } from "./notebook-store.js";
+import { refreshAssist, refreshBarState } from "./refresh.js";
 import { el, els, keepFocus, log, nativeCall, runtime, state, toast } from "./runtime.js";
 import { closeSheet, openSheet, sheetButton } from "./sheets.js";
-import { createTestAction } from "./test-hooks.js";
 import { setTheme } from "./theme.js";
 import {
   liftEntry,
   readActiveText,
   recordSelection,
-  refreshAssist,
-  refreshBarState,
   replaceRange,
   selectRange,
   setCaret,
 } from "./typing.js";
 import { WoxiClient } from "./woxi-client.js";
+
+// The automation page is opened by MainActivity with this flag only when the build
+// enables it. A normal page never fetches test-hooks.js or exposes the test entry point.
+const AUTOMATION = new URLSearchParams(window.location.search).has("automation");
+let runTestAction = null;
 
 export function showMenu() {
   openSheet("Menu", function (body) {
@@ -65,12 +69,16 @@ export function showMenu() {
     );
     body.appendChild(
       sheetButton("Save as...", "", function () {
-        saveNotebook();
+        saveNotebook(true);
       })
     );
     body.appendChild(el("div", "woxi-sheet-sep"));
     body.appendChild(
       sheetButton("Evaluate notebook", "", async function () {
+        if (state.evaluating) {
+          toast("Already evaluating");
+          return;
+        }
         toast("Evaluating...");
         await evaluateAll();
         toast("Done");
@@ -78,7 +86,7 @@ export function showMenu() {
     );
     body.appendChild(sheetButton("Format notebook", "", formatNotebook));
     body.appendChild(el("div", "woxi-sheet-sep"));
-    body.appendChild(sheetButton("Go to definition", "", jumpToDefinition));
+    body.appendChild(sheetButton("Go to definition", "", goToDefinition));
     body.appendChild(sheetButton("Duplicate entry", "", duplicateActive));
     body.appendChild(sheetButton("Clear entry", "", clearActive));
   });
@@ -141,15 +149,32 @@ window.WoxiNativeCallbacks = {
       toast("Cannot read notebook: " + (err instanceof Error ? err.message : String(err)));
     });
   },
-  toClipboard: undefined,
 };
 
 function hideSplash() {
   els.splash.className = "woxi-hidden";
   document.getElementById("woxi-app").className = "";
   // The automation actions that arrived while the page was booting wait for this (see
-  // MainActivity.handleTestIntent).
-  nativeCall("testReady");
+  // MainActivity.handleTestIntent). A normal page has no queue.
+  if (AUTOMATION) nativeCall("testReady");
+}
+
+function overlayOpen() {
+  return !!(els.overlay && els.overlay.className.indexOf("woxi-hidden") < 0);
+}
+
+// Android Back and the hardware Escape mean the same thing: close the panel on top, the
+// assistance sheet first, then Menu/Options. One predicate keeps the two paths equal.
+function closeTopPanel() {
+  if (runtime.assist && runtime.assist.sheetOpen) {
+    runtime.assist.closeSheet();
+    return true;
+  }
+  if (overlayOpen()) {
+    closeSheet();
+    return true;
+  }
+  return false;
 }
 
 // Connects the entry view's user events to the modules that implement them.
@@ -160,9 +185,9 @@ function wireEntryHooks() {
       refreshBarState();
     },
     onFocus: function (entry) {
-      // Lift the entry next to the keyboard, then describe the caret's context.
+      // The active-entry hook already refreshed the bar. Focusing only has to bring the
+      // entry next to the keyboard.
       liftEntry(entry);
-      refreshAssist();
     },
     onInput: function () {
       persist();
@@ -170,9 +195,15 @@ function wireEntryHooks() {
     },
     onBeforeInput: function (entry, event) {
       const type = event && event.inputType ? event.inputType : "";
-      // The app owns the undo stack, and its undo shortcut is routed there (see the entry's
-      // keydown). A native undo that slips through is not an edit to record.
-      if (type === "historyUndo" || type === "historyRedo") return;
+      // The app owns the undo stack. A native undo would change the text without a
+      // snapshot. Cancel it and run the app's command instead, so the two histories
+      // cannot disagree.
+      if (type === "historyUndo" || type === "historyRedo") {
+        event.preventDefault();
+        if (type === "historyUndo") undoEntry();
+        else redoEntry();
+        return;
+      }
       const kind = type.indexOf("delete") === 0 ? "delete" : "type";
       // `beforeinput` cannot see where an edit ends, but an insertion knows: the caret lands
       // after the inserted text, which is what lets the next hardware key join its word.
@@ -187,9 +218,6 @@ function wireEntryHooks() {
     onBlur: function () {
       setTimeout(refreshAssist, 0);
     },
-    onSelection: function (entry) {
-      recordSelection(entry, true);
-    },
     onSubmit: submitActive,
     onUndo: undoEntry,
     onRedo: redoEntry,
@@ -198,6 +226,7 @@ function wireEntryHooks() {
 }
 
 async function boot() {
+  runtime.automation = AUTOMATION;
   els.notebook = document.getElementById("woxi-notebook");
   els.title = document.getElementById("woxi-title");
   els.overlay = document.getElementById("woxi-overlay");
@@ -223,7 +252,7 @@ async function boot() {
       const entry = state.entries[i];
       if (entry.dom && entry.dom.input === focused) {
         if (state.activeId !== entry.id) setActive(entry);
-        recordSelection(entry, false);
+        recordSelection(entry);
         return;
       }
     }
@@ -231,11 +260,7 @@ async function boot() {
   // The hardware keyboard's Escape is this app's Back: close the sheet on top.
   document.addEventListener("keydown", function (event) {
     if (event.key !== "Escape") return;
-    if (runtime.assist && runtime.assist.sheetOpen) {
-      runtime.assist.closeSheet();
-      return;
-    }
-    if (els.overlay && els.overlay.className.indexOf("woxi-hidden") < 0) closeSheet();
+    if (closeTopPanel()) event.preventDefault();
   });
   keepFocus(document.getElementById("woxi-btn-menu")).addEventListener("click", showMenu);
   keepFocus(document.getElementById("woxi-btn-options")).addEventListener("click", showOptions);
@@ -278,6 +303,9 @@ async function boot() {
       const entry = activeEntry();
       return entry ? state.entries.indexOf(entry) : 0;
     },
+    entryKey: function () {
+      return state.activeId;
+    },
     codes: function () {
       return state.entries.map(function (entry) {
         return entry.input || "";
@@ -306,17 +334,22 @@ async function boot() {
     log("engine start failed: " + (err instanceof Error ? err.message : String(err)));
     return;
   }
+  runtime.assist.ensurePrototypes();
+  if (AUTOMATION) {
+    try {
+      const testHooks = await import("./test-hooks.js");
+      runTestAction = testHooks.createTestAction({ showMenu: showMenu, showOptions: showOptions });
+    } catch (err) {
+      log("test hooks unavailable: " + (err instanceof Error ? err.message : String(err)));
+    }
+  }
   hideSplash();
   // Show results for a restored notebook (this is a one-shot evaluation, not typing-time
   // evaluation). The first plot's layout is measured once, from its scene, so the label
   // metrics must be the real face: wait for the font set before the evaluation that makes
   // the first plot.
-  try {
-    const fonts = window.document.fonts;
-    if (fonts) await fonts.ready;
-  } catch {
-    // A failed font load must not hide the restored notebook.
-  }
+  const fonts = window.document.fonts;
+  if (fonts) await fonts.ready;
   const hasInput = state.entries.some(function (entry) {
     return entry.input.trim();
   });
@@ -326,29 +359,29 @@ async function boot() {
   focusEntry(state.entries[0]);
 }
 
-const runTestAction = createTestAction({ showMenu: showMenu, showOptions: showOptions });
+const appApi = {
+  onNativeBack: function () {
+    return closeTopPanel();
+  },
+};
 
-window.WoxiApp = {
-  // Nothing shown on screen says why a harness action did nothing, so a failing one is
-  // reported in the log that the harness reads back. The `done` line is what the device
-  // harness waits for instead of sleeping: it marks the moment the action has run.
-  testAction: function (action, argument) {
+if (AUTOMATION) {
+  appApi.testAction = function (action, argument) {
+    // Nothing shown on screen says why a harness action did nothing, so a failing one is
+    // reported in the log that the harness reads back. The `done` line is what the device
+    // harness waits for instead of sleeping: it marks the moment the action has run.
     try {
+      if (!runTestAction) throw new Error("test hooks not loaded");
       runTestAction(action, argument);
     } catch (err) {
       log("test action " + action + " failed: " + (err && err.message ? err.message : String(err)));
     } finally {
       log("test: done " + action);
     }
-  },
-  onNativeBack: function () {
-    if (els.overlay && els.overlay.className.indexOf("woxi-hidden") < 0) {
-      closeSheet();
-      return true;
-    }
-    return false;
-  },
-};
+  };
+}
+
+window.WoxiApp = appApi;
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", function () {

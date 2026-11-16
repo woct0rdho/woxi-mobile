@@ -13,12 +13,22 @@ const hooks = {
   onInput: function (entry) {},
   onBeforeInput: function (entry, event) {},
   onBlur: function () {},
-  onSelection: function (entry) {},
   onSubmit: function () {},
   onUndo: function () {},
   onRedo: function () {},
   attachPlots: function (entry, items, seed) {},
 };
+
+const MAX_INPUT_HEIGHT_RATIO = 0.45;
+const TEXTAREA_BORDER = 2;
+const SCROLL_MARGIN_TOP = 60;
+const SCROLL_MARGIN_BOTTOM = 12;
+const SCROLL_DELAY_MS = 30;
+const MANIPULATE_DEBOUNCE_MS = 70;
+
+// `revealCaret` recycles the focus to scroll the field. The focus and blur events that
+// causes are not a change of entry, so they must not run the app's focus work.
+let revealingEntry = null;
 
 // Installs the behavior the view reports to. Called once by the app's boot.
 export function setHooks(next) {
@@ -29,18 +39,16 @@ export function addEntry(input, options) {
   const entry = {
     id: state.nextId++,
     input: input || "",
-    caret: null,
-    collapsed: false,
     dom: null,
     output: "",
   };
   const index = options?.index ?? state.entries.length;
   state.entries.splice(index, 0, entry);
-  renderNotebook();
+  if (options?.render !== false) renderNotebook();
   return entry;
 }
 
-export function entryById(id) {
+function entryById(id) {
   for (let i = 0; i < state.entries.length; i++) {
     if (state.entries[i].id === id) return state.entries[i];
   }
@@ -51,13 +59,48 @@ export function activeEntry() {
   return entryById(state.activeId) || state.entries[state.entries.length - 1] || null;
 }
 
+// The caret and selection of an entry, preferring the live textarea selection when it
+// owns the DOM focus. Every edit path reads this one function, so a command cannot
+// disagree with the handles and the assist bar about where the caret is. The caret is
+// the selection's start. There is no separate caret field to drift from it.
+export function selectionOf(entry) {
+  const input = entry.dom.input;
+  const length = input.value.length;
+  let selStart = entry.selStart;
+  let selEnd = entry.selEnd;
+  if (
+    window.document.activeElement === input &&
+    input.selectionStart !== null &&
+    input.selectionStart !== undefined
+  ) {
+    selStart = input.selectionStart;
+    selEnd = input.selectionEnd;
+  }
+  if (selStart === null || selStart === undefined) selStart = length;
+  if (selEnd === null || selEnd === undefined) selEnd = selStart;
+  selStart = Math.max(0, Math.min(selStart, length));
+  selEnd = Math.max(selStart, Math.min(selEnd, length));
+  return { caret: selStart, selStart: selStart, selEnd: selEnd };
+}
+
+// Stores a selection on the entry model. Writers clamp once here, so the textarea and
+// the model cannot disagree about a range past the end of the text.
+export function setEntrySelection(entry, start, end) {
+  const length = entry.dom ? entry.dom.input.value.length : 0;
+  start = Math.max(0, Math.min(start, length));
+  end = Math.max(start, Math.min(end, length));
+  entry.selStart = start;
+  entry.selEnd = end;
+  return { start: start, end: end };
+}
+
 export function setActive(entry) {
   state.activeId = entry ? entry.id : null;
   refreshClasses();
   hooks.onActive(entry);
 }
 
-export function refreshClasses() {
+function refreshClasses() {
   for (let i = 0; i < state.entries.length; i++) {
     const entry = state.entries[i];
     if (!entry.dom) continue;
@@ -74,12 +117,12 @@ export function refreshClasses() {
 // `scrollHeight` excludes but `box-sizing: border-box` counts.
 export function autoGrow(textarea) {
   if (!textarea || !textarea.parentNode) return;
-  const maxHeight = Math.round(window.innerHeight * 0.45);
+  const maxHeight = Math.round(window.innerHeight * MAX_INPUT_HEIGHT_RATIO);
   textarea.style.height = "0px";
   const contentHeight = textarea.scrollHeight;
-  const height = Math.min(contentHeight + 2, maxHeight);
+  const height = Math.min(contentHeight + TEXTAREA_BORDER, maxHeight);
   textarea.style.height = height + "px";
-  textarea.style.overflowY = contentHeight + 2 > maxHeight ? "auto" : "hidden";
+  textarea.style.overflowY = contentHeight + TEXTAREA_BORDER > maxHeight ? "auto" : "hidden";
 }
 
 export function renderNotebook() {
@@ -114,7 +157,7 @@ export function renderNotebook() {
   autoGrowAll();
 }
 
-export function buildEntry(entry) {
+function buildEntry(entry) {
   const root = el("div", "woxi-entry");
   const num = el("div", "woxi-entry-num", "");
   const main = el("div", "woxi-entry-main");
@@ -130,9 +173,8 @@ export function buildEntry(entry) {
   input.addEventListener("focus", function () {
     // `revealCaret` recycles the focus to scroll the caret into view. That is not a change
     // of entry, so it must not re-run the app's focus work for every key.
-    if (entry.revealing) return;
+    if (revealingEntry === entry) return;
     setActive(entry);
-    nativeCall("hideKeyboard");
     autoGrow(input);
     hooks.onFocus(entry);
   });
@@ -144,12 +186,12 @@ export function buildEntry(entry) {
   });
   input.addEventListener("input", function () {
     entry.input = input.value;
-    entry.caret = input.selectionStart;
     entry.selStart = input.selectionStart;
     entry.selEnd = input.selectionEnd;
     // A hardware key is recorded by `beforeinput`, which cannot know where the edit
-    // ends. The caret it left is known now, so the next key joins its word.
-    entry.lastCaret = input.selectionStart;
+    // ends. The caret it left is known now, so the next key joins its word. A paste or
+    // replacement leaves `lastEdit.merge` false. Do not let this event make it joinable.
+    if (entry.lastEdit && entry.lastEdit.merge) entry.lastEdit.caret = input.selectionStart;
     autoGrow(input);
     state.dirty = true;
     updateTitle();
@@ -158,15 +200,7 @@ export function buildEntry(entry) {
   // A blur fires before the tap that caused it completes, so the bar is refreshed
   // after both have run: a key press must land on the keys it was aimed at.
   input.addEventListener("blur", function () {
-    if (!entry.revealing) hooks.onBlur();
-  });
-  // The bar follows the native selection: a caret moved with the handle, a word picked by a
-  // double tap, or a range dragged out is reported by one of these before the next key
-  // reads it.
-  ["keyup", "click", "select", "focus"].forEach(function (type) {
-    input.addEventListener(type, function () {
-      hooks.onSelection(entry);
-    });
+    if (revealingEntry !== entry) hooks.onBlur();
   });
   input.addEventListener("keydown", function (event) {
     // One history, not two. Chrome's native undo would leave the bar's Undo/Redo
@@ -206,17 +240,18 @@ export function buildEntry(entry) {
   root.appendChild(main);
 
   entry.dom = { root: root, num: num, input: input, output: output };
-  // A rebuilt box starts with its caret at the end of the text. Put the entry's own caret
-  // and selection back, so a rebuild (inserting, deleting or duplicating an entry) leaves
-  // the caret where the user left it instead of at the end of the expression.
-  if (entry.caret === null || entry.caret === undefined || entry.caret > input.value.length) {
-    entry.caret = input.value.length;
+  // A rebuilt box starts with its caret at the end of the text. Put the entry's own
+  // selection back, so a rebuild leaves the caret where the user left it.
+  let selStart = entry.selStart;
+  let selEnd = entry.selEnd;
+  if (selStart === null || selStart === undefined || selStart > input.value.length) {
+    selStart = input.value.length;
   }
-  let selStart =
-    entry.selStart === null || entry.selStart === undefined ? entry.caret : entry.selStart;
-  let selEnd = entry.selEnd === null || entry.selEnd === undefined ? entry.caret : entry.selEnd;
+  if (selEnd === null || selEnd === undefined) selEnd = selStart;
   selStart = Math.max(0, Math.min(selStart, input.value.length));
   selEnd = Math.max(selStart, Math.min(selEnd, input.value.length));
+  entry.selStart = selStart;
+  entry.selEnd = selEnd;
   input.setSelectionRange(selStart, selEnd);
   return root;
 }
@@ -252,7 +287,7 @@ export function wireManipulate(container) {
   }
 }
 
-export function wireManipulateBlock(block) {
+function wireManipulateBlock(block) {
   const body = block.getAttribute("data-woxi-body") || "";
   const view = block.querySelector(".woxi-manipulate-view");
   const controls = block.querySelectorAll("[data-woxi-control]");
@@ -297,7 +332,7 @@ export function wireManipulateBlock(block) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(function () {
       void refreshView();
-    }, 70);
+    }, MANIPULATE_DEBOUNCE_MS);
   }
 
   for (let i = 0; i < controls.length; i++) {
@@ -344,19 +379,22 @@ export function revealCaret(entry) {
   if (!entry || !entry.dom) return;
   const input = entry.dom.input;
   if (document.activeElement !== input) return;
-  if (input.scrollHeight <= input.clientHeight + 2) return;
-  entry.revealing = true;
+  if (input.scrollHeight <= input.clientHeight + TEXTAREA_BORDER) return;
+  revealingEntry = entry;
   input.blur();
   input.focus();
-  entry.revealing = false;
+  revealingEntry = null;
 }
 
 export function scrollEntryIntoView(entry) {
   if (!entry || !entry.dom) return;
   setTimeout(function () {
     const rect = entry.dom.root.getBoundingClientRect();
-    if (rect.top < 60 || rect.bottom > window.innerHeight - 260) {
+    const keyboard = document.getElementById("woxi-keyboard");
+    const keyboardTop = keyboard ? keyboard.getBoundingClientRect().top : window.innerHeight;
+    const visibleBottom = keyboardTop > 0 ? keyboardTop : window.innerHeight;
+    if (rect.top < SCROLL_MARGIN_TOP || rect.bottom > visibleBottom - SCROLL_MARGIN_BOTTOM) {
       entry.dom.root.scrollIntoView({ block: "center", behavior: "smooth" });
     }
-  }, 30);
+  }, SCROLL_DELAY_MS);
 }

@@ -58,8 +58,8 @@ WoxiClient.prototype.plot = async function (msgType, content) {
   }
 };
 
-// One typing-help message (`complete_request`, `inspect_request`,
-// `is_complete_request`, `catalog_request`). Same envelope as `plot`.
+// One typing-help message: completion, symbol inspection, completeness, diagnostics,
+// prototypes, definitions, formatting or the catalog. Same envelope as `plot`.
 WoxiClient.prototype.query = async function (msgType, content) {
   const text = await this.send(function (bridge, id) {
     bridge.queryRequest(id, JSON.stringify({ msg_type: msgType, content: content || {} }));

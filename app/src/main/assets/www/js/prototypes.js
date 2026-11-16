@@ -5,10 +5,8 @@
 // nothing is validated. Slot roles (iterator, option, data, ...) come from the shape of
 // the slot text, and `prototypes_request` adds the concrete examples it learns from the
 // shipped gallery.
+import { optionRuleName } from "./assist-scan.js";
 
-// Curated argument names, one or more variants per head. Woxi's data has a
-// description and sometimes an arity, but no parameter names, so these are
-// presentation only: the caret is placed by counting commas, nothing is validated.
 const PROTOTYPES = {
   Plot: ["f, {x, xmin, xmax}", "{f1, f2, ...}, {x, xmin, xmax}"],
   Plot3D: [
@@ -28,17 +26,20 @@ const PROTOTYPES = {
   ComplexPlot: "f, {z, zmin, zmax}",
   ComplexPlot3D: "f, {z, zmin, zmax}",
   DiscretePlot3D: "f, {x, xmin, xmax}, {y, ymin, ymax}",
-  ListPlot: "data, opts",
-  ListLinePlot: "data, opts",
-  ListPlot3D: "data, opts",
+  ListPlot: "data",
+  ListLinePlot: "data",
+  ListPlot3D: "data",
   ArrayPlot: "array",
-  Histogram: "data, opts",
-  BoxWhiskerChart: "data, opts",
+  Histogram: "data",
+  BoxWhiskerChart: "data",
   Table: "expr, {i, imax}",
   Sum: "expr, {i, imax}",
   Product: "expr, {i, imax}",
   NSum: "expr, {i, imax}",
   Integrate: "f, x",
+  NIntegrate: "f, {x, xmin, xmax}",
+  DSolve: "eqns, y, x",
+  RSolve: "eqns, y, n",
   D: "f, x",
   Solve: ["eqns, vars", "eqns, vars, domain"],
   NSolve: "eqns, vars",
@@ -55,6 +56,7 @@ const PROTOTYPES = {
   Graphics: "primitives",
   Piecewise: "pairs, x",
   Simplify: "expr",
+  FullSimplify: "expr",
   Expand: "expr",
   Factor: "expr",
   Length: "expr",
@@ -66,6 +68,7 @@ const PROTOTYPES = {
   Range: "n",
   RandomReal: "n",
   Print: "expr",
+  If: "cond, then, else",
 };
 
 // Example values per slot shape. The engine adds the concrete values it learns from
@@ -76,8 +79,6 @@ const ROLE_EXAMPLES = {
   data: ["{1, 4, 9, 16}", "{{1, 2}, {2, 5}, {3, 7}}"],
   list: ["{1, 2, 3}", "{Sin[x], Cos[x]}"],
   symbol: ["x"],
-  options: ["PlotRange -> All"],
-  option: ["Automatic"],
 };
 
 const STATUS_LABEL = {
@@ -88,27 +89,51 @@ const STATUS_LABEL = {
   unknown: "",
 };
 
+// The text an option chip inserts after its name. One spelling for the bar, the call
+// card and the completion metadata.
+const OPTION_ARROW = " -> ";
+
 // Symbols that stand for a value rather than a call. Accepting one inserts just the
 // name: `Pi[` or `False[` would be nonsense. System variables (`$Name`) are values too.
 const CONSTANTS = [
+  "Above",
+  "After",
+  "Algebraics",
   "All",
   "Automatic",
+  "Axis",
+  "Before",
+  "Below",
+  "Booleans",
+  "Bottom",
   "Catalan",
+  "Center",
+  "Complexes",
   "ComplexInfinity",
   "Degree",
   "E",
   "EulerGamma",
   "False",
+  "Full",
   "Glaisher",
   "GoldenRatio",
   "I",
   "Indeterminate",
   "Infinity",
+  "Integers",
   "Khinchin",
+  "Left",
   "MachinePrecision",
   "None",
+  "Nothing",
   "Null",
   "Pi",
+  "Primes",
+  "Rationals",
+  "Reals",
+  "Right",
+  "Top",
+  "TraditionalForm",
   "True",
 ];
 
@@ -142,7 +167,11 @@ function slotsOf(prototype) {
 }
 
 function roleOf(text) {
-  if (/->|:>/.test(text)) return "option";
+  // A rule is an option only when its left side looks like an option name. `Limit`'s
+  // `x -> x0` is a positional rule argument, not an option, and must stay in the
+  // skeleton.
+  const option = optionRuleName(text);
+  if (option) return /^[A-Z]/.test(option) || option === "opts" ? "option" : "expression";
   if (text.charAt(0) === "{") {
     if (/^\{[^}]*->/.test(text)) return "options";
     // An iterator names a variable and a bound: `{x, xmin, xmax}`, `{i, imax}`,
@@ -157,7 +186,7 @@ function roleOf(text) {
     return "list";
   }
   if (text === "n") return "number";
-  if (text === "vars" || text === "vars?" || text === "sym") return "symbol";
+  if (text === "vars") return "symbol";
   if (text === "data" || text === "array") return "data";
   if (text === "list") return "list";
   if (text === "opts") return "options";
@@ -169,12 +198,17 @@ function iteratorVariable(text) {
   return match ? match[1] : "";
 }
 
+function iteratorExamples(variable) {
+  const name = variable || "x";
+  return ["{" + name + ", -5, 5}", "{" + name + ", 0, 2 Pi}"];
+}
+
 function examplesFor(slot) {
   if (slot.role === "iterator") {
-    const variable = iteratorVariable(slot.text) || "x";
-    return ["{" + variable + ", -5, 5}", "{" + variable + ", 0, 2 Pi}"];
+    return iteratorExamples(iteratorVariable(slot.text));
   }
-  if (slot.role === "option") return [slot.text + " -> Automatic"];
+  if (slot.role === "options") return [];
+  if (/->|:>/.test(slot.text)) return [slot.text];
   return (ROLE_EXAMPLES[slot.role] || ROLE_EXAMPLES.expression).slice();
 }
 
@@ -184,6 +218,20 @@ function curatedVariant(text) {
     slot.examples = examplesFor(slot);
     return slot;
   });
+}
+
+// The parsed table is immutable and built once. `variantsOf` used to re-split every
+// prototype on every caret query. The learned examples are merged into a copy, never
+// into these slots.
+const CURATED_VARIANTS = new Map();
+for (const head of Object.keys(PROTOTYPES)) {
+  const spec = PROTOTYPES[head];
+  const texts = typeof spec === "string" ? [spec] : spec;
+  CURATED_VARIANTS.set(head, texts.map(curatedVariant));
+}
+
+function curatedVariants(head) {
+  return CURATED_VARIANTS.get(head) || null;
 }
 
 function roleLabel(role) {
@@ -199,13 +247,11 @@ function roleLabel(role) {
 
 export {
   curatedVariant,
-  examplesFor,
+  curatedVariants,
   isCallName,
+  iteratorExamples,
   iteratorVariable,
-  PROTOTYPES,
-  ROLE_EXAMPLES,
+  OPTION_ARROW,
   roleLabel,
-  roleOf,
-  slotsOf,
   STATUS_LABEL,
 };

@@ -2,9 +2,9 @@
 
 use crate::json::json_field_text;
 
-/// Bracket depth, ignoring string literals and `(* comments *)`. A positive result
-/// means the input stops inside an opening bracket or an unterminated string, which
-/// is what "not finished yet" looks like while typing.
+/// Bracket and association depth, ignoring string literals and `(* comments *)`. A
+/// positive result means the input stops inside an opening bracket, association or
+/// unterminated string, which is what "not finished yet" looks like while typing.
 pub(crate) fn bracket_depth(code: &str) -> i32 {
     let mut depth: i32 = 0;
     let mut chars = code.chars().peekable();
@@ -37,7 +37,15 @@ pub(crate) fn bracket_depth(code: &str) -> i32 {
                 chars.next();
                 comment_depth = 1;
             }
+            '<' if chars.peek() == Some(&'|') => {
+                chars.next();
+                depth += 1;
+            }
             '(' | '[' | '{' => depth += 1,
+            '|' if chars.peek() == Some(&'>') => {
+                chars.next();
+                depth -= 1;
+            }
             ')' | ']' | '}' => depth -= 1,
             _ => {}
         }
@@ -57,6 +65,10 @@ pub(crate) fn bracket_depth(code: &str) -> i32 {
 pub(crate) fn ends_with_operator(code: &str) -> bool {
     let trimmed = code.trim_end();
     if trimmed.is_empty() {
+        return false;
+    }
+    // `|>` ends an association. Its final `>` is not a comparison operator.
+    if trimmed.ends_with("|>") {
         return false;
     }
     const TAILS: [&str; 15] = [
@@ -88,5 +100,5 @@ pub(crate) fn is_complete_status(code: &str) -> &'static str {
 pub(crate) fn is_complete_content(json: &str) -> String {
     let code = json_field_text(json, "code").unwrap_or_default();
     let status = is_complete_status(&code);
-    format!("{{\"status\":\"{status}\",\"indent\":\"\"}}")
+    format!("{{\"status\":\"{status}\"}}")
 }

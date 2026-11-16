@@ -1,10 +1,17 @@
 //! Prototypes and definitions: slot roles and examples learned from the gallery, and
 //! where a symbol is defined.
 
-use crate::assist::complete::symbol_table;
+use crate::assist::complete::{byte_to_utf16, symbol_table};
 use crate::json::{json_escape, json_string_array};
 
 use woxi::syntax::Expr;
+
+/// The gallery only needs to teach the heads it actually shows; the rest is bounded so
+/// one unusual example cannot grow the reply without limit.
+const MAX_LEARNED_HEADS: usize = 80;
+const MAX_VARIANTS: usize = 3;
+const MAX_SLOT_EXAMPLES: usize = 3;
+const MAX_ITERATOR_PARTS: usize = 4;
 
 /// One argument of a call, as the shape classifier sees it.
 pub(crate) struct Slot {
@@ -31,21 +38,15 @@ pub(crate) fn is_number(expr: &Expr) -> bool {
 pub(crate) fn mentions(expr: &Expr, name: &str) -> bool {
     match expr {
         Expr::Identifier(id) | Expr::Constant(id) => id == name,
-        Expr::List(items) => items.iter().any(|item| mentions(item, name)),
-        Expr::FunctionCall { args, .. } => args.iter().any(|arg| mentions(arg, name)),
-        Expr::Rule {
-            pattern,
-            replacement,
+        _ => {
+            let mut found = false;
+            for_each_child(expr, |child| {
+                if !found && mentions(child, name) {
+                    found = true;
+                }
+            });
+            found
         }
-        | Expr::RuleDelayed {
-            pattern,
-            replacement,
-        } => mentions(pattern, name) || mentions(replacement, name),
-        Expr::UnaryOp { operand, .. } => mentions(operand, name),
-        Expr::BinaryOp { left, right, .. } => mentions(left, name) || mentions(right, name),
-        Expr::Comparison { operands, .. } => operands.iter().any(|item| mentions(item, name)),
-        Expr::Part { expr, index } => mentions(expr, name) || mentions(index, name),
-        _ => false,
     }
 }
 
@@ -56,7 +57,7 @@ pub(crate) fn iterator_of(expr: &Expr) -> Option<(String, String)> {
         return None;
     };
     let list: Vec<&Expr> = items.iter().collect();
-    if list.len() < 2 || list.len() > 4 {
+    if list.len() < 2 || list.len() > MAX_ITERATOR_PARTS {
         return None;
     }
     let Expr::Identifier(variable) = list[0] else {
@@ -114,6 +115,89 @@ pub(crate) fn classify_argument(expr: &Expr, iterators: &[String]) -> Slot {
     }
 }
 
+// Calls `visit` on each direct child expression. This is the one place that knows how
+// to walk Woxi's AST. `learn_calls` and `collect_patterns` both use it, so a new list,
+// rule or call shape does not have to be remembered in two 80-line matches.
+fn for_each_child(expr: &Expr, mut visit: impl FnMut(&Expr)) {
+    match expr {
+        Expr::FunctionCall { args, .. } => {
+            for arg in args.iter() {
+                visit(arg);
+            }
+        }
+        Expr::List(items) => {
+            for item in items.iter() {
+                visit(item);
+            }
+        }
+        Expr::CompoundExpr(items) => {
+            for item in items {
+                visit(item);
+            }
+        }
+        Expr::Association(items) => {
+            for (key, value) in items {
+                visit(key);
+                visit(value);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            visit(left);
+            visit(right);
+        }
+        Expr::UnaryOp { operand, .. } | Expr::Function { body: operand } => visit(operand),
+        Expr::NamedFunction { body, .. } => visit(body),
+        Expr::Comparison { operands, .. } => {
+            for operand in operands {
+                visit(operand);
+            }
+        }
+        Expr::Rule {
+            pattern,
+            replacement,
+        }
+        | Expr::RuleDelayed {
+            pattern,
+            replacement,
+        } => {
+            visit(pattern);
+            visit(replacement);
+        }
+        Expr::ReplaceAll { expr, rules } | Expr::ReplaceRepeated { expr, rules } => {
+            visit(expr);
+            visit(rules);
+        }
+        Expr::Map { func, list } | Expr::Apply { func, list } | Expr::MapApply { func, list } => {
+            visit(func);
+            visit(list);
+        }
+        Expr::PrefixApply { func, arg } => {
+            visit(func);
+            visit(arg);
+        }
+        Expr::Postfix { expr, func } => {
+            visit(expr);
+            visit(func);
+        }
+        Expr::Part { expr, index } => {
+            visit(expr);
+            visit(index);
+        }
+        Expr::CurriedCall { func, args } => {
+            visit(func);
+            for arg in args {
+                visit(arg);
+            }
+        }
+        Expr::PatternOptional {
+            default: Some(default),
+            ..
+        } => visit(default),
+        Expr::PatternTest { test, .. } => visit(test),
+        _ => {}
+    }
+}
+
 /// Every call inside an expression, with its arguments classified by shape.
 pub(crate) fn learn_calls(expr: &Expr, out: &mut Vec<(String, Vec<Slot>)>) {
     if let Expr::FunctionCall { name, args } = expr {
@@ -144,33 +228,8 @@ pub(crate) fn learn_calls(expr: &Expr, out: &mut Vec<(String, Vec<Slot>)>) {
                 .collect();
             out.push((name.clone(), slots));
         }
-        for arg in args.iter() {
-            learn_calls(arg, out);
-        }
     }
-    match expr {
-        Expr::List(items) => {
-            for item in items.iter() {
-                learn_calls(item, out);
-            }
-        }
-        Expr::Rule {
-            pattern,
-            replacement,
-        }
-        | Expr::RuleDelayed {
-            pattern,
-            replacement,
-        } => {
-            learn_calls(pattern, out);
-            learn_calls(replacement, out);
-        }
-        Expr::BinaryOp { left, right, .. } => {
-            learn_calls(left, out);
-            learn_calls(right, out);
-        }
-        _ => {}
-    }
+    for_each_child(expr, |child| learn_calls(child, out));
 }
 
 /// Slot names, roles and example arguments learned from the shipped example gallery.
@@ -192,7 +251,7 @@ pub(crate) fn prototypes_content(json: &str) -> String {
         let signature: Vec<(&'static str, String)> =
             slots.iter().map(|s| (s.role, s.name.clone())).collect();
         if !table.contains_key(&head) {
-            if order.len() >= 80 {
+            if order.len() >= MAX_LEARNED_HEADS {
                 continue;
             }
             order.push(head.clone());
@@ -209,7 +268,7 @@ pub(crate) fn prototypes_content(json: &str) -> String {
         match existing {
             Some(variant) => {
                 for (target, fresh) in variant.iter_mut().zip(slots) {
-                    if target.examples.len() < 3
+                    if target.examples.len() < MAX_SLOT_EXAMPLES
                         && !target
                             .examples
                             .iter()
@@ -220,7 +279,7 @@ pub(crate) fn prototypes_content(json: &str) -> String {
                 }
             }
             None => {
-                if variants.len() < 3 {
+                if variants.len() < MAX_VARIANTS {
                     variants.push(slots);
                 }
             }
@@ -259,26 +318,31 @@ pub(crate) fn prototypes_content(json: &str) -> String {
 }
 
 pub(crate) fn collect_patterns(expr: &Expr, names: &mut Vec<String>) {
+    fn add_pattern_name(names: &mut Vec<String>, name: &str) {
+        if !name.is_empty() && !names.iter().any(|known| known == name) {
+            names.push(name.to_string());
+        }
+    }
     match expr {
-        Expr::Pattern { name, .. }
-        | Expr::PatternTest { name, .. }
-        | Expr::PatternOptional { name, .. } => {
-            if !name.is_empty() && !names.iter().any(|known| known == name) {
-                names.push(name.clone());
-            }
+        Expr::Pattern { name, .. } => {
+            add_pattern_name(names, name);
+            return;
         }
-        Expr::FunctionCall { args, .. } => {
-            for arg in args.iter() {
-                collect_patterns(arg, names);
+        Expr::PatternOptional { name, default, .. } => {
+            add_pattern_name(names, name);
+            if let Some(default) = default {
+                collect_patterns(default, names);
             }
+            return;
         }
-        Expr::List(items) => {
-            for item in items.iter() {
-                collect_patterns(item, names);
-            }
+        Expr::PatternTest { name, test, .. } => {
+            add_pattern_name(names, name);
+            collect_patterns(test, names);
+            return;
         }
         _ => {}
     }
+    for_each_child(expr, |child| collect_patterns(child, names));
 }
 
 /// The pattern names bound by a definition's left-hand side: the parameters that are
@@ -305,9 +369,9 @@ pub(crate) fn parameters_of(statement: &str) -> Vec<String> {
     names
 }
 
-/// Where each symbol of a notebook is defined, per entry, with the definition's byte
-/// range and its parameters. One request for the whole notebook, debounced by the
-/// caller.
+/// Where each symbol of a notebook is defined, per entry, with the definition's
+/// character range and its parameters. One request for the whole notebook, debounced
+/// by the caller.
 pub(crate) fn definitions_content(json: &str) -> String {
     use woxi::lsp::analysis;
 
@@ -325,6 +389,10 @@ pub(crate) fn definitions_content(json: &str) -> String {
                     .iter()
                     .map(|name| format!("\"{}\"", json_escape(name)))
                     .collect();
+                let start = byte_to_utf16(code, definition.name_range.0);
+                let end = byte_to_utf16(code, definition.name_range.1);
+                let full_start = byte_to_utf16(code, definition.full_range.0);
+                let full_end = byte_to_utf16(code, definition.full_range.1);
                 format!(
                     "{{\"name\":\"{}\",\"kind\":\"{}\",\"start\":{},\"end\":{},\"full\":[{},{}],\"params\":[{}]}}",
                     json_escape(&definition.name),
@@ -332,10 +400,10 @@ pub(crate) fn definitions_content(json: &str) -> String {
                         analysis::DefinitionKind::Function => "function",
                         analysis::DefinitionKind::Variable => "variable",
                     },
-                    definition.name_range.0,
-                    definition.name_range.1,
-                    definition.full_range.0,
-                    definition.full_range.1,
+                    start,
+                    end,
+                    full_start,
+                    full_end,
                     parameters.join(",")
                 )
             })
@@ -346,9 +414,19 @@ pub(crate) fn definitions_content(json: &str) -> String {
 }
 
 pub(crate) fn catalog_content() -> String {
+    // `$Version` is Woxi's own identity. The wrapper crate version says
+    // nothing about the interpreter whose symbols this is.
+    let version = woxi::interpret_to_expr("$Version")
+        .ok()
+        .and_then(|expr| match &expr {
+            Expr::String(text) => Some(text.trim_start_matches("Woxi ").to_string()),
+            _ => None,
+        })
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
     format!(
         "{{\"version\":\"{}\",\"total\":{}}}",
-        env!("CARGO_PKG_VERSION"),
+        json_escape(&version),
         symbol_table().len()
     )
 }

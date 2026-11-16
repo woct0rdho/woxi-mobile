@@ -39,7 +39,7 @@ if (-not $Screenshot) { $Screenshot = Join-Path $repo 'screenshots\latest.png' }
 
 if (-not $NoBuild) {
     Write-Host '=== building release APK ==='
-    $build = & .\gradlew.bat :app:assembleRelease --no-daemon --console=plain 2>&1 | Out-String
+    $build = & .\gradlew.bat :app:assembleRelease --no-daemon --console=plain -PwoxiAutomation=true 2>&1 | Out-String
     if ($build -notmatch 'BUILD SUCCESSFUL') {
         Write-Host $build
         throw 'build failed'

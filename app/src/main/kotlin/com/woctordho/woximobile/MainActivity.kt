@@ -43,9 +43,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var container: FrameLayout
     private val bridge = NativeBridge(this)
 
-    private var backHandlerActive = false
     private var pageLoaded = false
     private var loadAttempts = 0
+    private val loadRetry = Runnable { if (!pageLoaded) loadWithRetries() }
 
     // Test actions wait in this queue until the page says it is ready (see handleTestIntent).
     private val pendingTestActions = ArrayDeque<Pair<String, String>>()
@@ -93,6 +93,7 @@ class MainActivity : ComponentActivity() {
     // the page is loading - on launch, or after a `reload` - are queued in order for that
     // moment. When the page is already up, an action runs at once.
     private fun handleTestIntent(intent: Intent?) {
+        if (!BuildConfig.AUTOMATION) return
         val action = intent?.getStringExtra("woxi_action") ?: return
         val argument = intent.getStringExtra("woxi_arg") ?: ""
         Log.w(TAG, "test action: $action $argument")
@@ -147,8 +148,6 @@ class MainActivity : ComponentActivity() {
             allowContentAccess = false
             // All gestures (pan/zoom/rotate on plots) are handled by the web layer.
             setSupportZoom(false)
-            builtInZoomControls = false
-            displayZoomControls = false
             mediaPlaybackRequiresUserGesture = false
             textZoom = 100
             cacheMode = WebSettings.LOAD_DEFAULT
@@ -175,9 +174,10 @@ class MainActivity : ComponentActivity() {
                     favicon: android.graphics.Bitmap?,
                 ) {
                     Log.w(TAG, "page started: " + url)
-                    // A reload (from the harness or the app) starts a page that is not ready
-                    // yet: test actions wait for the next ready report.
+                    // A reload starts a page that is not ready yet: test actions wait
+                    // for the next ready report.
                     testReady = false
+                    pageLoaded = false
                 }
 
                 override fun onPageFinished(
@@ -186,6 +186,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Log.w(TAG, "page finished: " + url)
                     pageLoaded = true
+                    view.removeCallbacks(loadRetry)
                     // The page can now receive the insets it needs for the keyboard padding.
                     pushInsetsToWeb()
                 }
@@ -255,6 +256,7 @@ class MainActivity : ComponentActivity() {
         // the notebook page.
         loadAttempts = 0
         pageLoaded = false
+        webView.removeCallbacks(loadRetry)
         loadWithRetries()
     }
 
@@ -269,9 +271,13 @@ class MainActivity : ComponentActivity() {
             return
         }
         Log.w(TAG, "load attempt ${loadAttempts + 1}/$MAX_LOAD_ATTEMPTS")
-        webView.loadUrl(APP_URL + "?t=" + System.currentTimeMillis() + "&r=" + loadAttempts)
+        val automation = if (BuildConfig.AUTOMATION) "&automation=1" else ""
+        webView.loadUrl(
+            APP_URL + "?t=" + System.currentTimeMillis() + "&r=" + loadAttempts + automation,
+        )
         loadAttempts++
-        webView.postDelayed({ if (!pageLoaded) loadWithRetries() }, LOAD_RETRY_MS)
+        webView.removeCallbacks(loadRetry)
+        webView.postDelayed(loadRetry, LOAD_RETRY_MS)
     }
 
     // Replaces a dead WebView (see [WebViewClient.onRenderProcessGone]).
@@ -301,12 +307,28 @@ class MainActivity : ComponentActivity() {
             this,
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
-                    if (backHandlerActive) {
-                        // Web layer owns back (open panel / fullscreen plot / menu).
-                        webView.evaluateJavascript("window.WoxiApp && window.WoxiApp.onNativeBack()", null)
-                    } else {
+                    if (!pageLoaded) {
                         isEnabled = false
-                        onBackPressedDispatcher.onBackPressed()
+                        try {
+                            onBackPressedDispatcher.onBackPressed()
+                        } finally {
+                            isEnabled = true
+                        }
+                        return
+                    }
+                    // The web layer closes the panel on top and answers whether it did.
+                    // If nothing was open, the press falls through to the system.
+                    webView.evaluateJavascript(
+                        "window.WoxiApp && window.WoxiApp.onNativeBack()",
+                    ) { result ->
+                        if (result != "true") {
+                            isEnabled = false
+                            try {
+                                onBackPressedDispatcher.onBackPressed()
+                            } finally {
+                                isEnabled = true
+                            }
+                        }
                     }
                 }
             },
@@ -322,10 +344,6 @@ class MainActivity : ComponentActivity() {
             "window.WoxiNativeCallbacks && WoxiNativeCallbacks.onInsets && " +
                 "WoxiNativeCallbacks.onInsets($insetTopPx,$insetBottomPx)"
         webView.post { webView.evaluateJavascript(script, null) }
-    }
-
-    fun setBackHandlerActive(active: Boolean) {
-        backHandlerActive = active
     }
 
     // Applies the resolved theme ('light' | 'dark') to everything outside the web layer:
@@ -348,7 +366,9 @@ class MainActivity : ComponentActivity() {
         createNotebookLauncher.launch(name)
     }
 
-    fun launchOpenNotebook(mime: String) {
-        openNotebookLauncher.launch(arrayOf(NOTEBOOK_MIME, mime, "application/json", "text/plain", "*/*"))
+    fun launchOpenNotebook() {
+        openNotebookLauncher.launch(
+            arrayOf(NOTEBOOK_MIME, "application/json", "text/plain", "*/*"),
+        )
     }
 }

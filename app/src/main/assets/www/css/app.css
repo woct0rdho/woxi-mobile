@@ -403,7 +403,7 @@ html, body {
 .woxi-kb-slide {
   position: absolute;
   inset: 0;
-  transition: transform 90ms ease-out;
+  transition: transform var(--woxi-slide-ms) ease-out;
   will-change: transform;
   backface-visibility: hidden;
 }

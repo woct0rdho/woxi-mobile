@@ -4,20 +4,11 @@ plugins {
     id("com.android.application")
 }
 
-// Optional release signing. Create keystore.properties with:
-//   storeFile=keystore/woxi.jks
-//   storePassword=...
-//   keyAlias=...
-//   keyPassword=...
 val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
 }
 
-// Which ABIs to package. The phone is arm64, so that is the default. Emulator builds
-// pass -Pabi=arm64-v8a,x86_64 (or -Pabi=all). An ABI can only be selected if
-// app/src/main/jniLibs has a libwoxi_jni.so for it, which tools/build-engine.ps1
-// builds: .\tools\build-engine.ps1 -Abi x86_64
 val abis: List<String> = run {
     val requested = (project.findProperty("abi") as String?)?.trim().orEmpty()
     when {
@@ -26,6 +17,9 @@ val abis: List<String> = run {
         else -> requested.split(',').map { it.trim() }.filter { it.isNotEmpty() }
     }
 }
+
+val automation =
+    (project.findProperty("woxiAutomation") as String?)?.toBoolean() ?: false
 
 android {
     namespace = "com.woctordho.woximobile"
@@ -37,6 +31,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField("boolean", "AUTOMATION", automation.toString())
         ndk {
             abiFilters += abis
         }
@@ -73,8 +68,6 @@ android {
     }
 
     packaging {
-        // `ndk.abiFilters` covers native code Gradle builds. The interpreter is a
-        // prebuilt in jniLibs, so leave out the ABI folders that were not selected.
         val allAbis = listOf("arm64-v8a", "x86_64", "armeabi-v7a", "x86")
         jniLibs {
             excludes += allAbis.filter { it !in abis }.map { "lib/$it/**" }

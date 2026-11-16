@@ -25,7 +25,6 @@
 const NBFORMAT = 4;
 const NBFORMAT_MINOR = 5;
 const EXTENSION = ".ipynb";
-const MIME = "application/x-ipynb+json";
 
 // From kernelspec/woxi/kernel.json in ad-si/Woxi.
 const KERNELSPEC = {
@@ -242,7 +241,6 @@ export {
   base64ToUtf8,
   displayTitle,
   EXTENSION,
-  MIME,
   NBFORMAT,
   NBFORMAT_MINOR,
   parse,

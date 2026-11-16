@@ -1,10 +1,18 @@
 // The app's own undo stack: programmatic edits (keys, accepted suggestions, closed brackets)
 // are invisible to the textarea's stack, so one step per word/operator/edit is kept here.
 
-import { activeEntry, autoGrow, focusInput, revealCaret, updateTitle } from "./entries.js";
+import {
+  activeEntry,
+  autoGrow,
+  focusInput,
+  revealCaret,
+  selectionOf,
+  setEntrySelection,
+  updateTitle,
+} from "./entries.js";
 import { persist } from "./notebook-store.js";
+import { refreshAssist, refreshBarState } from "./refresh.js";
 import { state } from "./runtime.js";
-import { refreshAssist, refreshBarState, selectionOf } from "./typing.js";
 
 const STEP_BREAK = " \t\n,;[](){}<>+-*/^=!&|@#:'\"~?%";
 const UNDO_LIMIT = 100;
@@ -26,15 +34,18 @@ function recordEdit(entry, kind, after) {
   const selection = selectionOf(entry);
   const text = entry.dom.input.value;
   const typed = kind === "type" || kind === "delete";
+  const last = entry.lastEdit;
   const joins =
     typed &&
     selection.selStart === selection.selEnd &&
-    entry.lastKind === kind &&
-    entry.lastCaret !== null &&
-    entry.lastCaret !== undefined &&
-    selection.caret === entry.lastCaret &&
+    last !== null &&
+    last !== undefined &&
+    last.kind === kind &&
+    last.caret !== null &&
+    last.caret !== undefined &&
+    selection.caret === last.caret &&
     !isStepBreak(text.charAt(selection.caret - 1)) &&
-    now - (entry.lastEditAt || 0) < COALESCE_MS;
+    now - (last.at || 0) < COALESCE_MS;
   if (!joins) {
     history.undo.push({
       text: text,
@@ -45,9 +56,15 @@ function recordEdit(entry, kind, after) {
     if (history.undo.length > UNDO_LIMIT) history.undo.shift();
   }
   history.redo.length = 0;
-  entry.lastEditAt = now;
-  entry.lastKind = kind;
-  entry.lastCaret = after === undefined ? null : after;
+  // The `input` event follows `beforeinput`. Only an edit whose end was known (or a
+  // deletion, whose new caret is exactly where the input event leaves it) may set the
+  // caret that the next edit joins. A paste must stay a step of its own.
+  entry.lastEdit = {
+    kind: kind,
+    caret: after === undefined ? null : after,
+    at: now,
+    merge: typed && (after !== undefined || kind === "delete"),
+  };
   refreshBarState();
 }
 
@@ -74,9 +91,7 @@ function applyHistory(entry, snapshot) {
   if (selEnd === null || selEnd === undefined) selEnd = caret;
   selStart = Math.max(0, Math.min(selStart, length));
   selEnd = Math.max(selStart, Math.min(selEnd, length));
-  entry.caret = caret;
-  entry.selStart = selStart;
-  entry.selEnd = selEnd;
+  setEntrySelection(entry, selStart, selEnd);
   focusInput(entry);
   input.setSelectionRange(selStart, selEnd);
   autoGrow(input);
@@ -87,38 +102,31 @@ function applyHistory(entry, snapshot) {
   refreshAssist();
 }
 
-function undoEntry() {
-  const entry = activeEntry();
-  if (!canUndo(entry)) return;
-  const history = historyOf(entry);
+function stepHistory(entry, from, to) {
   const selection = selectionOf(entry);
-  history.redo.push({
+  from.push({
     text: entry.dom.input.value,
     caret: selection.caret,
     selStart: selection.selStart,
     selEnd: selection.selEnd,
   });
-  applyHistory(entry, history.undo.pop());
-  entry.lastKind = null;
-  entry.lastCaret = null;
+  applyHistory(entry, to.pop());
+  entry.lastEdit = null;
   refreshBarState();
+}
+
+function undoEntry() {
+  const entry = activeEntry();
+  if (!canUndo(entry)) return;
+  const history = historyOf(entry);
+  stepHistory(entry, history.redo, history.undo);
 }
 
 function redoEntry() {
   const entry = activeEntry();
   if (!canRedo(entry)) return;
   const history = historyOf(entry);
-  const selection = selectionOf(entry);
-  history.undo.push({
-    text: entry.dom.input.value,
-    caret: selection.caret,
-    selStart: selection.selStart,
-    selEnd: selection.selEnd,
-  });
-  applyHistory(entry, history.redo.pop());
-  entry.lastKind = null;
-  entry.lastCaret = null;
-  refreshBarState();
+  stepHistory(entry, history.undo, history.redo);
 }
 
-export { applyHistory, canRedo, canUndo, historyOf, isStepBreak, recordEdit, redoEntry, undoEntry };
+export { canRedo, canUndo, recordEdit, redoEntry, undoEntry };

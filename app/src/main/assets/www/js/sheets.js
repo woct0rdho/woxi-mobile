@@ -2,7 +2,7 @@
 // close it and run their command. Menu and Options are just callers of this component.
 
 import { activeEntry, focusInput } from "./entries.js";
-import { el, els, keepFocus, nativeCall } from "./runtime.js";
+import { el, els, keepFocus } from "./runtime.js";
 
 export function openSheet(title, build) {
   els.sheetTitle.textContent = title;
@@ -15,12 +15,10 @@ export function openSheet(title, build) {
   // committed into the hidden field.) The caret comes back with `closeSheet`.
   const entry = activeEntry();
   if (entry && entry.dom) entry.dom.input.blur();
-  nativeCall("setBackHandlerActive", true);
 }
 
 export function closeSheet() {
   els.overlay.className = "woxi-hidden";
-  nativeCall("setBackHandlerActive", false);
   // A sheet is opened over an entry and never takes the caret for itself (see keepFocus),
   // so whatever made the field lose the focus - the native file picker, the window going
   // away - is repaired on the way out. Deferred by a task: Escape closes the sheet from a
