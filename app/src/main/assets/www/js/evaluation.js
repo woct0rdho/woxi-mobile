@@ -48,6 +48,7 @@ export function clearOutput(entry) {
   WoxiPlot.release(WoxiPlot.detach(entry.dom.output), entry.dom.output);
   entry.dom.output.innerHTML = "";
   entry.output = "";
+  entry.items = null;
   delete entry.perf;
 }
 
@@ -76,6 +77,9 @@ export async function runEntry(entry) {
     // them its handle (the new evaluation registers a fresh one).
     WoxiPlot.release(WoxiPlot.detach(entry.dom.output), entry.dom.output);
     const rendered = WoxiRender.renderItems(json);
+    // The engine items are the notebook's outputs (the `.ipynb` export serializes them).
+    // The rendered markup below is the live view. An unreadable answer keeps neither.
+    entry.items = rendered.items && rendered.items.length ? json : null;
     entry.dom.output.innerHTML = rendered.html;
     wireManipulate(entry.dom.output);
     // Trim the empty margins Woxi's plot layout reserves (see render-output.js).
@@ -96,12 +100,14 @@ export async function runEntry(entry) {
     } else {
       delete entry.perf;
     }
-    // The evaluation's output is part of the notebook, not a transient view: a reload has to
-    // restore the picture (and the plot's saved range/layout), so persist it now.
+    // The evaluation's output is part of the notebook: `entry.items` carries it into the
+    // `.ipynb` export, and `entry.output` is this session's markup. A reload re-evaluates
+    // the inputs instead of restoring either, so `persist()` stores only the source.
     persist();
     refreshAssist();
   } catch (err) {
     showBusy(entry, false);
+    entry.items = null;
     entry.dom.output.innerHTML =
       '<div class="woxi-out woxi-out-error">' +
       WoxiRender.escapeHtml(err instanceof Error ? err.message : String(err)) +
@@ -142,7 +148,8 @@ export function attachPlots(entry, items, previous) {
     requestPlot,
     function () {
       entry.output = WoxiPlot.markupOf(entry.dom.output);
-      // A picture at rest is the notebook's new range. Persist it when the notify is debounced.
+      // A picture at rest is this session's new view. `entry.items` keeps the evaluation
+      // item the `.ipynb` export writes, so it is not replaced here.
       persist();
     },
     seeds

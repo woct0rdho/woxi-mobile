@@ -41,6 +41,7 @@ export function addEntry(input, options) {
     input: input || "",
     dom: null,
     output: "",
+    items: null,
   };
   const index = options?.index ?? state.entries.length;
   state.entries.splice(index, 0, entry);
@@ -320,9 +321,8 @@ function wireManipulateBlock(block) {
       } catch (err) {
         parsed = null;
       }
-      if (!parsed) return;
-      if (parsed.svg) view.innerHTML = WoxiRender.svgTag(parsed.svg, "woxi-svg");
-      else if (parsed.text) view.innerHTML = WoxiRender.escapeHtml(parsed.text);
+      if (!parsed || (!parsed.svg && !parsed.text)) return;
+      view.innerHTML = WoxiRender.manipulateView(parsed);
       WoxiRender.fitGraphics(view);
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err));

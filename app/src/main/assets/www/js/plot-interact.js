@@ -819,7 +819,7 @@ function wire(container, send, onFrame, seed) {
       // sized by the pinned box so the card cannot resize, and the canvas goes over it.
       const box = layer ? layer.box : layout ? WoxiPlotLayer.boxOf(layout) : null;
       dropLayer();
-      container.innerHTML = WoxiRender.svgTag(item.svg, "woxi-graphic");
+      container.innerHTML = WoxiRender.graphicSvg(item.svg);
       mountLayer(box);
       if (item.plot && item.plot.x) {
         // The attribute keeps the view and the sample capability flags. A reopened notebook

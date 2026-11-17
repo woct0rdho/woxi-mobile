@@ -41,6 +41,13 @@
 }
 
 :root {
+  /* The face the box layout reserves (0.632 em per cell) and the face its plot padding
+     tables measure labels with, see fonts/README.md. Both ship in the APK. */
+  --woxi-mono: 'Atkinson Hyperlegible Mono', 'Woxi Mono Fallback', monospace;
+  --woxi-prose: 'Atkinson Hyperlegible Next', sans-serif;
+  /* The size the box layout is asked for. A typeset SVG is sized in em against it
+     (`typesetSvg` in render-output.js), so this is what a result draws at. */
+  --woxi-out-size: 14px;
   /* Dark theme */
   --woxi-bg: #1e1e1e;
   --woxi-surface: #262626;
@@ -228,35 +235,50 @@ html, body {
 .woxi-out-math {
   display: flex;
   align-items: center;
-  min-height: 24px;
+  /* A typeset result is sized in em against the layout size (`typesetSvg` in
+     render-output.js), so this is the size it draws at. The plain-text fallback uses
+     the same one. The row is as tall as the layout draws it: a one-line result is one
+     line, a fraction is taller. */
+  font-size: var(--woxi-out-size);
   padding: 2px 4px;
   /* A wide result keeps the layout's text size and scrolls sideways. Shrinking
      it to the card width is what made long polynomials unreadable. */
   overflow-x: auto;
 }
-/* The SVG carries its size in em (see svgTag in render-output.js), so its text
-   keeps the 14 px layout scale instead of being fitted to one fixed height:
-   a one-line result is one line of text tall, a fraction is taller. */
+/* A one-line result is one line of the layout, a fraction is taller, and a run styled
+   larger than the layout stays larger. `flex: none` keeps the result at that size so
+   it can scroll instead of shrinking. */
 .woxi-out-math .woxi-svg {
-  height: auto;
-  width: auto;
-  max-width: none;
   flex: none;
-  vertical-align: middle;
 }
 /* The layout reserved 0.632 em per cell, i.e. Atkinson Hyperlegible Mono. The
    fallback only supplies the glyphs that face does not cover. */
 .woxi-out-math .woxi-svg text {
-  font-family: 'Atkinson Hyperlegible Mono', 'Woxi Mono Fallback', monospace;
+  font-family: var(--woxi-mono);
 }
 /* Plot labels and ticks are measured with Atkinson Hyperlegible Next by the
    engine's padding tables, so the device has to draw them with that face. */
 .woxi-out-graphic svg text {
-  font-family: 'Atkinson Hyperlegible Next', sans-serif;
+  font-family: var(--woxi-prose);
+}
+/* A graphic's own text is not always proportional: a typeset SVG nested in a Frame, or
+   a question panel, is laid out on the 0.632 em cell and names `monospace`. Those runs
+   keep the mono face, or the cells they were placed in would not hold. */
+.woxi-out-graphic svg[font-family="monospace"] text,
+.woxi-out-graphic svg text[font-family="monospace"] {
+  font-family: var(--woxi-mono);
 }
 .woxi-out-graphic {
   padding: 6px 0;
   overflow-x: auto;
+}
+/* A picture keeps the size its renderer gave it, so a Grid or a Frame stays a piece of
+   text rather than being magnified to the card. A picture wider than the card shrinks
+   to fit. A plot (below) fills the width. */
+.woxi-out-graphic svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
 }
 /* A plot that carries a view handle pans and zooms, so it claims its touches
    instead of letting the page scroll under the finger. A canvas over the picture
@@ -271,6 +293,12 @@ html, body {
   position: relative;
   z-index: 1;
   cursor: grab;
+  /* A plot is generated for the card's width and fills it, so it also takes the card's
+     rounded corners. Other pictures keep their own frame. Rounding those would cut a
+     `Framed` box at its edge. */
+  width: 100%;
+  max-width: 520px;
+  border-radius: 8px;
 }
 .woxi-plot-layer {
   position: absolute;
@@ -279,26 +307,19 @@ html, body {
   pointer-events: none;
   z-index: 2;
 }
-.woxi-out-graphic svg {
-  display: block;
-  width: 100%;
-  max-width: 520px;
-  height: auto;
-  border-radius: 8px;
-}
 
 .woxi-out-text {
   padding: 2px 4px;
-  font-family: 'Atkinson Hyperlegible Mono', 'Woxi Mono Fallback', monospace;
-  font-size: 14px;
+  font-family: var(--woxi-mono);
+  font-size: var(--woxi-out-size);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .woxi-out-print {
   padding: 2px 4px;
-  font-family: monospace;
-  font-size: 14px;
+  font-family: var(--woxi-mono);
+  font-size: var(--woxi-out-size);
   color: var(--woxi-text);
   white-space: pre-wrap;
   word-break: break-word;
@@ -310,7 +331,7 @@ html, body {
   border-left: 3px solid var(--woxi-warning);
   background: var(--woxi-warning-bg);
   color: var(--woxi-warning-ink);
-  font-family: monospace;
+  font-family: var(--woxi-mono);
   font-size: 12.5px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -322,7 +343,7 @@ html, body {
   border-left: 3px solid var(--woxi-danger);
   background: var(--woxi-error-bg);
   color: var(--woxi-error-ink);
-  font-family: monospace;
+  font-family: var(--woxi-mono);
   font-size: 12.5px;
   white-space: pre-wrap;
   word-break: break-word;

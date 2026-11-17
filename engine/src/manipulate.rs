@@ -153,7 +153,7 @@ pub(crate) fn parse_manipulate(stmt: &str) -> Option<(String, Vec<Control>)> {
 pub(crate) fn manipulate_json(
     body: &str,
     controls: &[Control],
-    initial_svg: Option<&str>,
+    initial: Option<&Rendered>,
 ) -> String {
     let mut json = String::from("{\"type\":\"manipulate\",\"body\":\"");
     json.push_str(&json_escape(body));
@@ -190,20 +190,28 @@ pub(crate) fn manipulate_json(
         }
         json.push('}');
     }
-    json.push_str("],\"initial\":{");
-    match initial_svg {
-        Some(svg) => json.push_str(&format!("\"svg\":\"{}\"", json_escape(svg))),
-        None => json.push_str("\"text\":\"\""),
-    }
-    json.push_str("}}");
+    json.push_str("],\"initial\":");
+    json.push_str(&rendered_json(initial));
+    json.push('}');
     json
+}
+
+/// One evaluated view as the JSON the client reads: the picture, or the text of a body
+/// that is not a graphic. `{}` when the body produced neither (the client keeps what it
+/// shows).
+pub(crate) fn rendered_json(rendered: Option<&Rendered>) -> String {
+    match rendered {
+        Some(Rendered::Graphic(svg)) => format!("{{\"svg\":\"{}\"}}", json_escape(svg)),
+        Some(Rendered::Text(text)) => format!("{{\"text\":\"{}\"}}", json_escape(text)),
+        None => "{}".to_string(),
+    }
 }
 
 /// Renders a `Manipulate` body with its initial control values.
 ///
 /// Evaluating the body (rather than the whole `Manipulate[...]` statement) is what
-/// gives the widget its starting picture: the statement itself only echoes its source.
-pub(crate) fn manipulate_initial_svg(body: &str, controls: &[Control]) -> Option<String> {
+/// gives the widget its starting view: the statement itself only echoes its source.
+pub(crate) fn manipulate_initial(body: &str, controls: &[Control]) -> Option<Rendered> {
     let bindings: Vec<(String, String)> = controls
         .iter()
         .filter(|control| is_plain_symbol(&control.name))
@@ -212,10 +220,18 @@ pub(crate) fn manipulate_initial_svg(body: &str, controls: &[Control]) -> Option
     render_body(body, &bindings)
 }
 
+/// What a `Manipulate` body evaluated to. The view holds a picture, so a body that is
+/// not a graphic - including a typeset result, whose SVG is laid out for a line of text
+/// rather than for this box - reports the text the interpreter printed instead.
+pub(crate) enum Rendered {
+    Graphic(String),
+    Text(String),
+}
+
 /// Substitutes bindings before the body is evaluated (`With`, not `/.`: with
 /// `ReplaceAll` the body would already have been evaluated, and `Plot` never sees the
 /// substituted value).
-pub(crate) fn render_body(body: &str, bindings: &[(String, String)]) -> Option<String> {
+pub(crate) fn render_body(body: &str, bindings: &[(String, String)]) -> Option<Rendered> {
     let expression = if bindings.is_empty() {
         body.to_string()
     } else {
@@ -226,10 +242,11 @@ pub(crate) fn render_body(body: &str, bindings: &[(String, String)]) -> Option<S
         format!("With[{{{}}}, {}]", assignments.join(", "), body)
     };
     let result = woxi::interpret_with_stdout(&expression).ok()?;
-    result
-        .graphics
-        .or(result.output_svg)
-        .filter(|svg| !svg.trim().is_empty())
+    if let Some(svg) = result.graphics.filter(|svg| !svg.trim().is_empty()) {
+        return Some(Rendered::Graphic(svg));
+    }
+    let text = result.result.trim();
+    (!text.is_empty()).then(|| Rendered::Text(text.to_string()))
 }
 
 pub(crate) fn is_plain_symbol(name: &str) -> bool {

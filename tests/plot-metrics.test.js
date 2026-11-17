@@ -3,6 +3,7 @@
 // headless tests install that table (`tests/plot-metrics-fallback.js`) as their measure. These are
 // the numbers Woxi's own padding tests assert, so a change to the table or to the metrics fails
 // here before it can drift silently.
+
 import assert from "node:assert/strict";
 import { test } from "node:test";
 

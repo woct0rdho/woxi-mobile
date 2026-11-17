@@ -11,17 +11,20 @@ cargo install cargo-ndk
 sdkmanager "ndk;28.2.13676358"
 
 # Engine (after changing `engine/`)
-# For development use the profile `fast`, without LTO and without debug info, incremental. A rebuild takes seconds.
+# For development, use the profile `fast`, without LTO and without debug info, incremental. A rebuild takes seconds.
 .\tools\build-engine.ps1 -Profile fast                # arm64-v8a
 .\tools\build-engine.ps1 -Abi x86_64 -Profile fast    # x86_64 for emulator
 
-# For release use the profile `release`, with thin LTO. A build takes minutes.
+# For release, use the profile `release`, with thin LTO. A build takes minutes.
 .\tools\build-engine.ps1                              # arm64-v8a
 
 # App
 # Gradle 9.9 runs on JDK 17-25. Point `JAVA_HOME` at one, or have `java` on PATH.
 .\gradlew.bat :app:assembleRelease                    # arm64-v8a
 .\gradlew.bat :app:assembleRelease -Pabi=all          # arm64-v8a + x86_64
+
+# For development, build with automation and JS test hooks.
+.\gradlew.bat :app:assembleRelease -Pabi=x86_64 -PwoxiAutomation=true
 
 # Build + install + launch + screenshot on a connected phone
 .\tools\deploy.ps1

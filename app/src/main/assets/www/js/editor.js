@@ -148,6 +148,7 @@ function duplicateActive() {
   const seeds = WoxiPlot.seedsOf(entry.dom.output);
   const copy = addEntry(entry.input, { index: state.entries.indexOf(entry) + 1 });
   copy.output = entry.output;
+  copy.items = entry.items;
   copy.dom.output.innerHTML = entry.output || "";
   attachPlots(copy, null, seeds);
   wireManipulate(copy.dom.root);

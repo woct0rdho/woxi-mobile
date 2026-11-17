@@ -201,7 +201,6 @@ function pinBox(svg, box) {
   svg.setAttribute("width", String(box.width));
   svg.setAttribute("height", String(box.height));
   if (svg.style) svg.style.aspectRatio = box.width + " / " + box.height;
-  svg.setAttribute("data-woxi-fit", "scene");
 }
 
 // The layout a plot keeps, in its own coordinate space, fixed at the first scene:

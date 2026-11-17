@@ -1,6 +1,8 @@
 // The notebook store: the debounced localStorage copy that survives a reload, and the file
 // operations behind New / Open / Save. The entries live in the shared `state`. This module
-// only reads and replaces the list and asks the entry view to render it.
+// only reads and replaces the list and asks the entry view to render it. Only the inputs
+// are stored: a reload re-evaluates every entry, so a rendered output would be dead weight
+// here. The `.ipynb` export carries the outputs from each entry's engine items.
 
 import { addEntry, autoGrowAll, focusEntry, renderNotebook, updateTitle } from "./entries.js";
 import * as WoxiNotebook from "./notebook.js";

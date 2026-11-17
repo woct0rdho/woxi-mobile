@@ -110,6 +110,9 @@ function executeResult(data, executionCount) {
   };
 }
 
+// The outputs of an evaluated entry: the engine items `evaluation.js` keeps, mapped to
+// the MIME bundle a Jupyter front end reads. The picture is the evaluation's. A plot's
+// live, panned markup lives in `entry.output` and is not serialized.
 function outputsFor(entry, executionCount) {
   if (!entry || !entry.items) return [];
   let items = null;

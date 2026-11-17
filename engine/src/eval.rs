@@ -1,9 +1,8 @@
 //! Evaluation: one entry at a time, and the items its statements produce.
 
-use crate::json::json_escape;
 use crate::manipulate::{
-    is_plain_symbol, manipulate_initial_svg, manipulate_json, parse_bindings, parse_manipulate,
-    render_body,
+    is_plain_symbol, manipulate_initial, manipulate_json, parse_bindings, parse_manipulate,
+    render_body, rendered_json,
 };
 use crate::output::{graphics_item_with_plot, item, residual_text};
 use crate::plot::{capture_statement, register_plot, Capture};
@@ -83,16 +82,11 @@ pub(crate) fn evaluate_statement_items(stmt: &str, capture: Capture) -> Vec<Stri
                 .graphics
                 .as_deref()
                 .filter(|svg| !svg.trim().is_empty());
-            let typeset = result
-                .output_svg
-                .as_deref()
-                .filter(|svg| !svg.trim().is_empty());
 
-            // Interactive controls are emitted with the rendered view they start on.
+            // Interactive controls are emitted with the view they start on.
             if let Some((body, controls)) = parse_manipulate(stmt) {
-                let initial = manipulate_initial_svg(&body, &controls)
-                    .or_else(|| graphics.or(typeset).map(|svg| svg.to_string()));
-                items.push(manipulate_json(&body, &controls, initial.as_deref()));
+                let initial = manipulate_initial(&body, &controls);
+                items.push(manipulate_json(&body, &controls, initial.as_ref()));
                 return items;
             }
 
@@ -118,7 +112,11 @@ pub(crate) fn evaluate_statement_items(stmt: &str, capture: Capture) -> Vec<Stri
                 if !residual.is_empty() {
                     items.push(item("text", &residual, None));
                 }
-            } else if let Some(svg) = typeset {
+            } else if let Some(svg) = result
+                .output_svg
+                .as_deref()
+                .filter(|svg| !svg.trim().is_empty())
+            {
                 let svg = crate::typeset::respace_svg(svg);
                 items.push(item("text", &result.result, Some(&svg)));
             } else if result.result != "\0" {
@@ -154,10 +152,7 @@ pub(crate) fn evaluate_manipulate(body: &str, bindings_json: &str) -> String {
     if bindings.is_empty() {
         return "{}".to_string();
     }
-    match render_body(body, &bindings) {
-        Some(svg) => format!("{{\"svg\":\"{}\"}}", json_escape(&svg)),
-        None => "{}".to_string(),
-    }
+    rendered_json(render_body(body, &bindings).as_ref())
 }
 
 #[cfg(test)]

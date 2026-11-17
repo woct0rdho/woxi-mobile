@@ -42,6 +42,33 @@ test("the file is nbformat 4.5 and only code cells are taken", () => {
   assert.equal(parsed.skippedCells, 1);
 });
 
+test("an evaluated entry's engine items become notebook outputs", () => {
+  const items = [
+    { type: "text", text: "x^3/3", svg: '<svg width="40" height="15"></svg>' },
+    { type: "print", text: "hi" },
+  ];
+  const notebook = JSON.parse(
+    serialize({
+      title: "T",
+      entries: [
+        { input: "Integrate[x^2, x]", items: JSON.stringify(items) },
+        { input: "not evaluated" },
+      ],
+    })
+  );
+  const outputs = notebook.cells[0].outputs;
+  assert.equal(outputs.length, 2);
+  assert.equal(outputs[0].output_type, "execute_result");
+  assert.equal(outputs[0].execution_count, 1);
+  assert.deepEqual(outputs[0].data["text/plain"], ["x^3/3"]);
+  assert.match(outputs[0].data["image/svg+xml"].join(""), /<svg width="40"/);
+  assert.equal(outputs[1].output_type, "stream");
+  assert.equal(outputs[1].name, "stdout");
+  // A cell that was never evaluated contributes no outputs and no execution count.
+  assert.deepEqual(notebook.cells[1].outputs, []);
+  assert.equal(notebook.cells[1].execution_count, null);
+});
+
 test("the file name helpers are stable", () => {
   // `displayTitle` strips the extension, not the directory: it is a label for the notebook.
   assert.equal(displayTitle("/tmp/My Notebook.ipynb"), "/tmp/My Notebook");

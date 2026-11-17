@@ -13,47 +13,64 @@
 import { escapeHtml } from "./html.js";
 import * as shape from "./svg-shape.js";
 
-// Typeset SVGs carry width/height but often no viewBox, so CSS cannot scale them.
-// Add one and a class hook before handing them to the notebook.
-// With `toEm`, the size is rewritten in em using the font size of the layout
-// (the largest <text> size: the scripts are smaller, the roots are not).
-// A typeset result then draws at its own scale - one line of text is 1 em of
-// the body font, a fraction is taller - instead of being stretched or shrunk
-// to a fixed CSS height. Graphics keep their pixel size and are scaled by CSS.
-function layoutFontSize(svg) {
-  const sizes = String(svg).match(/font-size="[0-9.]+"/g) || [];
-  let base = 0;
-  for (let i = 0; i < sizes.length; i += 1) {
-    base = Math.max(base, parseFloat(sizes[i].replace(/[^0-9.]/g, "")));
-  }
-  return base;
-}
-
-function svgTag(svg, cls, toEm) {
+// Typeset SVGs carry width/height but often no viewBox, so CSS cannot scale them. Add
+// one and a class hook before handing them to the notebook. With `base`, the size is
+// re-expressed in em against the font size the box layout used (see `layoutFontSize`).
+function openTag(svg, cls, base) {
   return String(svg).replace(/^<svg\b([^>]*)>/, function (match, attrs) {
+    const width = /(?:^|\s)width="([0-9.]+)"/.exec(attrs);
+    const height = /(?:^|\s)height="([0-9.]+)"/.exec(attrs);
     let out = attrs;
-    const width = /width="([0-9.]+)"/.exec(attrs);
-    const height = /height="([0-9.]+)"/.exec(attrs);
-    if (width && height && !/viewBox=/.test(attrs)) {
-      out += ' viewBox="0 0 ' + width[1] + " " + height[1] + '"';
-    }
-    if (toEm && width && height) {
-      const base = layoutFontSize(svg);
+    if (width && height) {
+      if (!/\sviewBox=/.test(out)) out += ' viewBox="0 0 ' + width[1] + " " + height[1] + '"';
       if (base > 0) {
         out = out
           .replace(
-            'width="' + width[1] + '"',
-            'width="' + (parseFloat(width[1]) / base).toFixed(3) + 'em"'
+            /(^|\s)width="[0-9.]+"/,
+            '$1width="' + (parseFloat(width[1]) / base).toFixed(3) + 'em"'
           )
           .replace(
-            'height="' + height[1] + '"',
-            'height="' + (parseFloat(height[1]) / base).toFixed(3) + 'em"'
+            /(^|\s)height="[0-9.]+"/,
+            '$1height="' + (parseFloat(height[1]) / base).toFixed(3) + 'em"'
           );
       }
     }
-    if (!/class=/.test(out)) out += ' class="' + cls + '"';
+    if (!/\sclass="/.test(out)) out += ' class="' + cls + '"';
     return "<svg" + out + ">";
   });
+}
+
+// The font size the box layout was asked for, written by the engine's typesetting pass
+// on the root element. It is not the largest run: `Style[x, 24]` keeps the 14 px layout
+// and draws one glyph larger. A document without it is one the pass refused: it keeps
+// the layout's own pixels instead of being re-expressed in em.
+function layoutFontSize(svg) {
+  const found = /^<svg\b[^>]*\sdata-woxi-font-size="([0-9.]+)"/.exec(String(svg));
+  return found ? parseFloat(found[1]) : 0;
+}
+
+// A typeset result keeps the layout's own scale: its size is re-expressed in em against
+// the size the layout used, and `.woxi-out-math` sets that size (14 px), so a result
+// draws at the layout's scale instead of being stretched or shrunk to a fixed CSS
+// height. Wide results scroll rather than shrink. Only the opening tag is rewritten, so
+// a `width` in the drawing (`<rect>` of a frame) cannot be mistaken for the canvas. A
+// document the pass refused has no recorded size and keeps its pixels.
+function typesetSvg(svg) {
+  return openTag(svg, "woxi-svg", layoutFontSize(svg));
+}
+
+// A graphic keeps its pixel size: `fitGraphics` trims it to its ink and CSS shrinks it
+// to the card, never stretches it (only a plot fills).
+function graphicSvg(svg) {
+  return openTag(svg, "woxi-graphic");
+}
+
+// A document that names a font size on its root is not a box layout: the layout writes a
+// size per run, so a root size means another renderer drew the picture (`QuestionObject`
+// is the one Woxi produces). Such a document is shown as a picture, not as math: a
+// question panel is a form with its own margins and must not be em-sized or stretched.
+function isDrawing(svg) {
+  return /^<svg\b[^>]*\sfont-size=/.test(String(svg));
 }
 
 // Trimming a graphics SVG to its ink (see `fitGraphics`) keeps this much margin, as a
@@ -65,8 +82,6 @@ const FIT_PAD_MAX_PX = 6;
 // A background rectangle is the one that covers the picture: anything smaller is a frame
 // or a legend box drawn inside it.
 const BACKGROUND_COVERAGE = 0.98;
-// The last JSON parse error, for the caller that reports an unreadable answer.
-let lastParseError = "";
 function controlHtml(control, index) {
   const name = control.name || "c" + index;
   const kind = control.kind || "";
@@ -134,10 +149,7 @@ function manipulateHtml(item) {
   const controls = item.controls || [];
   const parts = [];
   for (let i = 0; i < controls.length; i++) parts.push(controlHtml(controls[i], i));
-  const view =
-    item.initial && item.initial.svg
-      ? svgTag(item.initial.svg, "woxi-svg")
-      : "<span>" + escapeHtml((item.initial && item.initial.text) || "") + "</span>";
+  const view = manipulateView(item.initial);
 
   return (
     '<div class="woxi-out woxi-manipulate" data-woxi-body="' +
@@ -149,6 +161,14 @@ function manipulateHtml(item) {
     (parts.length ? '<div class="woxi-manipulate-controls">' + parts.join("") + "</div>" : "") +
     "</div>"
   );
+}
+
+// The view of a `Manipulate`: a picture when the body is a graphic, otherwise its value as
+// text in the same face and size as a stored result. `plot-interact.js` refreshes the same
+// view, so the first render and a slider change cannot disagree about the typography.
+function manipulateView(view) {
+  if (view && view.svg) return graphicSvg(view.svg);
+  return '<div class="woxi-out-text">' + escapeHtml((view && view.text) || "") + "</div>";
 }
 
 // The fields of a plot payload that outlive the session, as one object: what the markup
@@ -165,9 +185,14 @@ function itemToHtml(item) {
   if (!item || !item.type) return "";
   switch (item.type) {
     case "text":
-      return item.svg
-        ? '<div class="woxi-out woxi-out-math">' + svgTag(item.svg, "woxi-svg", true) + "</div>"
-        : '<div class="woxi-out woxi-out-text">' + escapeHtml(item.text) + "</div>";
+      if (!item.svg) {
+        return '<div class="woxi-out woxi-out-text">' + escapeHtml(item.text) + "</div>";
+      }
+      // A text item is typeset math unless the document says it drew itself (a question
+      // panel). That one is a picture and is sized and trimmed like a graphic.
+      return isDrawing(item.svg)
+        ? '<div class="woxi-out woxi-out-graphic">' + graphicSvg(item.svg) + "</div>"
+        : '<div class="woxi-out woxi-out-math">' + typesetSvg(item.svg) + "</div>";
     case "graphics": {
       // A 2D plot carries a handle and the range it shows, so the plot can be
       // panned and zoomed without re-evaluating what the user typed. Only what a
@@ -182,7 +207,7 @@ function itemToHtml(item) {
         '"' +
         view +
         ">" +
-        svgTag(item.svg, "woxi-graphic") +
+        graphicSvg(item.svg) +
         "</div>"
       );
     }
@@ -203,31 +228,31 @@ function itemToHtml(item) {
 // samples are in them, and the caller wires the plots from those without parsing the
 // answer a second time). `items` is null when the answer is unreadable.
 function renderItems(json) {
-  const items = parseItems(json);
-  if (items === null) {
+  const parsed = parseItems(json);
+  if (parsed.items === null) {
     return {
       items: null,
       html:
         '<div class="woxi-out woxi-out-error">Unreadable engine answer: ' +
-        escapeHtml(lastParseError) +
+        escapeHtml(parsed.error) +
         "</div>",
     };
   }
+  const items = parsed.items;
   let html = "";
   for (let i = 0; i < items.length; i++) html += itemToHtml(items[i]);
   return { items: items, html: html };
 }
 
-// The items of an engine answer, or null when it is not readable.
+// The items of an engine answer, or the reason it is not readable.
 function parseItems(json) {
-  if (!json) return [];
+  if (!json) return { items: [] };
   try {
     const items = JSON.parse(json);
-    if (!items || !items.length) return [];
-    return items;
+    if (!items || !items.length) return { items: [] };
+    return { items: items };
   } catch (err) {
-    lastParseError = err.message;
-    return null;
+    return { items: null, error: err.message };
   }
 }
 
@@ -236,6 +261,10 @@ function inkBackground(svg, baseW, baseH) {
   for (let i = 0; i < children.length; i += 1) {
     const child = children[i];
     if (child.tagName && child.tagName.toLowerCase() === "rect") {
+      // A background is filled. A frame (`Framed`, a legend box) is an outline that is part
+      // of the picture: hiding it to measure the ink and then stretching it to the result
+      // would cut its stroke at the box's edge.
+      if (child.getAttribute("fill") === "none") continue;
       const w = parseFloat(child.getAttribute("width"));
       const h = parseFloat(child.getAttribute("height"));
       if (w >= baseW * BACKGROUND_COVERAGE && h >= baseH * BACKGROUND_COVERAGE) return child;
@@ -284,11 +313,13 @@ function fitOneGraphicsSvg(svg) {
   if (!svg) return;
   // A scene plot is drawn by the canvas at the layout's box, which `pinBox` owns. The picture's
   // own viewBox is what a reader sees, and trimming it here would make the saved picture differ
-  // from the one the canvas draws for no benefit. `data-woxi-fit` also keeps a re-fit off a
-  // plot that was already pinned.
+  // from the one the canvas draws for no benefit. The class check also keeps a re-fit off a plot.
   if (svg.closest && svg.closest(".woxi-plot")) return;
-  const fit = svg.getAttribute("data-woxi-fit");
-  if (fit === "1" || fit === "scene") return;
+  // A graphic can hold another SVG - the typeset math of a Frame, a plot inside a Panel - which
+  // its host placed and sized. Trimming that one would change the host's scale, so only the
+  // graphic's own root is fitted.
+  if (svg.parentElement && svg.parentElement.closest("svg")) return;
+  if (svg.getAttribute("data-woxi-fit") === "1") return;
   let baseW = 0;
   let baseH = 0;
   let minX = 0;
@@ -334,14 +365,17 @@ function fitOneGraphicsSvg(svg) {
 
 // Trims every graphics SVG under `root` (plots, charts, contour and 3D renders,
 // and the view of a Manipulate). `root` may be the notebook output or the
-// graphics container of a Manipulate itself. Typeset math is left untouched.
+// graphics container of a Manipulate itself. Typeset math is left untouched, and so is
+// a picture a graphic holds: only the graphic's own root SVG is fitted.
 function fitGraphics(root) {
   if (!root || !root.querySelectorAll) return;
-  let svgs = root.querySelectorAll(".woxi-out-graphic svg");
+  let svgs = Array.from(root.querySelectorAll(".woxi-out-graphic > svg"));
   if (!svgs.length && root.matches && root.matches(".woxi-out-graphic")) {
-    svgs = root.querySelectorAll("svg");
+    svgs = Array.from(root.children).filter(function (child) {
+      return child.tagName && child.tagName.toLowerCase() === "svg";
+    });
   }
   for (let i = 0; i < svgs.length; i++) fitOneGraphicsSvg(svgs[i]);
 }
 
-export { escapeHtml, fitGraphics, plotSummary, renderItems, svgTag };
+export { escapeHtml, fitGraphics, graphicSvg, manipulateView, plotSummary, renderItems };

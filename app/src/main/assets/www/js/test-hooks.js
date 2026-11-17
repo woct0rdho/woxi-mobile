@@ -511,12 +511,12 @@ export function createTestAction(menu) {
             ? (item.dom.output.textContent || "").replace(/\s+/g, " ").slice(0, 110)
             : "";
           const svgCount = item.dom ? item.dom.output.querySelectorAll("svg").length : 0;
-          const gsvg = item.dom ? item.dom.output.querySelector(".woxi-out-graphic svg") : null;
+          const gsvg = item.dom ? item.dom.output.querySelector(".woxi-out-graphic > svg") : null;
           const fit = gsvg
-            ? (gsvg.getAttribute("data-woxi-fit") === "1"
-                ? "yes"
-                : gsvg.getAttribute("data-woxi-fit") === "scene"
-                  ? "scene"
+            ? (gsvg.closest(".woxi-plot")
+                ? "scene"
+                : gsvg.getAttribute("data-woxi-fit") === "1"
+                  ? "yes"
                   : "raw") +
               " " +
               Math.round(parseFloat(gsvg.getAttribute("width")) || 0) +
@@ -571,12 +571,8 @@ export function createTestAction(menu) {
       }
       case "save": {
         const name = argument || "Test.ipynb";
-        nativeCall(
-          "saveFile",
-          name,
-          WoxiNotebook.utf8ToBase64(WoxiNotebook.serialize(state)),
-          "application/json"
-        );
+        // `NativeBridge.saveFile(name, base64)`: the MIME type is the picker's, not ours.
+        nativeCall("saveFile", name, WoxiNotebook.utf8ToBase64(WoxiNotebook.serialize(state)));
         log("save: requested " + name);
         break;
       }
