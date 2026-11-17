@@ -76,7 +76,7 @@ pub(crate) const PLOT_KINDS: &[PlotKind] = &[
 
 /// Extra room sampled around the visible range, so a small pan stays inside the data
 /// instead of asking for another re-sample. Half a view on each side is the engine's default
-/// (a re-sample that names no pad) and the gesture frame's tick margin; the client's coverage
+/// (a re-sample that names no pad) and the gesture frame's tick margin. The client's coverage
 /// re-samples ask for a larger `pad` (see `render_refine`), so one re-sample spans several views
 /// and the curve stays ahead of a quick pan. A two-axis plot pays for the margin by area, so its
 /// pad is capped lower.
@@ -89,7 +89,7 @@ fn padded_by(range: (f64, f64), pad: f64) -> (f64, f64) {
 
 /// The sampling range around a view: `pad` views beyond it on each side, in data units on a
 /// linear axis and in decades on a logarithmic one. Half a view below `{1, 100}` is `{0, 101}`
-/// linearly, which has no logarithm at all; in decades it is `{0.316, 316}`.
+/// linearly, which has no logarithm at all. In decades it is `{0.316, 316}`.
 pub(crate) fn padded_range(range: (f64, f64), pad: f64, logarithmic: bool) -> (f64, f64) {
     let (low, high) = range;
     if !logarithmic || low <= 0.0 {
@@ -131,7 +131,7 @@ pub(crate) fn densify_points(level: u32) -> usize {
 
 /// Heads whose arguments are graphics data rather than work. A `Show[Plot[...], Graphics[...]]`
 /// re-renders the `Graphics` from the primitives it holds, so re-running it cannot do
-/// anything that was not already drawn; a `Show` with anything else (a `Module`, a `Table`,
+/// anything that was not already drawn. A `Show` with anything else (a `Module`, a `Table`,
 /// a user function) is not re-run. Missing a head here only costs the gesture its re-samples,
 /// which is the safe way to be wrong.
 const PURE_HEADS: &[&str] = &[
@@ -411,7 +411,7 @@ pub(crate) fn rewrite_sampling(
 /// Heads whose points are in data space but whose axis iterators are never rewritten: a fixed
 /// parameter domain (`ParametricPlot`, `PolarPlot`) or a literal list of points. The data-space
 /// heads that are rerunnable come from `PLOT_KINDS` itself (a kind with no y iterator), so one
-/// table decides what a plot's points mean and what can be re-sampled; a head in neither source
+/// table decides what a plot's points mean and what can be re-sampled. A head in neither source
 /// is not guessed at. Missing a head here costs a plot its gestures (it stays a picture), which
 /// is the safe way to be wrong.
 const DATA_ONLY_HEADS: &[&str] = &[
@@ -497,6 +497,25 @@ pub(crate) struct Held {
     pub(crate) sites: Vec<Site>,
 }
 
+/// Heads whose output is a contour picture. `ContourPlot` is the interactive
+/// one. The list and complex forms are still-drawn contour pictures, but they
+/// have the same marching-squares junctions and get the same cleanup. `ContourPlot3D`
+/// and the `Slice...3D` family are not 2D contour pictures.
+const CONTOUR_HEADS: &[&str] = &["ContourPlot", "ListContourPlot", "ComplexContourPlot"];
+
+fn mentions_contour(expr: &Expr) -> bool {
+    if let Expr::FunctionCall { name, .. } = expr {
+        if CONTOUR_HEADS.contains(&name.as_str()) {
+            return true;
+        }
+    }
+    let mut found = false;
+    super::expr::for_each_child(expr, &mut |child| {
+        found |= mentions_contour(child);
+    });
+    found
+}
+
 /// What a cell's last statement offers a gesture: the call to re-run, when it can be re-run,
 /// and the space its samples are in. The two are independent - a `ListPlot` has no iterators
 /// to rewrite but its points are data, a `Module` may wrap a contour whose points are
@@ -504,6 +523,16 @@ pub(crate) struct Held {
 pub(crate) struct Capture {
     pub(crate) held: Option<Held>,
     pub(crate) sampling: Sampling,
+    /// The statement mentions a contour picture, so its SVG and any plot source
+    /// go through the contour junction cleanup even when it is not interactive.
+    contour: bool,
+}
+
+impl Capture {
+    /// Whether the statement mentions any contour picture.
+    pub(crate) fn contour(&self) -> bool {
+        self.contour
+    }
 }
 
 /// Captures the last statement of a cell (see [`Capture`]). The parse is pure: nothing is
@@ -512,6 +541,7 @@ pub(crate) fn capture_statement(statement: &str) -> Capture {
     let unknown = Capture {
         held: None,
         sampling: Sampling::Unknown,
+        contour: false,
     };
     let Some(last) = crate::eval::split_semicolons(statement)
         .into_iter()
@@ -524,10 +554,12 @@ pub(crate) fn capture_statement(statement: &str) -> Capture {
         return unknown;
     };
     let sampling = Sampling::of(&expr);
+    let contour = mentions_contour(&expr);
     if !resample_safe(&expr) {
         return Capture {
             held: None,
             sampling,
+            contour,
         };
     }
     let mut sites = Vec::new();
@@ -538,7 +570,11 @@ pub(crate) fn capture_statement(statement: &str) -> Capture {
     } else {
         Some(Held { expr, sites })
     };
-    Capture { held, sampling }
+    Capture {
+        held,
+        sampling,
+        contour,
+    }
 }
 
 fn range_expr(x: (f64, f64), y: (f64, f64)) -> Expr {

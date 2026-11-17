@@ -16,9 +16,9 @@ pub(super) struct Segment {
     pub(super) dashes: Option<Vec<f64>>,
     pub(super) kind: char,
     /// An axis line's origin, in the drawing space: 0 (or the user's `AxesOrigin`). An axis is
-    /// drawn where its origin is, or on the range's edge when the origin is outside it; the edge
+    /// drawn where its origin is, or on the range's edge when the origin is outside it. The edge
     /// is a position, not a value, and would go stale as soon as a newer scene is drawn at a
-    /// moved view. The origin is view-independent; the client clamps it to the rail when it is
+    /// moved view. The origin is view-independent. The client clamps it to the rail when it is
     /// outside. `None` derives the value from the line's position (grid lines).
     pub(super) value: Option<f64>,
 }
@@ -46,7 +46,7 @@ pub(super) struct Tick {
     /// `a` when the tick hangs off an axis line (the client places it at that line's position for
     /// the current view) and `f` when it sits on a frame edge (it stays where the picture drew it).
     pub(super) kind: char,
-    /// The frame edge an `f` tick sits on (`l`, `r`, `t`, `b`); `None` for an axis tick. The base
+    /// The frame edge an `f` tick sits on (`l`, `r`, `t`, `b`). `None` for an axis tick. The base
     /// can sit a frame stroke's width inside the rectangle, so the edge is not inferred from it.
     pub(super) side: Option<char>,
     /// The tick mark's own style: `TicksStyle` (or `AxesStyle`) can differ from the frame's.
@@ -127,7 +127,7 @@ pub(super) fn label_decimals(scene: &Scene, axis: char) -> Option<usize> {
 }
 
 /// The text a view printing `places` decimals would give this tick value. A logarithmic axis's
-/// tick value is a decade; the label is its data value.
+/// tick value is a decade. The label is its data value.
 pub(super) fn label_text(value: f64, places: usize, logarithmic: bool) -> Option<String> {
     let value = if logarithmic {
         10f64.powf(value)
@@ -284,7 +284,7 @@ impl Scene {
     }
 
     /// Whether any line in this scene is an axis (ticks hang off it). A framed plot has only
-    /// grid lines; a gesture frame of it has no axis ticks to absorb from the margin render.
+    /// grid lines. A gesture frame of it has no axis ticks to absorb from the margin render.
     pub(crate) fn has_axis_lines(&self) -> bool {
         self.lines.iter().any(|line| line.kind == 'a')
     }
@@ -295,8 +295,8 @@ impl Scene {
     /// they would only appear with the next picture, at the picture rate instead of the display's.
     /// Only ticks that hang off an axis line are merged. A frame tick's base and tip lie on the
     /// margin render's frame edge, not the view's, so merging one would need a frame-edge
-    /// translation; a frame tick follows its value anyway, and the view's own set is the live one.
-    /// `logs` says which axes are logarithmic; a tick's value is a decade on those.
+    /// translation. A frame tick follows its value anyway, and the view's own set is the live one.
+    /// `logs` says which axes are logarithmic. A tick's value is a decade on those.
     pub(crate) fn absorb_ticks(&mut self, other: &Scene, logs: (bool, bool)) {
         // Two pictures of the same plot differ in the last digit of a tick's value (their
         // coordinates are rounded to a tenth of a unit), so the duplicate test is by a fraction of

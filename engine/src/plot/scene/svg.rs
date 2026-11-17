@@ -2,7 +2,7 @@ use super::types::Segment;
 use super::AXIS_ALIGNED_SLACK;
 
 /// A parsed SVG element: name, attributes and inner text. The pictures the scene supports are
-/// flat lists of shapes; anything nested (`<g>`, `<defs>`) is rejected before its children are
+/// flat lists of shapes. Anything nested (`<g>`, `<defs>`) is rejected before its children are
 /// read.
 pub(super) struct Element<'a> {
     pub(super) name: &'a str,
@@ -145,7 +145,7 @@ pub(super) fn length_em(value: &str, size: f64) -> Option<f64> {
 
 /// The lines of a text the renderer wrote: one for a plain `<text>`, or the parent text and
 /// each `<tspan>` for a multi-line label. Woxi writes one tspan per line with a `dy` relative
-/// to the previous baseline (a bare number of user units, not an em); a tspan's `x` is absolute
+/// to the previous baseline (a bare number of user units, not an em). A tspan's `x` is absolute
 /// and falls back to the parent's.
 pub(super) fn text_lines(inner: &str, x: f64, parent_y: f64, size: f64) -> Vec<(String, f64, f64)> {
     let mut lines = Vec::new();

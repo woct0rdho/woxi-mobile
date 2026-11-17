@@ -5,7 +5,7 @@ use crate::manipulate::{
     render_body, rendered_json,
 };
 use crate::output::{graphics_item_with_plot, item, residual_text};
-use crate::plot::{capture_statement, register_plot, Capture};
+use crate::plot::{capture_statement, register_plot, repair_graphic, repair_svg_contour, Capture};
 
 /// Splits a cell on top-level semicolons, respecting brackets and quoted strings. Woxi's
 /// statement splitter keeps `a = 2; Plot[...]` together, and `string_to_expr` parses only
@@ -69,7 +69,7 @@ pub(crate) fn evaluate_statement_items(stmt: &str, capture: Capture) -> Vec<Stri
     // `%` history. See `literal_statement`.
     let evaluated = literal_statement(stmt);
     match woxi::interpret_with_stdout(&evaluated) {
-        Ok(result) => {
+        Ok(mut result) => {
             let stdout = result.stdout.trim_end();
             if !stdout.is_empty() {
                 items.push(item("print", stdout, None));
@@ -78,10 +78,30 @@ pub(crate) fn evaluate_statement_items(stmt: &str, capture: Capture) -> Vec<Stri
                 items.push(item("warning", warning, None));
             }
 
-            let graphics = result
-                .graphics
-                .as_deref()
-                .filter(|svg| !svg.trim().is_empty());
+            let contour = capture.contour();
+            let mut output = woxi::get_last_output();
+            let repaired_svg = if contour {
+                if let Some(expr) = output.as_mut() {
+                    repair_graphic(expr);
+                }
+                output.as_ref().and_then(|expr| match expr {
+                    woxi::syntax::Expr::Graphics { svg, .. } if !svg.trim().is_empty() => {
+                        Some(svg.clone())
+                    }
+                    _ => None,
+                })
+            } else {
+                None
+            };
+            let mut graphics = result.graphics.take();
+            // A wrapped output has no direct `Graphics` at the top level. Its
+            // rendered string is the only picture available here.
+            if contour && repaired_svg.is_none() {
+                if let Some(svg) = graphics.as_mut() {
+                    *svg = repair_svg_contour(svg);
+                }
+            }
+            let graphics = graphics.as_deref().filter(|svg| !svg.trim().is_empty());
 
             // Interactive controls are emitted with the view they start on.
             if let Some((body, controls)) = parse_manipulate(stmt) {
@@ -91,7 +111,10 @@ pub(crate) fn evaluate_statement_items(stmt: &str, capture: Capture) -> Vec<Stri
             }
 
             if let Some(svg) = graphics {
-                let output = woxi::get_last_output();
+                // A direct `Graphics` now carries the repaired SVG. For a wrapped
+                // output (`Legended`, `Show`, ...) the repaired `result.graphics` is
+                // the picture the item gets.
+                let svg = repaired_svg.as_deref().unwrap_or(svg);
                 // The payload and the samples of an interactive plot. The samples are the
                 // picture's own points: there is no pre-sample, so the first gesture starts from
                 // exactly the range the picture shows. A two-axis renderer reports those points

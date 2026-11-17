@@ -39,7 +39,7 @@ const FRAME_TOUCH_SLACK: f64 = 1.0;
 const TICK_MATCH_SHARE: f64 = 1e-4;
 /// A label centered this close to a tick, as a share of the frame's width, can be its label.
 const TICK_ALIGN_SHARE: f64 = 0.01;
-/// A tick's label sits within this many ems of its base; a `FrameLabel`/`PlotLabel` is two or
+/// A tick's label sits within this many ems of its base. A `FrameLabel`/`PlotLabel` is two or
 /// more ems away (measured: bottom frame label 2.48 em, title 2.32 em).
 const LABEL_BAND_EM: f64 = 2.0;
 /// A y tick's label is centered on it within this many ems of its value.

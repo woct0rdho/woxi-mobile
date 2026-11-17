@@ -60,8 +60,16 @@ Write-Host '=== installing ==='
 Write-Host (Invoke-Adb -Arguments @('install', $apk))
 
 Write-Host '=== launching ==='
+Invoke-Adb -Arguments @('logcat', '-c') | Out-Null
 Invoke-Adb -Arguments @('shell', 'am', 'start', '-n', 'com.woctordho.woximobile/.MainActivity') | Out-Null
-Start-Sleep -Seconds 5
+$deadline = (Get-Date).AddSeconds(20)
+while ((Get-Date) -lt $deadline) {
+    $log = (Invoke-Adb -Arguments @('logcat', '-d', '-s', 'Woxi:*')) -split '\r?\n'
+    if (($log | Select-String -Pattern 'page finished|test: done').Count -gt 0) {
+        break
+    }
+    Start-Sleep -Milliseconds 100
+}
 
 Write-Host '=== recent app log ==='
 Invoke-Adb -Arguments @('logcat', '-d', '-t', '120', '-s', 'Woxi:*') | Select-Object -Last 30

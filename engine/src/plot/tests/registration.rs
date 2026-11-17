@@ -69,6 +69,33 @@ fn a_picture_built_from_primitives_stays_still() {
 }
 
 #[test]
+fn a_contour_with_cleaned_crossings_still_registers() {
+    reset();
+    let items = evaluate_all("ContourPlot[Sin[x] == Cos[y], {x, -2 Pi, 2 Pi}, {y, -2 Pi, 2 Pi}]");
+    assert!(items.contains("\"plot\""), "{items}");
+    assert!(items.contains("\"data\":"), "{items}");
+    assert!(items.contains("\"ok\":true"), "{items}");
+}
+
+#[test]
+fn region_and_list_contours_get_cleanup() {
+    for statement in [
+        "ContourPlot[Sin[x] == Cos[y], {x, -2 Pi, 2 Pi}, {y, -2 Pi, 2 Pi}, RegionFunction -> Function[{x, y, z}, x^2 + y^2 < 16]]",
+        "ListContourPlot[Table[Sin[i/10] Cos[j/10], {i, 0, 20}, {j, 0, 20}]]",
+        "ContourPlot[Sin[x] == Cos[y], {x, -2 Pi, 2 Pi}, {y, -2 Pi, 2 Pi}, PlotRangePadding -> Scaled[0.1]]",
+        "Show[ContourPlot[Sin[x] == Cos[y], {x, -2 Pi, 2 Pi}, {y, -2 Pi, 2 Pi}], Frame -> False]",
+    ] {
+        reset();
+        let items = evaluate_all(statement);
+        assert!(items.contains("\"svg\""), "{statement}: {items}");
+        assert!(
+            items.contains("data-woxi-contour-cell"),
+            "{statement} should carry the measured cell: {items}"
+        );
+    }
+}
+
+#[test]
 fn unknown_messages_are_reported() {
     let reply = plot_request("{\"msg_type\":\"plot_dance\"}");
     assert!(reply.contains("\"status\":\"error\""), "{reply}");

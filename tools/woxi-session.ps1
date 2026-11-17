@@ -105,10 +105,7 @@ function Start-WoxiSession([int]$attempts = 5, [int]$settleSec = 10) {
   Invoke-WoxiAction 'reload' | Out-Null
   # Wait for the page rather than for a fixed delay: a cold start after an install
   # can take much longer than a reload, and probing too early just wastes a timeout.
-  $loaded = Wait-WoxiLog 'page finished' ([Math]::Max(20, $settleSec))
-  if (-not $loaded) {
-    Start-Sleep -Seconds 2
-  }
+  Wait-WoxiLog 'page finished' ([Math]::Max(20, $settleSec)) | Out-Null
   if (Test-WoxiAlive) {
     Write-Host 'session alive (running instance)'
     return $true

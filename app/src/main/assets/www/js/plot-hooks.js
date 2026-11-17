@@ -1,7 +1,7 @@
-// The plot harness: synthetic fingers, latency injection and the frame counters, driven by
-// `docs/automation.md`. Nothing here runs in normal use - the app calls `plotAction` only for
-// the action names below - but it has to live in the app because it needs the same DOM, the
-// same controllers and the same bridge.
+// The plot harness: synthetic fingers, latency injection and the frame counters. Nothing
+// here runs in normal use - the app calls `plotAction` only for the action names below -
+// but it has to live in the app because it needs the same DOM, the same controllers and
+// the same bridge.
 //
 // It moved out of `app.js` when the web layer became modules: these hooks own the plot side
 // (they hold the held drag and the injected latency), and everything else in `app.js` only
@@ -122,7 +122,7 @@ export function plotAction(name, argument, context) {
     return WoxiPlot.first(root());
   };
   // `plotstate last` / `plotscene last` inspect the newest plot: a sweep that adds one plot per
-  // case needs the plot it just added, while the default stays the first (the docs' examples).
+  // case needs the plot it just added, while the default stays the first.
   const whichPlot = function (argument) {
     return (argument || "").trim() === "last" ? WoxiPlot.last(root()) : firstPlot();
   };

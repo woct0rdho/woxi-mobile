@@ -42,6 +42,16 @@ fn capture_is_a_pure_parse() {
     let bare = capture_statement("c");
     assert!(bare.held.is_none());
     assert_eq!(bare.sampling, Sampling::Unknown);
+    assert!(!bare.contour());
+    // Contour heads are marked even when they are still pictures: the cleanup
+    // runs on the SVG in both cases.
+    assert!(!capture_statement("Plot[Sin[x], {x, 0, 1}]").contour());
+    assert!(capture_statement("ContourPlot[x == 0, {x, -3, 3}, {y, -3, 3}]").contour());
+    assert!(capture_statement("ListContourPlot[{{1, 2}, {3, 4}}]").contour());
+    assert!(capture_statement("ComplexContourPlot[z^2 == 1, {z, -1, 1}]").contour());
+    // The contour may sit under a wrapper that is not a list or function call.
+    assert!(capture_statement("x -> ContourPlot[x == 0, {x, -3, 3}, {y, -3, 3}]").contour());
+    assert!(capture_statement("Map[ContourPlot[x == 0, {x, -3, 3}, {y, -3, 3}] &, {1}]").contour());
     // Nothing was evaluated, so the interpreter history is untouched.
     assert!(woxi::get_last_output().is_none());
 }

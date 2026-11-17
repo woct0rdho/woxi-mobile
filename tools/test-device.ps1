@@ -9,7 +9,7 @@ param(
     [string[]]$Cases = @(),
     [switch]$NoBuild,
     [switch]$KeepNotebook,
-    [int]$SettleSeconds = 4,
+    [int]$CaseTimeoutSeconds = 60,
     [string]$Screenshot = ''
 )
 
@@ -62,6 +62,48 @@ function Invoke-AppAction {
     Invoke-Adb -Arguments @('shell', $cmd) | Out-Null
 }
 
+function Get-AppLogLines {
+    return @((Invoke-Adb -Arguments @('logcat', '-d', '-s', 'Woxi:*')) -split '\r?\n')
+}
+
+function Wait-AppLog([string]$Pattern, [int]$TimeoutSeconds = 30) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if ((Get-AppLogLines | Select-String -Pattern $Pattern | Measure-Object).Count -gt 0) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    return $false
+}
+
+function Invoke-AppActionWait {
+    param([string]$Action, [string]$Argument = '', [int]$TimeoutSeconds = 30)
+    $marker = 'test: done ' + [regex]::Escape($Action) + '$'
+    $before = (Get-AppLogLines | Select-String -Pattern $marker | Measure-Object).Count
+    Invoke-AppAction -Action $Action -Argument $Argument
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if ((Get-AppLogLines | Select-String -Pattern $marker | Measure-Object).Count -gt $before) {
+            return
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    throw "no completion marker for action '$Action' within $TimeoutSeconds seconds"
+}
+
+function Wait-AppReady {
+    # `page finished` only says the WebView loaded; the in-page hook has to answer
+    # before an `add` intent is safe to send. Retry the harmless dump action.
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        Invoke-AppAction -Action 'dump'
+        if (Wait-AppLog 'test: done dump$' 2) {
+            return
+        }
+    }
+    throw 'the app hook did not answer a dump action'
+}
+
 if (-not $NoBuild) {
     Write-Host '=== building ==='
     $build = & .\gradlew.bat :app:assembleRelease --no-daemon --console=plain -PwoxiAutomation=true 2>&1 | Out-String
@@ -80,19 +122,16 @@ if (-not $KeepNotebook) {
 # Clear the log so the dump below only contains this run.
 Invoke-Adb -Arguments @('logcat', '-c') | Out-Null
 Invoke-Adb -Arguments @('shell', 'am', 'start', '-n', 'com.woctordho.woximobile/.MainActivity') | Out-Null
-Write-Host '=== waiting for the engine to boot ==='
-Start-Sleep -Seconds 20
+Write-Host '=== waiting for the app hook ==='
+Wait-AppReady
 
 foreach ($case in $Cases) {
     Write-Host ("add: " + $case)
-    Invoke-AppAction -Action 'add' -Argument $case
-    Start-Sleep -Seconds $SettleSeconds
+    Invoke-AppActionWait -Action 'add' -Argument $case -TimeoutSeconds $CaseTimeoutSeconds
 }
 
-Invoke-AppAction -Action 'dump'
-Start-Sleep -Seconds 2
-Invoke-AppAction -Action 'dom'
-Start-Sleep -Seconds 2
+Invoke-AppActionWait -Action 'dump' -TimeoutSeconds $CaseTimeoutSeconds
+Invoke-AppActionWait -Action 'dom' -TimeoutSeconds $CaseTimeoutSeconds
 
 Write-Host '=== notebook dump ==='
 # adb returns one multi-line string, so split it before filtering.

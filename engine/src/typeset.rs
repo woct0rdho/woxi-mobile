@@ -10,19 +10,18 @@
 //! the drawing: the `translate()` of a group, the `x2` of a fraction's bar (and the two
 //! row positions that bar centers), the end of a radical's vinculum, the `width` of the
 //! document, and one attribute on the root that records the size the layout was asked
-//! for. The font size and the bar are read from the document; the ratios it applies are
+//! for. The font size and the bar are read from the document. The ratios it applies are
 //! Woxi's own constants (the cell of `MONO_ADVANCE`, the tiers of its `operator_space`,
 //! the thin space of a box string) copied here because the crate keeps them private.
 //! Working from the run's font size rather than a fixed one makes a superscript space
 //! like a line of text.
 //!
 //! A document that declares its own root font size is not a box layout - `QuestionObject`
-//! draws a panel that way - so it is left alone; the client shows such a document as a
+//! draws a panel that way - so it is left alone. The client shows such a document as a
 //! picture.
 //!
 //! The spacing belongs in the box formatter, which is where the space between two boxes
-//! is chosen; `docs/output_typesetting.md` records why working on the drawing is the
-//! cheaper path, and what would replace this module.
+//! is chosen.
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -47,7 +46,7 @@ const THIN_SPACE_RATIO: f64 = 0.32;
 
 /// The margins (in character cells) the layout's `operator_space` gives the relations
 /// the StandardForm box formatter spells in ASCII instead of the glyph the table lists.
-/// Rules are relations of their own; `==`/`!=`/`<=`/`>=` are equalities; `&&`/`||` are
+/// Rules are relations of their own. `==`/`!=`/`<=`/`>=` are equalities. `&&`/`||` are
 /// `And`/`Or` (the `∧`/`∨` tier), and `|` is `Alternatives`, whose glyph the table calls
 /// `VerticalSeparator` and spaces at 0.2.
 const RULE_MARGIN: f64 = 0.60;
@@ -485,7 +484,7 @@ fn respace_document(svg: &str) -> Option<String> {
 }
 
 /// Re-spaces the children of a row. The accumulated shift goes into each child's
-/// position; the gaps either side of it decide how far the neighbours move.
+/// position. The gaps either side of it decide how far the neighbours move.
 fn emit_row(children: &[Node], out: &mut String) -> f64 {
     let mut shift = 0.0;
     for index in 0..children.len() {
@@ -719,7 +718,7 @@ fn path_points(d: &str) -> Option<Vec<(char, f64, f64)>> {
     Some(points)
 }
 
-/// The path with its last point's x replaced; every other number keeps its value.
+/// The path with its last point's x replaced. Every other number keeps its value.
 fn rewrite_path(points: &[(char, f64, f64)], last_x: f64) -> String {
     let mut out = String::new();
     for (index, (command, x, y)) in points.iter().enumerate() {

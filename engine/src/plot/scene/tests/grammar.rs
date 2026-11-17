@@ -92,7 +92,7 @@ fn fingerprint(statement: &str, two_axis: bool) -> String {
         )
 }
 
-/// Woxi's picture grammar is what the scene reads; when Woxi changes it, the fingerprints
+/// Woxi's picture grammar is what the scene reads. When Woxi changes it, the fingerprints
 /// change. `WOXI_UPDATE_FIXTURES=1 cargo test --profile fast the_scene_grammar_matches_the_fixture`
 /// rewrites the file, so the diff is reviewed rather than silently absorbed.
 #[test]

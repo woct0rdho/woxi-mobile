@@ -55,7 +55,7 @@ A simple result was drawn 35 % larger than the input text while a fraction was d
 
 ### The spacing of an unknown operator
 
-The layout's `operator_space` table gives `= < > ≤ ≥ + - ∧ ∨ …` a margin on each side. It does not know the ASCII spellings the StandardForm box formatter emits for the same relations (`==`, `!=`, `<=`, `>=`, `===`, `=!=`, `<>`, `&&`, `||`, `|`, `+=`, `:=`, …), and it does not know the private-use codepoints the box formatter uses for rules (`U+F522` -> `→`, `U+F51F` -> `⧴`) even though it lists the public `U+2192`/`U+29F4` glyphs. A result like `x -> 1` was therefore drawn as three adjacent cells: `x→1`.
+The layout's `operator_space` table gives `= < > ≤ ≥ + - ∧ ∨ ...` a margin on each side. It does not know the ASCII spellings the StandardForm box formatter emits for the same relations (`==`, `!=`, `<=`, `>=`, `===`, `=!=`, `<>`, `&&`, `||`, `|`, `+=`, `:=`, ...), and it does not know the private-use codepoints the box formatter uses for rules (`U+F522` -> `→`, `U+F51F` -> `⧴`) even though it lists the public `U+2192`/`U+29F4` glyphs. A result like `x -> 1` was therefore drawn as three adjacent cells: `x→1`.
 
 The spacing pass gives such a token the margin of the tier its glyph has in that table: `0.60` cell for rules, `0.44` for equalities and the ASCII assignments, `0.34` for `&&`/`||`, and `0.2` for `|` (`Alternatives` is the table's `VerticalSeparator`, not its `Conditioned` `∣`). The token list is explicit, not a character class, so an operator the table does not name (`f'[x]`, `a[[1]]`) keeps the gap the layout chose. It acts only when the token ends exactly where the next operand begins, which is how it leaves the operators the layout already spaced - including `TraditionalForm`'s - alone.
 

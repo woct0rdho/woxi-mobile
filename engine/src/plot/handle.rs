@@ -2,6 +2,7 @@
 //! `plot_*` protocol the frontend drives them with. One `PlotView` per rendered plot, kept
 //! until its handle is released or the cap evicts the least recently used.
 
+use super::contour::{repair_graphic, repair_graphic_source};
 use super::frame::{layer_drawable, plot_layer, plot_source};
 use super::sample::{
     aspect_rule, densify_head, densify_points, padded_range, plot_range_rule, rewrite_sampling,
@@ -25,6 +26,9 @@ pub(crate) struct PlotView {
     /// The statement that produced the graphic, unevaluated, so it can be re-run to
     /// sample a different range. `None` when the plot has no iterator to rewrite.
     pub(super) call: Option<PlotCall>,
+    /// The statement mentions a contour picture, so its SVG and plot source go
+    /// through the contour junction cleanup before a view, sample or picture is read.
+    contour: bool,
     /// Monotonic use counter, so eviction at the cap drops the least recently
     /// touched plot rather than the oldest registered one.
     touched: u64,
@@ -190,6 +194,7 @@ pub(crate) fn register_plot(graphic: &Expr, capture: &Capture) -> Option<(String
                 graphic: without_svg(graphic.clone()),
                 samples,
                 call,
+                contour: capture.contour(),
                 // Ids and use order share a counter, so a fresh handle is the newest.
                 touched: id,
                 // The first view request brings it, measured from the picture on screen.
@@ -290,7 +295,7 @@ impl PlotFailure {
 /// 5}], PlotRange -> {{-5, 5}, {0, 258}}]` is 762 B with one polyline and no ticks, labels or
 /// frame), and it draws any positive bound. A gesture keeps a log range positive by scaling
 /// both bounds, so this only repairs a request from an older client or a notebook that stored
-/// such a view; the reply reports the repaired range, so the client starts from it next time.
+/// such a view. The reply reports the repaired range, so the client starts from it next time.
 pub(crate) const LOG_FALLBACK_DECADES: f64 = 12.0;
 
 /// Whether each axis of the picture is logarithmic, from its plot source.
@@ -301,13 +306,13 @@ fn log_axes(entry: &PlotView) -> (bool, bool) {
 }
 
 /// The largest sample margin a one-axis re-sample may ask for, in views. The client's first
-/// interaction uses 2.5 and its cap is 4; the engine clamps whatever arrives.
+/// interaction uses 2.5 and its cap is 4. The engine clamps whatever arrives.
 pub(crate) const MAX_REFINE_PAD: f64 = 4.0;
 /// A two-axis re-sample evaluates the call over an area, so its margin is capped lower.
 pub(crate) const TWO_AXIS_MAX_REFINE_PAD: f64 = 1.0;
 
 /// A view with each logarithmic axis made drawable. Only a non-positive low bound is
-/// touched; a valid one is returned as it came.
+/// touched. A valid one is returned as it came.
 fn drawable_view(
     view: ((f64, f64), (f64, f64)),
     (log_x, log_y): (bool, bool),
@@ -328,7 +333,7 @@ fn drawable_view(
 const MAX_FRAME_ASPECT: f64 = 1e3;
 
 /// Re-renders a registered plot at another data range, from Woxi's cached plot data.
-/// `measured_aspect` is the frame's shape the client measured on the picture it is showing; it
+/// `measured_aspect` is the frame's shape the client measured on the picture it is showing. It
 /// is what keeps a crop from being laid out at a different shape than the picture it replaces.
 /// `want_picture` asks for the markup: a gesture frame leaves it out, because the client is
 /// drawing from the scene and the samples, and the markup only exists to be saved.
@@ -338,12 +343,18 @@ pub(crate) fn render_view(
     measured_aspect: Option<f64>,
     want_picture: bool,
 ) -> Result<String, PlotFailure> {
-    let (two_axis, stored, stored_aspect, logs) = with_view(id, |entry| {
+    let (two_axis, stored, stored_aspect, logs, contour) = with_view(id, |entry| {
         let two_axis = entry.samples.mirrored();
         // A two-axis view re-evaluates the captured call. The stored graphic is not read, and for
         // a big contour its source points are large. Clone it only for a one-axis crop.
         let stored = (!two_axis).then(|| entry.graphic.clone());
-        (two_axis, stored, entry.aspect, log_axes(entry))
+        (
+            two_axis,
+            stored,
+            entry.aspect,
+            log_axes(entry),
+            entry.contour,
+        )
     })?;
     let view = drawable_view(view, logs);
     // A ratio of a plot's frame: anything else is a request to draw nothing.
@@ -356,11 +367,14 @@ pub(crate) fn render_view(
     // first and 2842 for the second - a shape that changes per frame puts the axes somewhere other
     // than the curve. Evaluating at the range keeps the shape its convention asks for (a contour
     // comes back 3444x3444 at any range).
-    let rendered = if two_axis {
+    let mut rendered = if two_axis {
         evaluate_at(id, view, 0.0, logs)?
     } else {
         render_at(stored.as_ref().ok_or(PlotFailure::Failed)?, view, aspect)?
     };
+    if contour {
+        repair_graphic(&mut rendered);
+    }
     let svg = graphics_svg(&rendered).ok_or(PlotFailure::Failed)?;
     // What the client draws is the scene, so a failure to express it means this view cannot be
     // served - the plot keeps the last scene it has instead of half-updating the aspect too.
@@ -498,7 +512,7 @@ fn samples_payload(id: u64, view: &PlotView) -> String {
 
 /// The reply to a request that brings a picture: the picture, the range it shows where that
 /// range was drawn, and the scene. Samples travel with the evaluation that produced them (or
-/// with a `plot_refine` reply); a view never re-sends them.
+/// with a `plot_refine` reply). A view never re-sends them.
 fn reply_picture(
     id: u64,
     view: ((f64, f64), (f64, f64)),
@@ -568,7 +582,7 @@ pub(crate) fn render_refine(
 }
 
 /// Runs the plot call again with its iterators bound to `padded_range(view, pad)` and keeps
-/// the samples it produced. With a pad of zero that picture is the view; with a pad it is
+/// the samples it produced. With a pad of zero that picture is the view. With a pad it is
 /// only good for its samples, so it is never the picture sent back.
 fn resample(
     id: u64,
@@ -576,7 +590,11 @@ fn resample(
     pad: f64,
     logs: (bool, bool),
 ) -> Result<(), PlotFailure> {
-    let rendered = evaluate_at(id, view, pad, logs)?;
+    let mut rendered = evaluate_at(id, view, pad, logs)?;
+    let contour = with_view(id, |entry| entry.contour)?;
+    if contour {
+        repair_graphic_source(&mut rendered);
+    }
     if !has_svg(&rendered) {
         return Err(PlotFailure::Failed);
     }

@@ -15,7 +15,7 @@ pub(super) struct Picture {
 }
 
 /// Reads the flat SVG grammar into a picture. A single element the scene cannot express refuses
-/// the whole picture; the geometry fitted after this is pure numbers.
+/// the whole picture. The geometry fitted after this is pure numbers.
 pub(super) fn parse_picture(elements: &[Element<'_>], series_colors: &[String]) -> Option<Picture> {
     let mut picture = Picture {
         background: None,

@@ -1,7 +1,7 @@
-// The automation hooks: one action entry point for `docs/automation.md`, driving the same
-// controllers a finger does. Test-only code, but it lives in the app because it needs the live
-// DOM, services and plot controllers. `createTestAction` takes only the two app-level sheets it
-// cannot import (the menu and its theme options).
+// The automation hooks: one action entry point, driving the same controllers a finger does.
+// Test-only code, but it lives in the app because it needs the live DOM, services and plot
+// controllers. `createTestAction` takes only the two app-level sheets it cannot import
+// (the menu and its theme options).
 
 import { formatEntry, formatNotebook, goToDefinition } from "./editor.js";
 import {

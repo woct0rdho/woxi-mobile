@@ -1,7 +1,7 @@
 use woxi::syntax::PlotSource;
 
 /// The `AxesOrigin` of a plot: `{x, y}` from the call's options, `{0, 0}` by default. Only
-/// numbers are read; `Automatic` and anything else mean the default. This is the value an axis
+/// numbers are read. `Automatic` and anything else mean the default. This is the value an axis
 /// line carries, whether the renderer drew it at the origin or clamped it to the range's edge.
 pub(super) fn axes_origin(source: &PlotSource) -> (f64, f64) {
     use woxi::syntax::Expr;
@@ -42,7 +42,7 @@ pub(super) fn axes_origin(source: &PlotSource) -> (f64, f64) {
 /// samples: a plot with one of them stays a still picture. Their no-op forms (`None`, `False`, an
 /// empty list) are allowed, so a call that spells out a default still pans.
 ///
-/// This is the option-level half of the rule; the other half is the picture itself, which
+/// This is the option-level half of the rule. The other half is the picture itself, which
 /// [`scene`] refuses when it holds an element the canvas could not redraw.
 pub(crate) fn unmodeled_options(source: &PlotSource) -> bool {
     use woxi::syntax::Expr;

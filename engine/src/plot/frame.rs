@@ -80,7 +80,7 @@ fn marker_shape(marker: &woxi::syntax::PlotMarker) -> Option<(&'static str, bool
 
 /// Marker radius as a fraction of the image width. Woxi's `automatic_marker_shape` scales a
 /// glyph's outline by `k = 0.35 * (size - 1) / 3.49` for an explicit size, and by 1 for the
-/// default; the renderer's reference canvas is 360 units wide (`RESOLUTION_SCALE = 10` on a
+/// default. The renderer's reference canvas is 360 units wide (`RESOLUTION_SCALE = 10` on a
 /// 36-unit plot area), which is the divisor here. A scatter without a marker keeps Woxi's
 /// 2.3 px default dot.
 const DEFAULT_DOT_RADIUS: f64 = 2.3 / 360.0;

@@ -1,7 +1,6 @@
 // Property tests for the transforms: instead of a hand-picked case per rule, a seeded generator
-// walks many views and scenes and asserts the invariants the subsystem is held to (see
-// `docs/plot_interaction.md`). A sign that flips or an anchor that drifts shows up here without a
-// device, an engine or an APK.
+// walks many views and scenes and asserts the invariants the subsystem is held to. A sign that 
+// flips or an anchor that drifts shows up here without a device, an engine or an APK.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";

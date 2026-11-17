@@ -3,10 +3,11 @@
 
 use crate::assist::complete::{byte_to_utf16, symbol_table};
 use crate::json::{json_escape, json_string_array};
+use crate::plot::expr::for_each_child;
 
 use woxi::syntax::Expr;
 
-/// The gallery only needs to teach the heads it actually shows; the rest is bounded so
+/// The gallery only needs to teach the heads it actually shows. The rest is bounded so
 /// one unusual example cannot grow the reply without limit.
 const MAX_LEARNED_HEADS: usize = 80;
 const MAX_VARIANTS: usize = 3;
@@ -40,7 +41,7 @@ pub(crate) fn mentions(expr: &Expr, name: &str) -> bool {
         Expr::Identifier(id) | Expr::Constant(id) => id == name,
         _ => {
             let mut found = false;
-            for_each_child(expr, |child| {
+            for_each_child(expr, &mut |child| {
                 if !found && mentions(child, name) {
                     found = true;
                 }
@@ -115,89 +116,6 @@ pub(crate) fn classify_argument(expr: &Expr, iterators: &[String]) -> Slot {
     }
 }
 
-// Calls `visit` on each direct child expression. This is the one place that knows how
-// to walk Woxi's AST. `learn_calls` and `collect_patterns` both use it, so a new list,
-// rule or call shape does not have to be remembered in two 80-line matches.
-fn for_each_child(expr: &Expr, mut visit: impl FnMut(&Expr)) {
-    match expr {
-        Expr::FunctionCall { args, .. } => {
-            for arg in args.iter() {
-                visit(arg);
-            }
-        }
-        Expr::List(items) => {
-            for item in items.iter() {
-                visit(item);
-            }
-        }
-        Expr::CompoundExpr(items) => {
-            for item in items {
-                visit(item);
-            }
-        }
-        Expr::Association(items) => {
-            for (key, value) in items {
-                visit(key);
-                visit(value);
-            }
-        }
-        Expr::BinaryOp { left, right, .. } => {
-            visit(left);
-            visit(right);
-        }
-        Expr::UnaryOp { operand, .. } | Expr::Function { body: operand } => visit(operand),
-        Expr::NamedFunction { body, .. } => visit(body),
-        Expr::Comparison { operands, .. } => {
-            for operand in operands {
-                visit(operand);
-            }
-        }
-        Expr::Rule {
-            pattern,
-            replacement,
-        }
-        | Expr::RuleDelayed {
-            pattern,
-            replacement,
-        } => {
-            visit(pattern);
-            visit(replacement);
-        }
-        Expr::ReplaceAll { expr, rules } | Expr::ReplaceRepeated { expr, rules } => {
-            visit(expr);
-            visit(rules);
-        }
-        Expr::Map { func, list } | Expr::Apply { func, list } | Expr::MapApply { func, list } => {
-            visit(func);
-            visit(list);
-        }
-        Expr::PrefixApply { func, arg } => {
-            visit(func);
-            visit(arg);
-        }
-        Expr::Postfix { expr, func } => {
-            visit(expr);
-            visit(func);
-        }
-        Expr::Part { expr, index } => {
-            visit(expr);
-            visit(index);
-        }
-        Expr::CurriedCall { func, args } => {
-            visit(func);
-            for arg in args {
-                visit(arg);
-            }
-        }
-        Expr::PatternOptional {
-            default: Some(default),
-            ..
-        } => visit(default),
-        Expr::PatternTest { test, .. } => visit(test),
-        _ => {}
-    }
-}
-
 /// Every call inside an expression, with its arguments classified by shape.
 pub(crate) fn learn_calls(expr: &Expr, out: &mut Vec<(String, Vec<Slot>)>) {
     if let Expr::FunctionCall { name, args } = expr {
@@ -229,7 +147,7 @@ pub(crate) fn learn_calls(expr: &Expr, out: &mut Vec<(String, Vec<Slot>)>) {
             out.push((name.clone(), slots));
         }
     }
-    for_each_child(expr, |child| learn_calls(child, out));
+    for_each_child(expr, &mut |child| learn_calls(child, out));
 }
 
 /// Slot names, roles and example arguments learned from the shipped example gallery.
@@ -342,7 +260,7 @@ pub(crate) fn collect_patterns(expr: &Expr, names: &mut Vec<String>) {
         }
         _ => {}
     }
-    for_each_child(expr, |child| collect_patterns(child, names));
+    for_each_child(expr, &mut |child| collect_patterns(child, names));
 }
 
 /// The pattern names bound by a definition's left-hand side: the parameters that are

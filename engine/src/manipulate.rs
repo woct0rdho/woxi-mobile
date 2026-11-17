@@ -1,6 +1,7 @@
 //! Manipulate: reading a control spec and re-rendering the body with new slider values.
 
 use crate::json::json_escape;
+use crate::plot::{capture_statement, repair_svg_contour};
 
 /// One control of a `Manipulate[...]`, parsed from the source text.
 pub(crate) struct Control {
@@ -243,6 +244,13 @@ pub(crate) fn render_body(body: &str, bindings: &[(String, String)]) -> Option<R
     };
     let result = woxi::interpret_with_stdout(&expression).ok()?;
     if let Some(svg) = result.graphics.filter(|svg| !svg.trim().is_empty()) {
+        // A contour body gets the same junction cleanup as a top-level contour, so
+        // a slider view and its saved picture show clean crossings too.
+        let svg = if capture_statement(&expression).contour() {
+            repair_svg_contour(&svg)
+        } else {
+            svg
+        };
         return Some(Rendered::Graphic(svg));
     }
     let text = result.result.trim();

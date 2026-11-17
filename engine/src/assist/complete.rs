@@ -38,8 +38,8 @@ pub(crate) static RANKS: LazyLock<HashMap<&'static str, u32>> = LazyLock::new(||
     table
 });
 
-/// The first hundred names share a band so that length still decides among them;
-/// after that one band per thousand is fine-grained enough for the bar.
+/// The first hundred names share a band so that length still decides among them.
+/// After that one band per thousand is fine-grained enough for the bar.
 const BAND_HEAD: u32 = 100;
 const BAND_WIDTH: u32 = 1_000;
 
@@ -125,7 +125,7 @@ pub(crate) fn is_identifier_char(ch: char) -> bool {
 }
 
 /// The identifier that ends at `cursor`, with the byte offset it starts at. The
-/// cursor is a byte offset; callers convert the UTF-16 cursor position first.
+/// cursor is a byte offset. Callers convert the UTF-16 cursor position first.
 pub(crate) fn identifier_before(code: &str, cursor: usize) -> (usize, &str) {
     let mut end = cursor.min(code.len());
     while end > 0 && !code.is_char_boundary(end) {
@@ -276,7 +276,7 @@ const TIER_WORD: u8 = 3;
 const TIER_ABBREVIATION: u8 = 4;
 const TIER_SUBSTRING: u8 = 5;
 
-/// A one-letter fuzzy query matches half the language; two is the minimum that says
+/// A one-letter fuzzy query matches half the language. Two is the minimum that says
 /// something about a word.
 const MIN_FUZZY_LEN: usize = 2;
 
@@ -412,7 +412,7 @@ pub(crate) struct Candidate {
     /// Named somewhere in the notebook, which lifts a rare name to the front.
     used: bool,
     /// 2 for an option of the call the caret is in, 1 for one that call already names,
-    /// 0 otherwise. Only meaningful in an options context; a tie-break inside the tier.
+    /// 0 otherwise. Only meaningful in an options context. A tie-break inside the tier.
     option_rank: u8,
 }
 
@@ -491,14 +491,14 @@ fn usage_names(code: &str, session: &HashSet<String>) -> Vec<String> {
 }
 
 /// The names defined in the current interpreter session. They are part of the notebook's
-/// vocabulary even when the definition happened in an earlier entry; including them lets
+/// vocabulary even when the definition happened in an earlier entry. Including them lets
 /// a user-defined symbol receive the same "already used" boost as a builtin.
 fn session_names() -> HashSet<String> {
     woxi::get_defined_names().into_iter().collect()
 }
 
 /// A stable key for the notebook's text. `DefaultHasher` has fixed keys, so it is
-/// deterministic within the process; the hash only has to distinguish successive edits.
+/// deterministic within the process. The hash only has to distinguish successive edits.
 fn usage_key(codes: &[String]) -> u64 {
     let mut hasher = DefaultHasher::new();
     codes.hash(&mut hasher);
@@ -506,7 +506,7 @@ fn usage_key(codes: &[String]) -> u64 {
 }
 
 /// Adds the names in one entry to the remembered vocabulary. This is the test helper for
-/// callers that only have one entry; requests use [`sync_usage`].
+/// callers that only have one entry. Requests use [`sync_usage`].
 #[cfg(test)]
 pub(crate) fn remember_usage(code: &str) {
     let session = session_names();
@@ -546,7 +546,7 @@ fn sync_usage(codes: &[String]) {
 
 /// Recomputes the used-name set from the notebook's entries. Names removed from the text
 /// stop being "used" instead of staying in the set for the rest of the session. The
-/// frontend sends every entry; a request without the array does not describe a notebook
+/// frontend sends every entry. A request without the array does not describe a notebook
 /// (a unit test, or a caller that only set one prefix), so it leaves the remembered
 /// vocabulary alone.
 pub(crate) fn remember_notebook_usage(json: &str) {
@@ -597,14 +597,14 @@ fn option_names(head: &str) -> Rc<HashSet<String>> {
 }
 
 /// Drops the cached `Options[f]` names. An evaluation can redefine `Options[f]`, so the
-/// evaluation path calls this after each entry; `clear_usage` also calls it on reset.
+/// evaluation path calls this after each entry. `clear_usage` also calls it on reset.
 pub(crate) fn clear_option_cache() {
     OPTION_NAMES.with(|cache| cache.borrow_mut().clear());
 }
 
 /// What the caret's context adds to the ranking: the call whose options are being typed,
 /// and the options that call already names. The frontend sends the head and the used
-/// names; the engine probes `Options[f]` itself (cached for builtins), so the ranking and
+/// names. The engine probes `Options[f]` itself (cached for builtins), so the ranking and
 /// the `callOption` flag do not depend on how much of the call's options the client has
 /// loaded.
 ///
