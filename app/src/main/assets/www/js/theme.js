@@ -3,10 +3,31 @@
 // on screen because typeset SVGs carry their colors.
 
 import { evaluateAll } from "./evaluation.js";
-import { persist } from "./notebook-store.js";
-import { nativeCall, state } from "./runtime.js";
+import { log, nativeCall, state } from "./runtime.js";
 
 const DARK_QUERY = window.matchMedia("(prefers-color-scheme: dark)");
+const SETTINGS_KEY = "woxi.settings";
+const THEMES = ["system", "light", "dark"];
+
+// The inline script in index.html resolves the saved mode before first paint. This is the
+// own, validated read used once the module graph is ready.
+export function loadThemeMode() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || "null");
+    if (saved && THEMES.indexOf(saved.theme) >= 0) return saved.theme;
+  } catch (err) {
+    // Settings are optional.
+  }
+  return "system";
+}
+
+function persistSettings() {
+  try {
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+  } catch (err) {
+    log("settings persist failed: " + (err instanceof Error ? err.message : String(err)));
+  }
+}
 
 // Follow the device setting while the user has chosen 'system'.
 const onSystemThemeChange = function () {
@@ -26,7 +47,7 @@ export function setTheme(mode) {
   const changed = previous !== null && previous !== resolved;
   window.document.documentElement.setAttribute("data-theme", resolved);
   nativeCall("setTheme", resolved);
-  persist();
+  persistSettings();
   if (
     changed &&
     state.entries.some(function (entry) {

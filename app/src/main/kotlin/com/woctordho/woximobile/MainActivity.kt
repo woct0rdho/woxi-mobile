@@ -51,10 +51,12 @@ class MainActivity : ComponentActivity() {
     private val pendingTestActions = ArrayDeque<Pair<String, String>>()
     private var testReady = false
 
-    // Current system-bar insets in pixels. The web layer reads these via the bridge.
+    // Current system-bar and IME insets in pixels. The web layer reads these via the bridge.
     var insetTopPx = 0
         private set
     var insetBottomPx = 0
+        private set
+    var insetImePx = 0
         private set
 
     private val createNotebookLauncher =
@@ -72,11 +74,26 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         createWebView()
         bridge.attach(webView)
-        // The notebook is persisted in the web layer (localStorage), so a fresh load is
-        // enough to restore the session reliably, even after process death.
+        // The web layer loads the last app-private notebook. Outputs are restored from the
+        // file. The interpreter session is rebuilt lazily on first evaluation.
         loadApp()
         setupBackHandling()
         handleTestIntent(intent)
+    }
+
+    override fun onStop() {
+        // The debounce normally has the file on disk already. This is a best-effort flush of
+        // the last debounce window: evaluateJavascript() is asynchronous and cannot be
+        // awaited from onStop, while the native writer can still commit a snapshot it
+        // already holds. onPause is not used because it is too brief to promise a write.
+        if (::webView.isInitialized) {
+            webView.evaluateJavascript(
+                "window.WoxiApp && WoxiApp.flushAutosave && WoxiApp.flushAutosave()",
+                null,
+            )
+        }
+        bridge.flushAutosave()
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -216,6 +233,9 @@ class MainActivity : ComponentActivity() {
                     detail: android.webkit.RenderProcessGoneDetail,
                 ): Boolean {
                     Log.w(TAG, "WebView renderer gone (crashed=" + detail.didCrash() + ")")
+                    // The dead renderer cannot run its pagehide listener, but snapshots that
+                    // already reached the bridge can still be committed before replacement.
+                    bridge.flushAutosave()
                     recreateWebView()
                     loadApp()
                     return true
@@ -242,6 +262,7 @@ class MainActivity : ComponentActivity() {
             v.setPadding(bars.left, bars.top, bars.right, 0)
             insetTopPx = bars.top
             insetBottomPx = bars.bottom
+            insetImePx = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             pushInsetsToWeb()
             insets
         }
@@ -342,7 +363,7 @@ class MainActivity : ComponentActivity() {
         if (!::webView.isInitialized) return
         val script =
             "window.WoxiNativeCallbacks && WoxiNativeCallbacks.onInsets && " +
-                "WoxiNativeCallbacks.onInsets($insetTopPx,$insetBottomPx)"
+                "WoxiNativeCallbacks.onInsets($insetTopPx,$insetBottomPx,$insetImePx)"
         webView.post { webView.evaluateJavascript(script, null) }
     }
 
@@ -367,8 +388,6 @@ class MainActivity : ComponentActivity() {
     }
 
     fun launchOpenNotebook() {
-        openNotebookLauncher.launch(
-            arrayOf(NOTEBOOK_MIME, "application/json", "text/plain", "*/*"),
-        )
+        openNotebookLauncher.launch(arrayOf("*/*"))
     }
 }

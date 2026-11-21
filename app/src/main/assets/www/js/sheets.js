@@ -4,7 +4,14 @@
 import { activeEntry, focusInput } from "./entries.js";
 import { el, els, keepFocus } from "./runtime.js";
 
+// A sheet-to-sheet command closes the current sheet and opens the next one. The close path
+// restores focus in a deferred task. That task must not focus the entry behind the new
+// sheet. Each open/close advances this token, and a close only restores focus if no newer
+// sheet operation happened in the meantime.
+let sheetGeneration = 0;
+
 export function openSheet(title, build) {
+  sheetGeneration += 1;
   els.sheetTitle.textContent = title;
   els.sheetBody.innerHTML = "";
   build(els.sheetBody);
@@ -18,6 +25,17 @@ export function openSheet(title, build) {
 }
 
 export function closeSheet() {
+  sheetGeneration += 1;
+  const closeGeneration = sheetGeneration;
+  const entry = activeEntry();
+  const active = window.document.activeElement;
+  if (
+    active instanceof HTMLElement &&
+    active !== (entry && entry.dom.input) &&
+    typeof active.blur === "function"
+  ) {
+    active.blur();
+  }
   els.overlay.className = "woxi-hidden";
   // A sheet is opened over an entry and never takes the caret for itself (see keepFocus),
   // so whatever made the field lose the focus - the native file picker, the window going
@@ -26,14 +44,16 @@ export function closeSheet() {
   // that was just focused. The active entry is read when the task runs, so a command that
   // closed the sheet and then moved elsewhere (go to definition) is not dragged back.
   setTimeout(function () {
-    const entry = activeEntry();
-    if (entry) focusInput(entry);
+    if (sheetGeneration !== closeGeneration) return;
+    const entryNow = activeEntry();
+    if (entryNow) focusInput(entryNow);
   }, 0);
 }
 
-export function sheetButton(label, hint, handler) {
+export function sheetButton(label, hint, handler, options) {
   const btn = el("button", "woxi-sheet-item");
   btn.type = "button";
+  if (options && options.danger) btn.classList.add("woxi-sheet-item-danger");
   keepFocus(btn);
   btn.appendChild(el("span", null, label));
   if (hint) btn.appendChild(el("small", null, hint));

@@ -12,11 +12,23 @@
 
 import { escapeHtml } from "./html.js";
 import * as shape from "./svg-shape.js";
+import { DEFAULT_SLIDER_STEP, SLIDER_STEPS } from "./widgets.js";
 
 // Typeset SVGs carry width/height but often no viewBox, so CSS cannot scale them. Add
 // one and a class hook before handing them to the notebook. With `base`, the size is
 // re-expressed in em against the font size the box layout used (see `layoutFontSize`).
+function sanitizeSvg(svg) {
+  // Notebook files can be edited or imported, so their SVG is untrusted. The engine's own
+  // output has no scripts or event handlers. Removing them is still the bound.
+  return String(svg)
+    .replace(/<\s*(script|foreignObject|iframe|object|embed)\b[\s\S]*?<\s*\/\s*\1\s*>/gi, "")
+    .replace(/<\s*(script|foreignObject|iframe|object|embed)\b[^>]*\/?\s*>/gi, "")
+    .replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\s(?:xlink:)?href\s*=\s*('javascript:[^']*'|"javascript:[^"]*")/gi, "");
+}
+
 function openTag(svg, cls, base) {
+  svg = sanitizeSvg(svg);
   return String(svg).replace(/^<svg\b([^>]*)>/, function (match, attrs) {
     const width = /(?:^|\s)width="([0-9.]+)"/.exec(attrs);
     const height = /(?:^|\s)height="([0-9.]+)"/.exec(attrs);
@@ -112,8 +124,9 @@ function controlHtml(control, index) {
     let step = control.step;
     if (step === undefined || step === null) {
       const range = control.max - control.min;
-      step = range > 0 ? range / 100 : 0.1;
+      step = range > 0 ? range / SLIDER_STEPS : DEFAULT_SLIDER_STEP;
     }
+    const initial = typeof value === "number" ? value : Number(value);
     input =
       '<input type="range"' +
       attrs +
@@ -124,7 +137,7 @@ function controlHtml(control, index) {
       '" step="' +
       step +
       '" value="' +
-      (typeof value === "number" ? value : control.min) +
+      (Number.isFinite(initial) ? initial : control.min) +
       '">';
   } else {
     input = '<input type="text"' + attrs + ' value="' + escapeHtml(value) + '">';
@@ -145,7 +158,7 @@ function controlHtml(control, index) {
   );
 }
 
-function manipulateHtml(item) {
+function manipulateHtml(item, index) {
   const controls = item.controls || [];
   const parts = [];
   for (let i = 0; i < controls.length; i++) parts.push(controlHtml(controls[i], i));
@@ -154,6 +167,8 @@ function manipulateHtml(item) {
   return (
     '<div class="woxi-out woxi-manipulate" data-woxi-body="' +
     escapeHtml(item.body || "") +
+    '" data-woxi-item="' +
+    index +
     '">' +
     '<div class="woxi-out-graphic woxi-manipulate-view">' +
     view +
@@ -181,7 +196,7 @@ function plotSummary(plot) {
   return { id: plot.id, x: plot.x, y: plot.y, s: plot.s, dn: plot.dn };
 }
 
-function itemToHtml(item) {
+function itemToHtml(item, index) {
   if (!item || !item.type) return "";
   switch (item.type) {
     case "text":
@@ -218,15 +233,16 @@ function itemToHtml(item) {
     case "error":
       return '<div class="woxi-out woxi-out-error">' + escapeHtml(item.text) + "</div>";
     case "manipulate":
-      return manipulateHtml(item);
+      return manipulateHtml(item, index);
     default:
       return '<div class="woxi-out woxi-out-text">' + escapeHtml(item.text || "") + "</div>";
   }
 }
 
-// Renders the engine's JSON answer: the markup, and the items it was made from (a plot's
-// samples are in them, and the caller wires the plots from those without parsing the
-// answer a second time). `items` is null when the answer is unreadable.
+// Renders the engine's JSON answer, or an already parsed item array, into markup and the
+// items it was made from (a plot's samples are in them, and the caller wires the plots from
+// those without parsing the answer a second time). `items` is null when a JSON answer is
+// unreadable.
 function renderItems(json) {
   const parsed = parseItems(json);
   if (parsed.items === null) {
@@ -240,13 +256,14 @@ function renderItems(json) {
   }
   const items = parsed.items;
   let html = "";
-  for (let i = 0; i < items.length; i++) html += itemToHtml(items[i]);
+  for (let i = 0; i < items.length; i++) html += itemToHtml(items[i], i);
   return { items: items, html: html };
 }
 
 // The items of an engine answer, or the reason it is not readable.
 function parseItems(json) {
   if (!json) return { items: [] };
+  if (Array.isArray(json)) return { items: json };
   try {
     const items = JSON.parse(json);
     if (!items || !items.length) return { items: [] };

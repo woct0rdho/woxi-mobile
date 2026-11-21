@@ -2,7 +2,7 @@
 
 Portrait phones only. Measured on the emulator (1080*2400 px, 440 dpi, 393*873 dp. WebView viewport 393*827) or in a host probe against the interpreter.
 
-## The bar
+## The action bar
 
 One row, one state, still 47 dp - it is the action bar's first page, so nothing moves:
 
@@ -64,7 +64,7 @@ Five tabs, opened by `+N`, `n/m v`, the warning chip, or the matches button:
 
 Every key and chip whose label is a Wolfram function does the same two things, whether it sits on a pad page, in the action bar or in the completion row:
 
-| | No selection | Selection |
+| Gesture | No selection | Selection |
 |---|---|---|
 | Tap | insert the call with empty brackets, caret inside (`Integrate[]`) | replace the selection with the same |
 | Hold | insert the call with every slot named, wrapping the operand to the right of the caret (`Plot[Sin[x], {x, -5, 5}]`) | wrap the selection (`Plot[x^2, {x, -5, 5}]`) |

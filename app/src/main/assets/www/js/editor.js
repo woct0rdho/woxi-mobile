@@ -11,10 +11,13 @@ import {
   scrollEntryIntoView,
   selectionOf,
   setEntrySelection,
-  updateTitle,
-  wireManipulate,
 } from "./entries.js";
 import { attachPlots, clearOutput, evaluateEntry, submitActive } from "./evaluation.js";
+import {
+  currentEvaluation,
+  invalidateEntry,
+  isCurrentEvaluation,
+} from "./evaluation-generation.js";
 import { redoEntry, undoEntry } from "./history.js";
 import { EXAMPLES } from "./keyboard-pages.js";
 import { persist } from "./notebook-store.js";
@@ -57,12 +60,13 @@ function runTemplate(text) {
     toast("Evaluation in progress");
     return;
   }
+  const generation = currentEvaluation();
   state.evaluating = true;
   replaceInEntry(entry, 0, entry.dom.input.value.length, text, text.length, "edit");
   void evaluateEntry(entry)
     .catch(function () {})
     .finally(function () {
-      state.evaluating = false;
+      if (isCurrentEvaluation(generation)) state.evaluating = false;
     });
 }
 
@@ -138,6 +142,7 @@ function newEntryBelow() {
   const added = addEntry("", { index: index });
   focusEntry(added);
   scrollEntryIntoView(added);
+  persist();
 }
 
 function duplicateActive() {
@@ -146,22 +151,25 @@ function duplicateActive() {
   // The copied markup addresses the same plot handles. Seed the new controllers with
   // what the original already has, or the duplicate is a still picture.
   const seeds = WoxiPlot.seedsOf(entry.dom.output);
-  const copy = addEntry(entry.input, { index: state.entries.indexOf(entry) + 1 });
+  const copy = addEntry(entry.input, { index: state.entries.indexOf(entry) + 1, render: false });
   copy.output = entry.output;
-  copy.items = entry.items;
-  copy.dom.output.innerHTML = entry.output || "";
+  copy.items = entry.items ? JSON.parse(JSON.stringify(entry.items)) : null;
+  copy.evaluatedInput = entry.evaluatedInput;
+  copy.executionCount = entry.executionCount;
+  copy.widgets = entry.widgets ? JSON.parse(JSON.stringify(entry.widgets)) : [];
+  renderNotebook();
+  // renderNotebook rebuilds the copied HTML and wires its controls, but it has no old
+  // controller to seed the new plots from. Attach them once with the original's seeds.
   attachPlots(copy, null, seeds);
-  wireManipulate(copy.dom.root);
   focusEntry(copy);
   scrollEntryIntoView(copy);
-  state.dirty = true;
-  updateTitle();
   persist();
 }
 
 function deleteActive() {
   const entry = activeEntry();
   if (!entry) return;
+  invalidateEntry(entry);
   if (state.entries.length === 1) {
     clearActive();
     return;
@@ -170,8 +178,6 @@ function deleteActive() {
   state.entries.splice(index, 1);
   renderNotebook();
   focusEntry(state.entries[Math.min(index, state.entries.length - 1)]);
-  state.dirty = true;
-  updateTitle();
   persist();
 }
 
@@ -182,15 +188,15 @@ function clearActive() {
   const hasText = input.value.length > 0;
   const hasOutput = entry.dom.output.innerHTML !== "";
   if (!hasText && !hasOutput) return;
-  if (hasText) replaceInEntry(entry, 0, input.value.length, "", 0, "edit");
   clearOutput(entry);
+  if (hasText) {
+    replaceInEntry(entry, 0, input.value.length, "", 0, "edit");
+  }
   entry.input = input.value;
   setEntrySelection(entry, 0, 0);
   input.setSelectionRange(0, 0);
   focusEntry(entry);
-  state.dirty = true;
-  updateTitle();
-  persist();
+  if (!hasText) persist();
 }
 
 function clipboardOp(op) {
@@ -261,8 +267,10 @@ function rewriteEntry(entry, text) {
 async function formatEntry() {
   const entry = activeEntry();
   if (!entry || !entry.dom || !entry.dom.input.value.trim()) return;
+  const generation = currentEvaluation();
   const text = entry.dom.input.value;
   const codes = await formatCodes([text]);
+  if (!isCurrentEvaluation(generation)) return;
   // The user may type while the formatter runs. Never replace a newer text with a
   // formatted copy of the older one.
   if (entry.dom.input.value !== text) {
@@ -278,6 +286,7 @@ async function formatEntry() {
 }
 
 async function formatNotebook() {
+  const generation = currentEvaluation();
   const entries = state.entries.filter(function (entry) {
     return entry.dom && entry.dom.input.value.trim();
   });
@@ -286,6 +295,7 @@ async function formatNotebook() {
     return entry.dom.input.value;
   });
   const formatted = await formatCodes(before);
+  if (!isCurrentEvaluation(generation)) return;
   let changed = 0;
   let skipped = 0;
   for (let i = 0; i < entries.length; i += 1) {

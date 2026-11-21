@@ -1,7 +1,7 @@
 // Running an entry and showing its output: the engine round trip, rendering the answer into
 // the entry's output element, and attaching the plot controllers that make a picture live.
-// The output belongs to the notebook (the .ipynb save keeps it). The local restore keeps the
-// input and re-evaluates it.
+// The output belongs to the notebook (the .ipynb save keeps it). A restored notebook shows
+// its saved outputs without evaluating. The interpreter session is rebuilt on first use.
 
 import { closersFor } from "./assist-scan.js";
 import {
@@ -12,6 +12,13 @@ import {
   showBusy,
   wireManipulate,
 } from "./entries.js";
+import {
+  currentEvaluation,
+  invalidateEntry,
+  isCurrentEntry,
+  isCurrentEvaluation,
+} from "./evaluation-generation.js";
+import { nextExecutionCount } from "./notebook-model.js";
 import { persist } from "./notebook-store.js";
 import { latency as plotLatency } from "./plot-hooks.js";
 import * as WoxiPlot from "./plot-interact.js";
@@ -19,46 +26,84 @@ import { build as buildPlotSamples } from "./plot-samples.js";
 import { refreshAssist } from "./refresh.js";
 import * as WoxiRender from "./render-output.js";
 import { runtime, state, toast } from "./runtime.js";
+import { ensureSession, startFreshSession } from "./session.js";
 import { replaceInEntry } from "./typing.js";
 
-// Eval on an unfinished call closes the brackets instead of doing nothing: the
-// engine says whether the entry is finished, and the closers become part of the
-// text, so nothing is hidden from the user.
-export async function closeRunningCall(entry) {
+// The saved outputs came from an older process. Rebuild the interpreter's definitions
+// before the first evaluation or Manipulate interaction, without touching the displayed
+// outputs. This is the cost we move from app launch to the first action that needs it.
+
+export async function closeRunningCall(entry, evalToken) {
   if (!entry || !entry.dom || !runtime.engine) return;
+  const generation = currentEvaluation();
   const text = entry.dom.input.value;
   if (!text.trim()) return;
   const reply = await runtime.engine.query("is_complete_request", { code: text }).catch(() => null);
+  if (!isCurrentEvaluation(generation) || !isCurrentEntry(entry, evalToken)) return;
   const status = reply?.content?.status;
   if (status !== "incomplete") return;
   const closers = closersFor(text, text.length);
   if (!closers) return;
+  if (!isCurrentEntry(entry, evalToken)) return;
   replaceInEntry(entry, text.length, text.length, closers, closers.length, "edit");
 }
 
 export async function evaluateEntry(entry) {
-  await closeRunningCall(entry);
+  const generation = currentEvaluation();
+  const evalToken = entry ? entry.evalToken : undefined;
+  await closeRunningCall(entry, evalToken);
+  if (
+    !isCurrentEvaluation(generation) ||
+    !isCurrentEntry(entry, evalToken) ||
+    !state.entries.includes(entry)
+  ) {
+    return;
+  }
   // User symbols changed with the evaluation, so cached completion is stale.
   runtime.assist?.invalidate();
   return runEntry(entry);
 }
 
-export function clearOutput(entry) {
+function detachPlotControllers(entry) {
   if (!entry || !entry.dom) return;
   WoxiPlot.release(WoxiPlot.detach(entry.dom.output), entry.dom.output);
+}
+
+export function clearOutput(entry) {
+  if (!entry || !entry.dom) return;
+  invalidateEntry(entry);
+  detachPlotControllers(entry);
   entry.dom.output.innerHTML = "";
   entry.output = "";
   entry.items = null;
+  entry.evaluatedInput = null;
+  entry.executionCount = null;
+  entry.widgets = [];
   delete entry.perf;
 }
 
 export async function runEntry(entry) {
   if (!entry || !entry.dom) return;
+  // Starting a new run invalidates an older result for the same entry, even when the
+  // notebook itself has not changed. A deletion or clear does the same through
+  // invalidateEntry().
+  invalidateEntry(entry);
+  const generation = currentEvaluation();
+  const evalToken = entry.evalToken;
+  const current = function () {
+    return (
+      isCurrentEvaluation(generation) &&
+      isCurrentEntry(entry, evalToken) &&
+      state.entries.includes(entry)
+    );
+  };
   const input = entry.dom.input.value;
   entry.input = input;
   if (!input.trim()) {
+    if (!current()) return;
     clearOutput(entry);
     showBusy(entry, false);
+    persist();
     return;
   }
   showBusy(entry, true);
@@ -70,18 +115,34 @@ export async function runEntry(entry) {
   const trackPerf = runtime.automation;
   const t0 = trackPerf ? window.performance.now() : 0;
   try {
+    await ensureSession();
+    if (!current()) {
+      showBusy(entry, false);
+      return;
+    }
     const json = await runtime.engine.evaluate(input);
+    if (!current()) {
+      showBusy(entry, false);
+      return;
+    }
     const t1 = trackPerf ? window.performance.now() : 0;
     showBusy(entry, false);
+    // Compute the next count before replacing this entry's old outputs. Once the new
+    // items are installed, executionCountBase() would count them as an evaluated entry
+    // with a null count and skip a number.
+    const executionCount = nextExecutionCount(state.entries);
     // Replacing the output drops the controllers of the previous picture, and with
     // them its handle (the new evaluation registers a fresh one).
-    WoxiPlot.release(WoxiPlot.detach(entry.dom.output), entry.dom.output);
+    detachPlotControllers(entry);
     const rendered = WoxiRender.renderItems(json);
     // The engine items are the notebook's outputs (the `.ipynb` export serializes them).
     // The rendered markup below is the live view. An unreadable answer keeps neither.
-    entry.items = rendered.items && rendered.items.length ? json : null;
+    entry.items = rendered.items && rendered.items.length ? rendered.items : null;
+    entry.evaluatedInput = input;
+    entry.executionCount = executionCount;
+    entry.widgets = [];
     entry.dom.output.innerHTML = rendered.html;
-    wireManipulate(entry.dom.output);
+    wireManipulate(entry.dom.output, entry);
     // Trim the empty margins Woxi's plot layout reserves (see render-output.js).
     // Do it before the markup is stored, so a later re-render keeps the trim.
     WoxiRender.fitGraphics(entry.dom.output);
@@ -100,18 +161,20 @@ export async function runEntry(entry) {
     } else {
       delete entry.perf;
     }
-    // The evaluation's output is part of the notebook: `entry.items` carries it into the
-    // `.ipynb` export, and `entry.output` is this session's markup. A reload re-evaluates
-    // the inputs instead of restoring either, so `persist()` stores only the source.
     persist();
     refreshAssist();
   } catch (err) {
     showBusy(entry, false);
-    entry.items = null;
+    if (!current()) return;
+    const message = err instanceof Error ? err.message : String(err);
+    const executionCount = nextExecutionCount(state.entries);
+    detachPlotControllers(entry);
+    entry.items = [{ type: "error", text: message }];
+    entry.evaluatedInput = input;
+    entry.executionCount = executionCount;
+    entry.widgets = [];
     entry.dom.output.innerHTML =
-      '<div class="woxi-out woxi-out-error">' +
-      WoxiRender.escapeHtml(err instanceof Error ? err.message : String(err)) +
-      "</div>";
+      '<div class="woxi-out woxi-out-error">' + WoxiRender.escapeHtml(message) + "</div>";
     entry.output = WoxiPlot.markupOf(entry.dom.output);
     persist();
   }
@@ -148,9 +211,8 @@ export function attachPlots(entry, items, previous) {
     requestPlot,
     function () {
       entry.output = WoxiPlot.markupOf(entry.dom.output);
-      // A picture at rest is this session's new view. `entry.items` keeps the evaluation
-      // item the `.ipynb` export writes, so it is not replaced here.
-      persist();
+      // The live view is session state. The notebook keeps the evaluation's SVG. A pan
+      // does not rewrite the saved picture until the entry is evaluated again.
     },
     seeds
   );
@@ -168,31 +230,37 @@ export async function requestPlot(msgType, content) {
 
 export async function evaluateAll() {
   if (!runtime.engine || state.evaluating) return;
+  const generation = currentEvaluation();
   state.evaluating = true;
   // A fresh session: definitions from the previous run must not leak in.
   try {
-    await runtime.engine.reset();
+    await startFreshSession();
+    if (!isCurrentEvaluation(generation)) return;
     for (const entry of state.entries) {
+      if (!isCurrentEvaluation(generation)) return;
       await evaluateEntry(entry);
     }
   } catch (err) {
-    toast(err instanceof Error ? err.message : String(err));
+    if (isCurrentEvaluation(generation)) toast(err instanceof Error ? err.message : String(err));
   } finally {
-    state.evaluating = false;
+    if (isCurrentEvaluation(generation)) state.evaluating = false;
   }
 }
 
 export async function submitActive() {
   if (!runtime.engine || state.evaluating) return;
+  const generation = currentEvaluation();
   state.evaluating = true;
   try {
     const entry = activeEntry();
     if (!entry) return;
     const wasLast = state.entries[state.entries.length - 1] === entry;
     await evaluateEntry(entry);
+    if (!isCurrentEvaluation(generation)) return;
     if (wasLast) {
       const next = addEntry("", {});
       focusEntry(next);
+      persist();
     } else {
       const index = state.entries.indexOf(entry);
       const following = state.entries[index + 1];
@@ -200,6 +268,6 @@ export async function submitActive() {
     }
     scrollEntryIntoView(entry);
   } finally {
-    state.evaluating = false;
+    if (isCurrentEvaluation(generation)) state.evaluating = false;
   }
 }

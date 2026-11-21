@@ -3,9 +3,13 @@
 // `app.js`. This module never imports the evaluator, the editor or the assist, so its
 // dependencies point one way (view -> runtime + plot/render helpers).
 
+import { currentEvaluation, isCurrentEvaluation } from "./evaluation-generation.js";
+import { newCellId } from "./notebook-model.js";
+import { displayTitle } from "./notebook-name.js";
 import * as WoxiPlot from "./plot-interact.js";
 import * as WoxiRender from "./render-output.js";
 import { el, els, nativeCall, runtime, state, toast } from "./runtime.js";
+import { ensureSession } from "./session.js";
 
 const hooks = {
   onActive: function (entry) {},
@@ -17,6 +21,7 @@ const hooks = {
   onUndo: function () {},
   onRedo: function () {},
   attachPlots: function (entry, items, seed) {},
+  onManipulate: function (entry) {},
 };
 
 const MAX_INPUT_HEIGHT_RATIO = 0.45;
@@ -38,10 +43,15 @@ export function setHooks(next) {
 export function addEntry(input, options) {
   const entry = {
     id: state.nextId++,
+    cellId: options?.cellId || newCellId(),
+    evalToken: 0,
     input: input || "",
+    evaluatedInput: null,
     dom: null,
     output: "",
     items: null,
+    executionCount: null,
+    widgets: [],
   };
   const index = options?.index ?? state.entries.length;
   state.entries.splice(index, 0, entry);
@@ -145,7 +155,10 @@ export function renderNotebook() {
   refreshClasses();
   // Outputs are stored as HTML, so re-rendering the list restores them.
   // The Manipulate controls need their listeners attached again.
-  wireManipulate(els.notebook);
+  for (let w = 0; w < state.entries.length; w += 1) {
+    const entry = state.entries[w];
+    if (entry.dom) wireManipulate(entry.dom.root, entry);
+  }
   // Plots too: their listeners cannot live in HTML, and the elements are new. The seeds keep
   // the samples and the scene, so a rebuilt plot is drawn at once instead of waiting for a
   // gesture to ask for them again.
@@ -154,6 +167,12 @@ export function renderNotebook() {
     if (entry.dom) hooks.attachPlots(entry, null, seeds[p]);
   }
   WoxiPlot.release(stale, els.notebook);
+  // A rebuilt output is fresh DOM. Fit its static graphics now. A plot's scene is left
+  // alone by fitGraphics, and the font pass in boot runs again after the faces load.
+  for (let f = 0; f < state.entries.length; f += 1) {
+    const entry = state.entries[f];
+    if (entry.dom) WoxiRender.fitGraphics(entry.dom.output);
+  }
   // Rebuilt textareas start at one line. Grow them to fit their content again.
   autoGrowAll();
 }
@@ -194,8 +213,6 @@ function buildEntry(entry) {
     // replacement leaves `lastEdit.merge` false. Do not let this event make it joinable.
     if (entry.lastEdit && entry.lastEdit.merge) entry.lastEdit.caret = input.selectionStart;
     autoGrow(input);
-    state.dirty = true;
-    updateTitle();
     hooks.onInput(entry);
   });
   // A blur fires before the tap that caused it completes, so the bar is refreshed
@@ -265,7 +282,8 @@ export function autoGrowAll() {
 }
 
 export function updateTitle() {
-  els.title.textContent = (state.dirty ? "\u2022 " : "") + (state.title || "Untitled");
+  const dirty = runtime.isDirty ? runtime.isDirty() : false;
+  els.title.textContent = (dirty ? "\u2022 " : "") + displayTitle(state.fileName);
 }
 
 export function showBusy(entry, busy) {
@@ -281,15 +299,16 @@ export function showBusy(entry, busy) {
   }
 }
 
-export function wireManipulate(container) {
+export function wireManipulate(container, entry) {
   const blocks = container.querySelectorAll(".woxi-manipulate");
   for (let i = 0; i < blocks.length; i++) {
-    wireManipulateBlock(blocks[i]);
+    wireManipulateBlock(blocks[i], entry);
   }
 }
 
-function wireManipulateBlock(block) {
+function wireManipulateBlock(block, entry) {
   const body = block.getAttribute("data-woxi-body") || "";
+  const itemIndex = Number(block.getAttribute("data-woxi-item"));
   const view = block.querySelector(".woxi-manipulate-view");
   const controls = block.querySelectorAll("[data-woxi-control]");
   if (!view || !controls.length) return;
@@ -311,10 +330,31 @@ function wireManipulateBlock(block) {
   }
 
   let timer = null;
-  async function refreshView() {
+  function syncControlState() {
+    for (let i = 0; i < controls.length; i += 1) {
+      const control = controls[i];
+      if (control.type === "checkbox") {
+        if (control.checked) control.setAttribute("checked", "");
+        else control.removeAttribute("checked");
+      } else if (control.tagName === "SELECT") {
+        for (let j = 0; j < control.options.length; j += 1) {
+          if (j === control.selectedIndex) control.options[j].setAttribute("selected", "");
+          else control.options[j].removeAttribute("selected");
+        }
+      } else {
+        control.setAttribute("value", control.value);
+      }
+    }
+  }
+
+  async function refreshView(generation) {
     const current = bindings();
+    if (!body) return;
     try {
+      await ensureSession();
+      if (!isCurrentEvaluation(generation)) return;
       const json = await runtime.engine.manipulate(body, current);
+      if (!isCurrentEvaluation(generation)) return;
       let parsed = null;
       try {
         parsed = JSON.parse(json);
@@ -324,14 +364,21 @@ function wireManipulateBlock(block) {
       if (!parsed || (!parsed.svg && !parsed.text)) return;
       view.innerHTML = WoxiRender.manipulateView(parsed);
       WoxiRender.fitGraphics(view);
+      if (entry && Number.isInteger(itemIndex)) {
+        syncControlState();
+        entry.widgets[itemIndex] = { values: current, view: parsed };
+        entry.output = WoxiPlot.markupOf(entry.dom.output);
+        hooks.onManipulate(entry);
+      }
     } catch (err) {
-      toast(err instanceof Error ? err.message : String(err));
+      if (isCurrentEvaluation(generation)) toast(err instanceof Error ? err.message : String(err));
     }
   }
   function update() {
     if (timer) clearTimeout(timer);
+    const generation = currentEvaluation();
     timer = setTimeout(function () {
-      void refreshView();
+      void refreshView(generation);
     }, MANIPULATE_DEBOUNCE_MS);
   }
 

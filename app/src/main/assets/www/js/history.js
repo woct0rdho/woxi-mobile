@@ -8,11 +8,9 @@ import {
   revealCaret,
   selectionOf,
   setEntrySelection,
-  updateTitle,
 } from "./entries.js";
 import { persist } from "./notebook-store.js";
 import { refreshAssist, refreshBarState } from "./refresh.js";
-import { state } from "./runtime.js";
 
 const STEP_BREAK = " \t\n,;[](){}<>+-*/^=!&|@#:'\"~?%";
 const UNDO_LIMIT = 100;
@@ -96,8 +94,6 @@ function applyHistory(entry, snapshot) {
   input.setSelectionRange(selStart, selEnd);
   autoGrow(input);
   revealCaret(entry);
-  state.dirty = true;
-  updateTitle();
   persist();
   refreshAssist();
 }

@@ -111,8 +111,8 @@ function attach(root, send, onFrame, seeds) {
     const view = viewOf(plots[j]);
     // A plot without a seed is restored markup from an earlier app session: its handle belongs
     // to an engine that no longer exists, so its first request would be `ExpiredHandle` and the
-    // controller would be disposed straight away. The app re-evaluates the notebook at boot and
-    // attaches the fresh picture. Until then the saved picture is shown as it is.
+    // controller would be disposed straight away. The app restores saved pictures without
+    // evaluating, so the saved picture stays still until its entry is evaluated.
     if (!view || !byId[view.id]) continue;
     wire(plots[j], send, onFrame, byId[view.id]);
   }

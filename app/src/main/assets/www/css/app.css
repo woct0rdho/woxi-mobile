@@ -505,6 +505,7 @@ html, body {
 #woxi-overlay {
   position: fixed;
   inset: 0;
+  bottom: var(--woxi-ime-height, 0px);
   z-index: 30;
   background: var(--woxi-overlay);
   display: flex;
@@ -512,7 +513,7 @@ html, body {
 }
 #woxi-sheet {
   width: 100%;
-  max-height: 78vh;
+  max-height: min(78vh, 100%);
   overflow-y: auto;
   background: var(--woxi-surface);
   border-top-left-radius: 14px;
@@ -542,6 +543,69 @@ html, body {
 }
 .woxi-sheet-item:active { background: var(--woxi-surface-2); }
 .woxi-sheet-item small { display: block; color: var(--woxi-text-dim); font-size: 12px; margin-top: 2px; }
+.woxi-sheet-item-danger { color: var(--woxi-danger); }
+.woxi-sheet-row {
+  display: flex;
+  align-items: stretch;
+  border-radius: 8px;
+}
+.woxi-sheet-row .woxi-sheet-item {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+.woxi-sheet-notebook span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.woxi-sheet-more {
+  flex: 0 0 48px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--woxi-text-dim);
+  font: inherit;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.woxi-sheet-more:active { background: var(--woxi-surface-2); color: var(--woxi-text); }
+.woxi-sheet-form { padding: 2px 10px 0 10px; }
+.woxi-sheet-input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--woxi-border);
+  border-radius: 8px;
+  background: var(--woxi-surface-2);
+  color: var(--woxi-text);
+  font: inherit;
+  font-size: 16px;
+  outline: none;
+}
+.woxi-sheet-input:focus { border-color: var(--woxi-accent); }
+.woxi-sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 0 4px 0;
+}
+.woxi-sheet-action {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: var(--woxi-surface-2);
+  color: var(--woxi-text);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+.woxi-sheet-action:active { background: var(--woxi-surface-3); }
+.woxi-sheet-action-primary { background: var(--woxi-accent); color: var(--woxi-on-accent-strong); }
+.woxi-sheet-action-danger { color: var(--woxi-danger); }
 .woxi-sheet-sep { height: 1px; background: var(--woxi-border); margin: 8px 6px; }
 .woxi-sheet-text {
   padding: 4px 10px 10px 10px;

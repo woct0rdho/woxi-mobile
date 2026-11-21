@@ -18,7 +18,19 @@ import { canRedo, canUndo, redoEntry, undoEntry } from "./history.js";
 import { SHIFT_NAMES } from "./keyboard.js";
 import { BARS, CONTEXT_PAGE, PAGES } from "./keyboard-pages.js";
 import * as WoxiNotebook from "./notebook.js";
-import { loadNotebookFromText } from "./notebook-store.js";
+import { displayTitle } from "./notebook-name.js";
+import {
+  deleteStoredNotebook,
+  flushAutosave,
+  isDirty,
+  listNotebooks,
+  loadNotebookFromText,
+  newNotebook,
+  openStoredNotebook,
+  PAGE_TOKEN,
+  persist,
+  renameStoredNotebook,
+} from "./notebook-store.js";
 import { perfLine, plotAction } from "./plot-hooks.js";
 import * as WoxiPlot from "./plot-interact.js";
 import { refreshAssist } from "./refresh.js";
@@ -110,7 +122,7 @@ function domSummary() {
     " manipulates=" +
     manipulates +
     " title=" +
-    state.title +
+    displayTitle(state.fileName) +
     " inset=" +
     window
       .getComputedStyle(window.document.documentElement)
@@ -569,10 +581,21 @@ export function createTestAction(menu) {
         }
         break;
       }
+      case "persist": {
+        persist();
+        log("persist: requested");
+        break;
+      }
+      case "flush": {
+        flushAutosave();
+        log("flush: requested");
+        break;
+      }
       case "save": {
         const name = argument || "Test.ipynb";
-        // `NativeBridge.saveFile(name, base64)`: the MIME type is the picker's, not ours.
-        nativeCall("saveFile", name, WoxiNotebook.utf8ToBase64(WoxiNotebook.serialize(state)));
+        // `NativeBridge.exportFile(name, text, pageToken)`: the MIME type is the picker's,
+        // not ours.
+        nativeCall("exportFile", name, WoxiNotebook.serialize(state), PAGE_TOKEN);
         log("save: requested " + name);
         break;
       }
@@ -581,10 +604,63 @@ export function createTestAction(menu) {
           log("loadjson: no argument");
           return;
         }
-        void loadNotebookFromText(argument, "Test.ipynb", evaluateAll).catch(function (err) {
+        try {
+          flushAutosave();
+          loadNotebookFromText(argument, "Test.ipynb", { existing: false });
+        } catch (err) {
           log("loadjson: " + err.message);
-        });
+        }
         log("loadjson: loaded");
+        break;
+      }
+      case "newnotebook": {
+        newNotebook();
+        log("newnotebook: requested");
+        break;
+      }
+      case "newtwice": {
+        newNotebook();
+        newNotebook();
+        log("newtwice: requested");
+        break;
+      }
+      case "deletenotebook": {
+        const name = argument || state.fileName;
+        deleteStoredNotebook(name);
+        log("deletenotebook: requested " + name);
+        break;
+      }
+      case "renamenotebook": {
+        const separator = argument.indexOf("|");
+        if (separator < 0) {
+          log("renamenotebook: expected old|new");
+          return;
+        }
+        const from = argument.slice(0, separator);
+        const to = argument.slice(separator + 1);
+        renameStoredNotebook(from, to);
+        log("renamenotebook: requested " + from + " -> " + to);
+        break;
+      }
+      case "notebooklist": {
+        log("notebooklist: " + JSON.stringify(listNotebooks()));
+        break;
+      }
+      case "opennotebook": {
+        if (!argument) {
+          log("opennotebook: no name");
+          return;
+        }
+        openStoredNotebook(argument);
+        log("opennotebook: requested " + argument);
+        break;
+      }
+      case "currentnotebook": {
+        log("currentnotebook: " + state.fileName);
+        break;
+      }
+      case "dirty": {
+        log("dirty: " + isDirty());
         break;
       }
       case "metrics": {

@@ -43,7 +43,7 @@ Before that, Android resolved `monospace` to DroidSansMono (0.600 em) and had no
 
 1.35 em of the 15 px body text is 20.25 px. The layout figures, measured from the actual SVGs:
 
-| result | SVG size | scale to 20.25 px | glyph size |
+| Result | SVG size | Scale to 20.25 px | Glyph size |
 |---|---|---|---|
 | `x -> 1` | 27*15 | 1.35x | 18.9 px |
 | `1/2 + x^2` | 45*37 | 0.55x | 7.7 px |

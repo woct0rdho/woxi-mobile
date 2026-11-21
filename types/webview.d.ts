@@ -12,14 +12,25 @@ declare global {
       [name: string]: (...args: any[]) => any;
     };
     WoxiNativeCallbacks?: {
-      onEngineResult?: (id: number, json: string) => void;
-      onInsets?: (top: number, bottom: number) => void;
-      onFileOpened?: (name: string, base64: string) => void;
+      onEngineResult?: (id: number, json: string, token: string) => void;
+      onInsets?: (top: number, bottom: number, ime: number) => void;
+      onSaveComplete?: (ok: string, name: string, token: string) => void;
+      onAutosaveComplete?: (ok: string, name: string, revision: string, token: string) => void;
+      onNotebookRenamed?: (
+        ok: string,
+        oldName: string,
+        newName: string,
+        message: string,
+        token: string
+      ) => void;
+      onNotebookDeleted?: (ok: string, name: string, message: string, token: string) => void;
+      onFileOpened?: (name: string, text: string, token: string, error?: string) => void;
       [name: string]: ((...args: any[]) => void) | undefined;
     };
     WoxiApp?: {
       testAction?: (action: string, argument?: string) => void;
       onNativeBack: () => boolean;
+      flushAutosave?: () => void;
     };
   }
 }

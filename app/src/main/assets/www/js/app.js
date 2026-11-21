@@ -18,31 +18,41 @@ import {
 } from "./editor.js";
 import {
   activeEntry,
-  addEntry,
   autoGrowAll,
   focusEntry,
   focusInput,
-  renderNotebook,
   setActive,
   setHooks,
-  updateTitle,
 } from "./entries.js";
 import { attachPlots, evaluateAll, submitActive } from "./evaluation.js";
 import { canRedo, canUndo, recordEdit, redoEntry, undoEntry } from "./history.js";
 import * as WoxiKeyboard from "./keyboard.js";
-import * as WoxiNotebook from "./notebook.js";
+import { displayTitle, suggestFileName } from "./notebook-name.js";
 import {
+  autosaveComplete,
+  beginPage,
+  createDefaultNotebook,
+  deleteStoredNotebook,
+  exportNotebook,
+  finishNotebookDelete,
+  finishNotebookRename,
+  flushAutosave,
+  isCurrentPage,
+  listNotebooks,
   loadNotebookFromText,
   newNotebook,
   openNotebook,
+  openStoredNotebook,
+  PAGE_TOKEN,
   persist,
+  renameStoredNotebook,
   restore,
-  saveNotebook,
 } from "./notebook-store.js";
 import { refreshAssist, refreshBarState } from "./refresh.js";
+import * as WoxiRender from "./render-output.js";
 import { el, els, keepFocus, log, nativeCall, runtime, state, toast } from "./runtime.js";
 import { closeSheet, openSheet, sheetButton } from "./sheets.js";
-import { setTheme } from "./theme.js";
+import { loadThemeMode, setTheme } from "./theme.js";
 import {
   liftEntry,
   readActiveText,
@@ -61,17 +71,9 @@ let runTestAction = null;
 export function showMenu() {
   openSheet("Menu", function (body) {
     body.appendChild(sheetButton("New notebook", "", newNotebook));
-    body.appendChild(sheetButton("Open...", "", openNotebook));
-    body.appendChild(
-      sheetButton("Save", state.fileName ? state.fileName : "New notebook", function () {
-        saveNotebook();
-      })
-    );
-    body.appendChild(
-      sheetButton("Save as...", "", function () {
-        saveNotebook(true);
-      })
-    );
+    body.appendChild(sheetButton("Notebooks...", "", showNotebooks));
+    body.appendChild(sheetButton("Import notebook...", "", openNotebook));
+    body.appendChild(sheetButton("Export notebook...", "", exportNotebook));
     body.appendChild(el("div", "woxi-sheet-sep"));
     body.appendChild(
       sheetButton("Evaluate notebook", "", async function () {
@@ -89,6 +91,156 @@ export function showMenu() {
     body.appendChild(sheetButton("Go to definition", "", goToDefinition));
     body.appendChild(sheetButton("Duplicate entry", "", duplicateActive));
     body.appendChild(sheetButton("Clear entry", "", clearActive));
+  });
+}
+
+function fileSummary(file) {
+  const parts = [];
+  if (file.name === state.fileName) parts.push("current");
+  if (Number.isFinite(file.modified)) {
+    parts.push(new Date(file.modified).toLocaleString());
+  }
+  if (Number.isFinite(file.size)) parts.push(file.size + " B");
+  return parts.join(" \u00b7 ");
+}
+
+export function showNotebooks() {
+  const files = listNotebooks();
+  openSheet("Notebooks", function (body) {
+    if (!files.length) {
+      body.appendChild(el("div", "woxi-sheet-text", "No saved notebooks yet."));
+      return;
+    }
+    files.forEach(function (file) {
+      body.appendChild(notebookRow(file));
+    });
+  });
+}
+
+function backToNotebooks() {
+  closeSheet();
+  showNotebooks();
+}
+
+function notebookRow(file) {
+  const row = el("div", "woxi-sheet-row");
+  const open = el("button", "woxi-sheet-item woxi-sheet-notebook");
+  open.type = "button";
+  keepFocus(open);
+  open.appendChild(el("span", null, file.name));
+  open.appendChild(el("small", null, fileSummary(file)));
+  open.addEventListener("click", function () {
+    closeSheet();
+    openStoredNotebook(file.name);
+  });
+  const more = el("button", "woxi-sheet-more", "\u22ee");
+  more.type = "button";
+  more.setAttribute("aria-label", "Actions for " + file.name);
+  keepFocus(more);
+  more.addEventListener("click", function () {
+    showNotebookActions(file);
+  });
+  row.appendChild(open);
+  row.appendChild(more);
+  return row;
+}
+
+function showNotebookActions(file) {
+  openSheet(file.name, function (body) {
+    body.appendChild(
+      sheetButton("Rename...", "", function () {
+        showRenameNotebook(file);
+      })
+    );
+    body.appendChild(
+      sheetButton(
+        "Delete...",
+        "",
+        function () {
+          showDeleteNotebook(file);
+        },
+        { danger: true }
+      )
+    );
+    body.appendChild(el("div", "woxi-sheet-sep"));
+    body.appendChild(sheetButton("Back to notebooks", "", showNotebooks));
+  });
+}
+
+function showRenameNotebook(file) {
+  openSheet("Rename notebook", function (body) {
+    const form = el("form", "woxi-sheet-form");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "woxi-sheet-input";
+    input.value = displayTitle(file.name);
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("autocapitalize", "words");
+    input.setAttribute("aria-label", "Notebook name");
+    form.appendChild(input);
+
+    const actions = el("div", "woxi-sheet-actions");
+    const cancel = el("button", "woxi-sheet-action", "Cancel");
+    cancel.type = "button";
+    keepFocus(cancel);
+    cancel.addEventListener("click", backToNotebooks);
+    const rename = el("button", "woxi-sheet-action woxi-sheet-action-primary", "Rename");
+    rename.type = "submit";
+    actions.appendChild(cancel);
+    actions.appendChild(rename);
+    form.appendChild(actions);
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      const raw = input.value.trim();
+      if (!raw) {
+        toast("Enter a notebook name");
+        input.focus();
+        return;
+      }
+      const target = suggestFileName(raw);
+      if (target === file.name) {
+        closeSheet();
+        toast("Name unchanged");
+        showNotebooks();
+        return;
+      }
+      closeSheet();
+      renameStoredNotebook(file.name, target);
+    });
+    body.appendChild(form);
+    setTimeout(function () {
+      input.focus();
+      input.select();
+    }, 0);
+  });
+}
+
+function showDeleteNotebook(file) {
+  openSheet("Delete notebook", function (body) {
+    body.appendChild(
+      el(
+        "div",
+        "woxi-sheet-text",
+        'Delete "' + file.name + '"? The file and its saved outputs cannot be recovered.'
+      )
+    );
+    const actions = el("div", "woxi-sheet-actions");
+    const cancel = el("button", "woxi-sheet-action", "Cancel");
+    cancel.type = "button";
+    keepFocus(cancel);
+    cancel.addEventListener("click", backToNotebooks);
+    const remove = el("button", "woxi-sheet-action woxi-sheet-action-danger", "Delete");
+    remove.type = "button";
+    keepFocus(remove);
+    remove.addEventListener("click", function () {
+      closeSheet();
+      deleteStoredNotebook(file.name);
+    });
+    actions.appendChild(cancel);
+    actions.appendChild(remove);
+    body.appendChild(actions);
   });
 }
 
@@ -113,41 +265,67 @@ export function showOptions() {
 }
 
 window.WoxiNativeCallbacks = {
-  onInsets: function (top, bottom) {
+  onInsets: function (top, bottom, ime) {
     // The native side reports physical pixels. CSS wants CSS pixels. It pushes the
     // values whenever they change and once the page has finished loading, so there is
-    // nothing to poll for here.
+    // nothing to poll for here. The IME inset is separate from the navigation-bar inset:
+    // a system text field (the rename dialog) must lift the sheet above the keyboard.
     const dpr = window.devicePixelRatio || 1;
     const root = window.document.documentElement;
     root.style.setProperty("--woxi-inset-top", top / dpr + "px");
     root.style.setProperty("--woxi-inset-bottom", bottom / dpr + "px");
+    root.style.setProperty("--woxi-ime-height", (ime || 0) / dpr + "px");
   },
-  onSaveComplete: function (ok, name) {
-    if (ok === "true" || ok === true) {
-      state.fileName = name;
-      state.dirty = false;
-      updateTitle();
-      persist();
-      toast("Saved " + name);
+  onSaveComplete: function (ok, name, token) {
+    if (!isCurrentPage(token)) return;
+    if (ok === "true") {
+      toast("Exported " + name);
     } else {
-      toast("Save canceled");
+      toast("Export canceled");
     }
   },
-  onFileOpened: function (name, base64) {
-    if (!name || !base64) {
-      toast("Nothing opened");
+  onAutosaveComplete: autosaveComplete,
+  onNotebookRenamed: function (ok, oldName, newName, message, token) {
+    if (!isCurrentPage(token)) return;
+    finishNotebookRename(ok === "true", oldName, newName);
+    if (ok === "true") {
+      toast("Renamed to " + newName);
+      showNotebooks();
+    } else {
+      toast(message || "Could not rename the notebook");
+      showNotebooks();
+    }
+  },
+  onNotebookDeleted: function (ok, name, message, token) {
+    if (!isCurrentPage(token)) return;
+    const wasCurrent = state.fileName === name;
+    finishNotebookDelete(ok === "true", name);
+    if (ok === "true") {
+      toast("Deleted " + name);
+      if (wasCurrent) {
+        const remaining = listNotebooks();
+        if (remaining.length && openStoredNotebook(remaining[0].name, { skipFlush: true })) return;
+        createDefaultNotebook();
+      } else {
+        showNotebooks();
+      }
+    } else {
+      toast(message || "Could not delete the notebook");
+      showNotebooks();
+    }
+  },
+  onFileOpened: function (name, text, token, error) {
+    if (!isCurrentPage(token)) return;
+    if (!name || typeof text !== "string" || !text) {
+      toast(error || "Nothing opened");
       return;
     }
-    let text;
     try {
-      text = WoxiNotebook.base64ToUtf8(base64);
+      flushAutosave();
+      loadNotebookFromText(text, name, { existing: false });
     } catch (err) {
       toast("Cannot read notebook: " + (err instanceof Error ? err.message : String(err)));
-      return;
     }
-    void loadNotebookFromText(text, name, evaluateAll).catch(function (err) {
-      toast("Cannot read notebook: " + (err instanceof Error ? err.message : String(err)));
-    });
   },
 };
 
@@ -222,6 +400,9 @@ function wireEntryHooks() {
     onUndo: undoEntry,
     onRedo: redoEntry,
     attachPlots: attachPlots,
+    onManipulate: function () {
+      persist();
+    },
   });
 }
 
@@ -266,6 +447,13 @@ async function boot() {
   keepFocus(document.getElementById("woxi-btn-options")).addEventListener("click", showOptions);
 
   wireEntryHooks();
+
+  // The native side keys asynchronous callbacks to the page that submitted the work.
+  // A stale page cannot update this one after a renderer restart.
+  beginPage();
+  // onStop is the Activity boundary. A page reload or renderer replacement can unload
+  // this page without an Activity stop, so the debounce also gets a page boundary.
+  window.addEventListener("pagehide", flushAutosave);
 
   runtime.keyboard = new WoxiKeyboard.Keyboard({
     onInsert: function (text, caret, key) {
@@ -319,21 +507,12 @@ async function boot() {
   refreshBarState();
 
   const restored = restore();
-  if (!restored) state.entries = [];
-  if (!state.entries.length) addEntry("", {});
-  renderNotebook();
-  autoGrowAll();
-  updateTitle();
+  if (!restored) createDefaultNotebook();
+  state.settings.theme = loadThemeMode();
   setActive(state.entries[0]);
   setTheme(state.settings.theme);
 
-  runtime.engine = new WoxiClient();
-  try {
-    await runtime.engine.start();
-  } catch (err) {
-    log("engine start failed: " + (err instanceof Error ? err.message : String(err)));
-    return;
-  }
+  runtime.engine = new WoxiClient(PAGE_TOKEN);
   runtime.assist.ensurePrototypes();
   if (AUTOMATION) {
     try {
@@ -344,16 +523,14 @@ async function boot() {
     }
   }
   hideSplash();
-  // Show results for a restored notebook (this is a one-shot evaluation, not typing-time
-  // evaluation). The first plot's layout is measured once, from its scene, so the label
-  // metrics must be the real face: wait for the font set before the evaluation that makes
-  // the first plot.
+  // The outputs were restored from the file. Wait for the real face before fitting their
+  // pictures, then leave the engine idle: evaluation is demand-driven, not a launch step.
   const fonts = window.document.fonts;
   if (fonts) await fonts.ready;
-  const hasInput = state.entries.some(function (entry) {
-    return entry.input.trim();
-  });
-  if (hasInput) await evaluateAll();
+  for (let i = 0; i < state.entries.length; i += 1) {
+    const entry = state.entries[i];
+    if (entry.dom) WoxiRender.fitGraphics(entry.dom.output);
+  }
   // Whichever notebook was loaded, it is now ready to be typed into: the active entry
   // owns the caret, so the caret is visible before the first tap in the text.
   focusEntry(state.entries[0]);
@@ -362,6 +539,9 @@ async function boot() {
 const appApi = {
   onNativeBack: function () {
     return closeTopPanel();
+  },
+  flushAutosave: function () {
+    flushAutosave();
   },
 };
 

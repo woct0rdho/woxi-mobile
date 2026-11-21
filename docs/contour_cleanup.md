@@ -50,32 +50,6 @@ The only external calibration is Woxi's own grid:
 
 This cleanup works on the padded source and the padded SVG. It does not alter `TWO_AXIS_MAX_REFINE_PAD`, the client `TWO_AXIS_REFINE_PAD`, or the interaction constants.
 
-## Tests
-
-The module tests are split under `engine/src/plot/contour/tests/`. They cover:
-- a clean crossing and a near pass being returned bit-for-bit unchanged.
-- a T junction and a junction on the sampled frame not being joined.
-- source cell scales, measured source/SVG cell rates, a non-square SVG frame, the outer-frame/data-rectangle padding, and a one-long-segment cell estimate.
-- a small-cell SVG metadata round trip, and an unstroked rectangle not being mistaken for a frame.
-- non-contour polylines being left alone (the SVG pass only recognizes Woxi's fill-less, round-cap contour polylines).
-- source `Filling -> Series[index]` references preventing all reordering.
-- same-chain arms, same-direction arms, and opposite arms with a gap.
-- the raw `Sin[x] Sin[y] == 0` grid source and SVG: the rounded hooks become a true crossing.
-- different styles never being joined, and labeled source series never being joined.
-- an invalid source range being left unchanged.
-- idempotence of graph, source, and SVG repair, including the measured-cell metadata that keeps the SVG on one grid across passes.
-- source and SVG versions of the same crossing, and a shared source/SVG chain count for the padded fixture.
-- actual `RegionFunction`, `ListContourPlot`, custom-padding, and wrapped `Show` outputs through the evaluation path, carrying the measured cell. These registration tests assert the cell marker, while the geometry tests above assert the reconstructed crossings.
-- a `Rule`-wrapped `Graphics` being visited by the complete expression walk, and a source-backed graphics accepting plain `Show` polylines.
-- the real 34-chain padded `Sin[x] == Cos[y]` fixture through the actual source fixed-point loop and through the SVG parser: no interior bridges.
-- a one-point chain, a pile of zero-arm fragments, SVG frame bounds, static SVG parsing, and preservation of unrelated polylines.
-
-Device checks:
-- initial `ContourPlot[Sin[x] == Cos[y], ...]`: interior crossings are clean. Woxi's own frame-edge V hooks remain where a contour turns at the domain boundary.
-- after a `plotsweep`, every interior crossing is a clean X with no hooks or gaps.
-- circle, diamond, non-square range, `ListContourPlot`, `ComplexContourPlot`, `RegionFunction`, `Show[..., Frame -> False]`, and a `Manipulate` contour with its slider moved still render with clean crossings.
-- panning remains smooth because the two-axis pad and request policy are unchanged.
-
 ## Remaining limits
 
 The graph repair can only use the segments Woxi emitted. A saddle cell that contains no reliable continuation evidence is left as Woxi drew it rather than being guessed. A contour that touches the exact domain boundary can still be clipped or hooked by Woxi's boundary rule. That is sampler clipping, not an interior crossing. Styling is still the only identity available: two contour levels or functions drawn with the same style are one graph, constrained by geometry and the zone arm cap, and a `Show` that deliberately copies style and contour attributes remains ambiguous.

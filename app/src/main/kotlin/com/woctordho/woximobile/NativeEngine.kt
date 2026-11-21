@@ -4,6 +4,7 @@ import android.util.Log
 import org.json.JSONObject
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 // Owner of the Wolfram Language interpreter (`libwoxi_jni.so`).
@@ -61,6 +62,7 @@ object NativeEngine {
 
     private val queue = PriorityBlockingQueue<Task>()
     private val sequence = AtomicLong()
+    private val activePage = AtomicReference<String?>(null)
     private var loaded = false
 
     init {
@@ -91,6 +93,15 @@ object NativeEngine {
     @Volatile
     private var darkTypesetting = true
 
+    // A page replacement must also invalidate work that was queued before it. Without
+    // this, an old evaluation could run after the new page starts even though its numeric
+    // result id belongs to the old page.
+    fun beginPage(pageToken: String) {
+        activePage.set(pageToken)
+    }
+
+    private fun pageIsActive(pageToken: String) = activePage.get() == pageToken
+
     // Switches the interpreter's typesetting between light and dark output.
     fun setDark(enabled: Boolean) {
         darkTypesetting = enabled
@@ -109,9 +120,11 @@ object NativeEngine {
         input: String,
         body: String,
         bindings: String,
+        pageToken: String,
         callback: (String) -> Unit,
     ) {
         submit(NORMAL) {
+            if (!pageIsActive(pageToken)) return@submit
             val result =
                 try {
                     ensureLoaded()
@@ -142,10 +155,12 @@ object NativeEngine {
     // the reply JSON to [callback].
     fun plotRequest(
         request: String,
+        pageToken: String,
         callback: (String) -> Unit,
     ) {
         val priority = priorityOf(request)
         submit(priority) {
+            if (!pageIsActive(pageToken)) return@submit
             val reply =
                 try {
                     ensureLoaded()
@@ -174,10 +189,12 @@ object NativeEngine {
     // wait behind the typing. The catalog is a one-off BACKGROUND request.
     fun query(
         request: String,
+        pageToken: String,
         callback: (String) -> Unit,
     ) {
         val priority = queryPriorityOf(request)
         submit(priority) {
+            if (!pageIsActive(pageToken)) return@submit
             val reply =
                 try {
                     ensureLoaded()

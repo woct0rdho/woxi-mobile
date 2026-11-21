@@ -250,10 +250,11 @@ function pinchAnchor(view, mapping, a, b, rect, log) {
   return fractionOf(view, mapping, (a.x + b.x) / 2 - rect.left, (a.y + b.y) / 2 - rect.top, log);
 }
 
-// A view whose logarithmic axis reaches zero. Only a notebook saved by an older build can hold
-// one, and it cannot be drawn, so it is repaired before it is used as a gesture's start. The
-// rule is the engine's (`drawable_view`): a range whose high bound is not positive either is
-// left alone, because moving its low bound would only swap one undrawable range for another.
+// A view whose logarithmic axis reaches zero. An older stored view can hold one, and a
+// zoom-out past the logarithmic fallback can reach it too. It cannot be drawn, so it is
+// repaired before it is used as a gesture's start. The rule is the engine's
+// (`drawable_view`): a range whose high bound is not positive either is left alone, because
+// moving its low bound would only swap one undrawable range for another.
 function positiveView(view, log) {
   if (!view || !view.x || !view.y) return view;
   const axis = function (range, logarithmic) {

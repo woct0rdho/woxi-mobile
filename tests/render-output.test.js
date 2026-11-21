@@ -77,6 +77,12 @@ test("a text item without svg stays plain text", () => {
   assert.equal(html, '<div class="woxi-out woxi-out-text">1/3</div>');
 });
 
+test("an already parsed item array renders without another JSON pass", () => {
+  const result = renderItems([{ type: "text", text: "1/3" }]);
+  assert.deepEqual(result.items, [{ type: "text", text: "1/3" }]);
+  assert.equal(result.html, '<div class="woxi-out woxi-out-text">1/3</div>');
+});
+
 test("a plot keeps its pixels and its viewBox", () => {
   const plot =
     '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">' +
@@ -119,4 +125,31 @@ test("a manipulate view is a picture or the value as result text", () => {
   assert.match(manipulateView({ svg: ROOT }), /class="woxi-graphic"/);
   assert.equal(manipulateView({ text: "25" }), '<div class="woxi-out-text">25</div>');
   assert.equal(manipulateView(undefined), '<div class="woxi-out-text"></div>');
+});
+
+test("a restored slider keeps a numeric initial value that is not the minimum", () => {
+  const html = renderItems(
+    JSON.stringify([
+      {
+        type: "manipulate",
+        body: "x",
+        controls: [{ kind: "continuous", name: "a", min: 1, max: 3, initial: "2.5" }],
+        initial: { svg: ROOT },
+      },
+    ])
+  ).html;
+  assert.match(html, /type="range"[^>]*value="2\.5"/);
+  assert.match(html, /data-woxi-value="a">2\.5</);
+});
+
+test("an imported svg is stripped of active content", () => {
+  const dirty =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" onload="alert(1)">' +
+    "<script>alert(1)</script><foreignObject><div>x</div></foreignObject>" +
+    '<text x="0" y="10">x</text></svg>';
+  const html = renderItems(JSON.stringify([{ type: "graphics", svg: dirty }])).html;
+  assert.doesNotMatch(html, /script/i);
+  assert.doesNotMatch(html, /foreignObject/i);
+  assert.doesNotMatch(html, /onload/i);
+  assert.match(html, /<text/);
 });

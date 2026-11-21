@@ -9,7 +9,6 @@ import {
   revealCaret,
   selectionOf,
   setEntrySelection,
-  updateTitle,
 } from "./entries.js";
 import { recordEdit } from "./history.js";
 import { persist } from "./notebook-store.js";
@@ -61,8 +60,6 @@ export function replaceInEntry(entry, start, end, text, caretAfter, kind) {
     focusInput(entry);
     revealCaret(entry);
   }
-  state.dirty = true;
-  updateTitle();
   persist();
   refreshAssist();
 }

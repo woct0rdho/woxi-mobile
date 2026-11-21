@@ -67,6 +67,9 @@ Get-WoxiLog 'plotperf'
 
 - `save <name>` writes the notebook through the system file picker.
 - `loadjson <json>` loads a notebook from JSON text, as if it had been opened.
+- `newnotebook` and `newtwice` exercise the name reservation and per-file pending writes.
+- `opennotebook <name>` opens an app-private notebook. `deletenotebook [name]` deletes the current or named one. `renamenotebook <old>|<new>` renames one.
+- `notebooklist` logs the native file list. `currentnotebook` logs the current filename. `dirty` logs whether the current revision has reached an autosave callback.
 - `serialize` logs the notebook as JSON, which is what a round-trip check compares.
 
 ### Typing help

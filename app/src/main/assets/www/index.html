@@ -10,8 +10,8 @@
   (function () {
     let mode = 'system', dark = true;
     try {
-      const saved = JSON.parse(localStorage.getItem('woxi.notebook.v1') || '{}');
-      if (saved.settings && saved.settings.theme) mode = saved.settings.theme;
+      const saved = JSON.parse(localStorage.getItem('woxi.settings') || 'null');
+      if (saved && saved.theme) mode = saved.theme;
     } catch (err) {
       // first run
     }

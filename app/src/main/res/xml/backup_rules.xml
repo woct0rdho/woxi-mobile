@@ -1,0 +1,4 @@
+<full-backup-content>
+    <include domain="file" path="notebooks" />
+    <include domain="sharedpref" path="woxi-files.xml" />
+</full-backup-content>

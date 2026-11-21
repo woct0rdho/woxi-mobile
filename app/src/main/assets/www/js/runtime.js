@@ -5,14 +5,13 @@
 // one of the feature modules (`entries.js`, `evaluation.js`, `editor.js`, ...).
 
 export const state = {
-  title: "Untitled",
   fileName: null,
-  dirty: false,
   entries: [],
   nextId: 1,
   activeId: null,
   settings: { theme: "system" },
   evaluating: false,
+  sessionRestored: true,
 };
 
 // Elements boot resolves once. Every feature reads them from here.
@@ -34,6 +33,7 @@ export const runtime = {
   keyboard: null,
   assist: null,
   automation: false,
+  isDirty: null,
 };
 
 export function el(tag, cls, text) {
@@ -70,6 +70,23 @@ export function nativeCall(name, ...args) {
   } catch (err) {
     if (window.console) window.console.log("[woxi] native " + name + " failed: " + err.message);
     return undefined;
+  }
+}
+
+// A checked invocation for operations whose failure must change the caller's control flow.
+// `nativeCall` above is for optional UI services. Autosave must not treat a bridge error as
+// a durable write.
+export function nativeCallOk(name, ...args) {
+  const bridge = window.WoxiNative;
+  if (!bridge) return false;
+  try {
+    bridge[name](...args);
+    return true;
+  } catch (err) {
+    if (window.console) {
+      window.console.log("[woxi] native " + name + " failed: " + err.message);
+    }
+    return false;
   }
 }
 

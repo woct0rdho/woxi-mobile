@@ -1,30 +1,27 @@
-// Notebook file format: Jupyter's .ipynb, nbformat 4.
+// Notebook file format: Jupyter's .ipynb, nbformat 4.5.
 //
-// The shapes here follow the ones Woxi itself uses in Jupyter: the kernel metadata comes
-// from Woxi's kernelspec (`kernelspec/woxi/kernel.json`) and from the `kernel_info` reply
-// of its kernel, and the outputs follow what that kernel publishes - a result is an
-// `execute_result` carrying `text/plain` and, when the engine typeset it, `image/svg+xml`.
-// A plot is an `execute_result` with the SVG and an empty `text/plain`. Printed text is a
-// stdout stream and warnings and errors are stderr streams, errors prefixed with "Error: ".
-// Strings are stored one line per entry, each keeping its newline, as Woxi's own writer
-// does.
+// The writer stays inside the standard fields: code cells, stable cell ids, source,
+// execution_count, standard execute_result/stream outputs, and the standard ipywidgets
+// metadata for a Manipulate panel. It does not write a title, a Woxi-specific metadata
+// object or a custom MIME type. The filename is the notebook title.
 //
-// Two deliberate differences from Woxi's exporter, both so the file is valid nbformat 4.5:
-// cells get the `id` every 4.5 notebook must have (Woxi's exporter omits it), and the
-// kernelspec names the kernel that is actually installed, `woxi`, rather than `wolfram`
-// (Woxi's exporter writes the latter, which no installed kernel answers to). Cells that
-// have not been evaluated keep `execution_count: null` instead of a number no session
-// handed out.
+// The reader is deliberately tolerant: it accepts a foreign notebook's code cells and
+// standard text/SVG/stream outputs, and a saved ipywidgets model graph. Opening a file
+// does not evaluate it. Inputs and outputs are restored as they were last saved. The
+// interpreter session is rebuilt separately, on demand.
 //
-// Only the part of the format this app uses is handled: code cells carry one Woxi input
-// each, markdown and raw cells are skipped when reading and never written, and outputs are
-// written but ignored on load - Woxi recomputes every entry, which is what keeps a notebook
-// consistent with the interpreter that opens it. A notebook of plain code cells therefore
-// round-trips through this app unchanged. Anything else keeps its code and loses the rest.
+// A result is an `execute_result` carrying `text/plain` and, when the engine typeset it,
+// `image/svg+xml`. A plot is an `execute_result` with the SVG and an empty `text/plain`.
+// Printed text is a stdout stream. Warnings and errors are stderr streams, errors prefixed
+// with "Error: ". A Manipulate panel adds the standard widget-view MIME plus its state in
+// `metadata.widgets`. Its ordinary SVG/text output is the fallback for readers without
+// ipywidgets.
+
+import { executionCounts, isEvaluated, newCellId, uniqueCellId } from "./notebook-model.js";
+import * as WoxiWidgets from "./widgets.js";
 
 const NBFORMAT = 4;
 const NBFORMAT_MINOR = 5;
-const EXTENSION = ".ipynb";
 
 // From kernelspec/woxi/kernel.json in ad-si/Woxi.
 const KERNELSPEC = {
@@ -45,28 +42,6 @@ const LANGUAGE_INFO = {
   nbconvert_exporter: "text",
 };
 
-function utf8Bytes(text) {
-  return new TextEncoder().encode(text);
-}
-
-// base64 (as expected by NativeBridge) for a UTF-8 string, chunked.
-function utf8ToBase64(text) {
-  const bytes = utf8Bytes(text);
-  const chunk = 0x8000;
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-
-function base64ToUtf8(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder("utf-8").decode(bytes);
-}
-
 // One entry per line, each keeping its newline. Empty text is a single empty string,
 // which is what Woxi's writer emits too.
 function splitLines(text) {
@@ -80,19 +55,10 @@ function splitLines(text) {
   return out;
 }
 
-// A cell's `source` may be a string or a list of lines in any notebook.
-function joinSource(source) {
-  if (typeof source === "string") return source;
-  if (Object.prototype.toString.call(source) === "[object Array]") return source.join("");
+function joinLines(value) {
+  if (typeof value === "string") return value;
+  if (Object.prototype.toString.call(value) === "[object Array]") return value.join("");
   return "";
-}
-
-// Jupyter's own cell ids are eight random hex digits (nbformat's new_code_cell).
-function cellId() {
-  const hex = "0123456789abcdef";
-  let out = "";
-  for (let i = 0; i < 8; i++) out += hex.charAt(Math.floor(Math.random() * 16));
-  return out;
 }
 
 function stream(name, text) {
@@ -111,17 +77,11 @@ function executeResult(data, executionCount) {
 }
 
 // The outputs of an evaluated entry: the engine items `evaluation.js` keeps, mapped to
-// the MIME bundle a Jupyter front end reads. The picture is the evaluation's. A plot's
-// live, panned markup lives in `entry.output` and is not serialized.
-function outputsFor(entry, executionCount) {
-  if (!entry || !entry.items) return [];
-  let items = null;
-  try {
-    items = JSON.parse(entry.items);
-  } catch (err) {
-    return [];
-  }
-  if (Object.prototype.toString.call(items) !== "[object Array]") return [];
+// the MIME bundle a Jupyter front end reads. `views` comes from `widgets.build`. An item
+// without a supported widget graph keeps only its ordinary SVG/text.
+function outputsFor(entry, executionCount, views, entryIndex) {
+  if (!entry || !Array.isArray(entry.items) || !entry.items.length) return [];
+  const items = entry.items;
   const out = [];
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -143,17 +103,22 @@ function outputsFor(entry, executionCount) {
           );
         }
         break;
-      case "manipulate":
-        // No notebook equivalent: keep the graphic the panel starts from.
-        if (item.initial && item.initial.svg) {
-          out.push(
-            executeResult(
-              { "image/svg+xml": splitLines(item.initial.svg), "text/plain": [""] },
-              executionCount
-            )
-          );
+      case "manipulate": {
+        const view = WoxiWidgets.viewOf(entry, i, item);
+        if (!view || (!view.svg && !view.text)) break;
+        const data = { "text/plain": splitLines(view.text || "") };
+        if (view.svg) data["image/svg+xml"] = splitLines(view.svg);
+        const root = views && views[entryIndex + ":" + i];
+        if (root) {
+          data[WoxiWidgets.VIEW_MIME] = {
+            version_major: WoxiWidgets.VERSION_MAJOR,
+            version_minor: WoxiWidgets.VERSION_MINOR,
+            model_id: root,
+          };
         }
+        out.push(executeResult(data, executionCount));
         break;
+      }
       case "print":
         out.push(stream("stdout", item.text));
         break;
@@ -171,36 +136,104 @@ function outputsFor(entry, executionCount) {
 }
 
 function serialize(notebook) {
-  const entries = (notebook && notebook.entries) || [];
+  const entries = notebook && notebook.entries ? notebook.entries : [];
+  // Repair ids into a local array before building widget model ids. Serialization
+  // does not mutate the live entries, and does not need a shadow copy of them.
+  const cellIds = [];
+  const usedIds = new Set();
+  for (let i = 0; i < entries.length; i += 1) {
+    const entry = entries[i] || {};
+    const cellId = uniqueCellId(entry.cellId, usedIds);
+    usedIds.add(cellId);
+    cellIds.push(cellId);
+  }
+  const widgets = WoxiWidgets.build(entries, cellIds);
+  const counts = executionCounts(entries);
   const cells = [];
-  let executed = 0;
   for (let i = 0; i < entries.length; i++) {
-    const hasOutput = !!entries[i].items;
-    if (hasOutput) executed += 1;
-    const outputs = hasOutput ? outputsFor(entries[i], executed) : [];
+    const entry = entries[i] || {};
+    const evaluated = isEvaluated(entry);
     cells.push({
       cell_type: "code",
-      execution_count: outputs.length ? executed : null,
-      id: cellId(),
+      execution_count: counts[i],
+      id: cellIds[i],
       metadata: {},
-      source: splitLines(entries[i].input || ""),
-      outputs: outputs,
+      source: splitLines(entry.input || ""),
+      outputs: evaluated ? outputsFor(entry, counts[i], widgets.views, i) : [],
     });
+  }
+  const metadata = {
+    kernelspec: KERNELSPEC,
+    language_info: LANGUAGE_INFO,
+  };
+  if (widgets.state) {
+    metadata.widgets = {};
+    metadata.widgets[WoxiWidgets.STATE_MIME] = widgets.state;
   }
   return JSON.stringify(
     {
       nbformat: NBFORMAT,
       nbformat_minor: NBFORMAT_MINOR,
-      metadata: {
-        kernelspec: KERNELSPEC,
-        language_info: LANGUAGE_INFO,
-        title: (notebook && notebook.title) || "Untitled",
-      },
+      metadata: metadata,
       cells: cells,
     },
     null,
     2
   );
+}
+
+function outputToItems(output, models, input) {
+  if (!output || typeof output !== "object") return [];
+  if (output.output_type === "stream") {
+    const text = joinLines(output.text);
+    if (!text) return [];
+    if (output.name === "stderr") {
+      if (text.indexOf("Error: ") === 0) {
+        return [{ type: "error", text: text.slice("Error: ".length).replace(/\n$/, "") }];
+      }
+      return [{ type: "warning", text: text.replace(/\n$/, "") }];
+    }
+    return [{ type: "print", text: text.replace(/\n$/, "") }];
+  }
+  if (output.output_type === "error") {
+    const trace = joinLines(output.traceback).trim();
+    const text = trace || [output.ename, output.evalue].filter(Boolean).join(": ");
+    return text ? [{ type: "error", text: text }] : [];
+  }
+  if (output.output_type !== "execute_result" && output.output_type !== "display_data") {
+    return [];
+  }
+  const data = output.data || {};
+  const widgetView = data[WoxiWidgets.VIEW_MIME];
+  if (widgetView && typeof widgetView === "object" && models) {
+    const panel = WoxiWidgets.panel(models, widgetView.model_id);
+    const body = WoxiWidgets.manipulateBody(input);
+    if (panel && body) {
+      return [
+        {
+          type: "manipulate",
+          body: body,
+          controls: panel.controls,
+          initial: panel.initial,
+        },
+      ];
+    }
+  }
+  const text = joinLines(data["text/plain"]);
+  const svg = joinLines(data["image/svg+xml"]);
+  if (svg) return [{ type: text ? "text" : "graphics", text: text || undefined, svg: svg }];
+  if (text) return [{ type: "text", text: text }];
+  return [];
+}
+
+function itemsFromOutputs(outputs, models, input) {
+  const items = [];
+  if (Object.prototype.toString.call(outputs) !== "[object Array]") return items;
+  for (let i = 0; i < outputs.length; i += 1) {
+    const produced = outputToItems(outputs[i], models, input);
+    for (let j = 0; j < produced.length; j += 1) items.push(produced[j]);
+  }
+  return items;
 }
 
 function parse(text) {
@@ -212,8 +245,9 @@ function parse(text) {
     throw new Error("notebook has no cells");
   }
   const metadata = data.metadata || {};
-  const title = typeof metadata.title === "string" && metadata.title ? metadata.title : "Untitled";
+  const models = WoxiWidgets.stateFromMetadata(metadata);
   const entries = [];
+  const ids = new Set();
   let skippedCells = 0;
   for (let i = 0; i < data.cells.length; i++) {
     const cell = data.cells[i];
@@ -222,32 +256,30 @@ function parse(text) {
       skippedCells += 1;
       continue;
     }
-    const input = joinSource(cell.source).replace(/[\s\uFEFF]+$/, "");
-    if (!input) continue;
-    entries.push({ input: input });
+    const input = joinLines(cell.source);
+    const id = uniqueCellId(cell.id, ids);
+    ids.add(id);
+    const count = Number.isInteger(cell.execution_count) ? cell.execution_count : null;
+    const items = itemsFromOutputs(cell.outputs, models, input);
+    entries.push({
+      input: input,
+      cellId: id,
+      executionCount: count,
+      items: items,
+    });
   }
-  if (!entries.length) entries.push({ input: "" });
-  return { title: title, entries: entries, skippedCells: skippedCells };
+  if (!entries.length) {
+    entries.push({
+      input: "",
+      cellId: newCellId(),
+      executionCount: null,
+      items: [],
+    });
+  }
+  return {
+    entries: entries,
+    skippedCells: skippedCells,
+  };
 }
 
-function suggestFileName(title) {
-  let base = (title || "Untitled").replace(/[\\/:*?"<>|]+/g, "").trim() || "Untitled";
-  if (base.length > 60) base = base.slice(0, 60);
-  return base + EXTENSION;
-}
-
-function displayTitle(fileName) {
-  return String(fileName || "").replace(/\.ipynb$/i, "") || "Untitled";
-}
-
-export {
-  base64ToUtf8,
-  displayTitle,
-  EXTENSION,
-  NBFORMAT,
-  NBFORMAT_MINOR,
-  parse,
-  serialize,
-  suggestFileName,
-  utf8ToBase64,
-};
+export { itemsFromOutputs, NBFORMAT, NBFORMAT_MINOR, parse, serialize };
