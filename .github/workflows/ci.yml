@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  js:
+    name: js (eslint, prettier, tsc, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm types
+      - run: pnpm test
+
+  python:
+    name: python (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          src: tools
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          src: tools
+          args: format --check
+
+  android:
+    name: android (ktlint, rust, arm64 release apk)
+    needs: [js, python]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Only this job attests the APK, so only it gets the token and the write permissions it
+    # needs. Specifying any permission on a job sets the rest to none, hence `contents` again.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      NDK_VERSION: 30.0.16248370
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: ktlint
+        run: ./gradlew ktlintCheck --console=plain
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: aarch64-linux-android
+          cache-workspaces: engine
+          # The action would turn every warning into an error for every cargo command,
+          # including `cargo install`. Clippy's `-D warnings` below is the lint gate.
+          build-warnings: ""
+
+      - name: rust (fmt, clippy, test)
+        working-directory: engine
+        run: |
+          cargo fmt --check
+          # `fast` is the development profile: the same numerics as release without thin LTO
+          # across the interpreter, so a rebuild takes seconds. Release is only for shipping.
+          cargo clippy --profile fast --all-targets --locked -- -D warnings
+          # Single-threaded. The tests share the interpreter's global session state.
+          cargo test --profile fast --locked -- --test-threads=1
+
+      - name: android ndk
+        run: |
+          ndk="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -x "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
+            # A single "y" rather than `yes |`: `yes` dies of SIGPIPE when sdkmanager exits,
+            # and that would fail the step under `pipefail`.
+            printf 'y\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          fi
+          grep Revision "$ndk/source.properties"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+
+      - name: cargo-ndk
+        run: |
+          # The binary is cached by `cache-bin` in setup-rust-toolchain, so only a cache
+          # miss pays for the build.
+          cargo install cargo-ndk --version "^4" --locked
+
+      - name: engine (arm64-v8a, release)
+        working-directory: engine
+        run: |
+          echo "NDK: $ANDROID_NDK_HOME"
+          mkdir -p ../app/src/main/jniLibs
+          cargo ndk -t arm64-v8a --platform 24 -o ../app/src/main/jniLibs build --release --locked
+          # cargo-ndk copies every cdylib in the workspace. `woxi` builds one too. Only the
+          # JNI wrapper belongs in the APK.
+          find ../app/src/main/jniLibs -name '*.so' ! -name 'libwoxi_jni.so' -delete
+          ls -l ../app/src/main/jniLibs/arm64-v8a
+
+      # A pull request never sees the key so the APK is not signed.
+      - name: keystore
+        if: github.event_name != 'pull_request'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "No ANDROID_KEYSTORE_BASE64 secret: this APK is unsigned." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          set -euo pipefail
+          umask 077
+          keystore="$RUNNER_TEMP/release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          cat > keystore.properties << EOF
+          storeFile=$keystore
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: apk (arm64-v8a, release)
+        run: ./gradlew :app:assembleRelease --console=plain -Pabi=arm64-v8a
+
+      - name: apksigner verify
+        if: steps.keystore.outputs.signed == 'true'
+        run: |
+          test -f app/build/outputs/apk/release/app-release.apk
+          build_tools=$(printf '%s\n' "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          "$build_tools/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk
+
+      - name: attest
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@v4
+        with:
+          subject-path: app/build/outputs/apk/release/app-release*.apk
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: app/build/outputs/apk/release/app-release*.apk
+          if-no-files-found: error
+          archive: false

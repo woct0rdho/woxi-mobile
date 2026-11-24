@@ -8,7 +8,7 @@ Android frontend for [Woxi](https://github.com/ad-si/Woxi) the Wolfram Language 
 # SDK and NDK (put them on PATH, or export `ANDROID_HOME` pointing at the SDK)
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
-sdkmanager "ndk;28.2.13676358"
+sdkmanager "ndk;30.0.16248370"
 
 # Engine (after changing `engine/`)
 # For development, use the profile `fast`, without LTO and without debug info, incremental. A rebuild takes seconds.

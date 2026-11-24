@@ -6,7 +6,7 @@
 # One-time prerequisites (standard Rust/Android toolchain):
 # rustup target add aarch64-linux-android
 # cargo install cargo-ndk
-# an NDK (any recent "ndk;<version>" from sdkmanager) must be installed
+# sdkmanager "ndk;30.0.16248370"          # the script uses the newest NDK it finds
 #
 # Note for machines behind a proxy or a rustup mirror that does not mirror the
 # Android std component: set HTTPS_PROXY/HTTP_PROXY, and make sure
