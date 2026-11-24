@@ -19,7 +19,6 @@ import argparse
 import os
 import shutil
 import subprocess
-import sys
 
 from PIL import Image, ImageChops, ImageStat
 
@@ -62,10 +61,24 @@ def card_box(crop, background, tolerance=6):
     pixels = crop.load()
 
     def row_is_card(y):
-        return sum(1 for x in range(0, width, 8) if all(abs(pixels[x, y][i] - background[i]) <= tolerance for i in range(3))) > (width // 8) // 2
+        return (
+            sum(
+                1
+                for x in range(0, width, 8)
+                if all(abs(pixels[x, y][i] - background[i]) <= tolerance for i in range(3))
+            )
+            > (width // 8) // 2
+        )
 
     def col_is_card(x):
-        return sum(1 for y in range(0, height, 8) if all(abs(pixels[x, y][i] - background[i]) <= tolerance for i in range(3))) > (height // 8) // 2
+        return (
+            sum(
+                1
+                for y in range(0, height, 8)
+                if all(abs(pixels[x, y][i] - background[i]) <= tolerance for i in range(3))
+            )
+            > (height // 8) // 2
+        )
 
     y0 = 0
     while y0 < height and not row_is_card(y0):
@@ -147,7 +160,11 @@ def main():
             diff = ImageChops.difference(crop, previous).convert("L")
             stat = ImageStat.Stat(diff)
             mean = stat.mean[0]
-            changed = sum(1 for v in diff.get_flattened_data() if v > 24) if hasattr(diff, "get_flattened_data") else sum(1 for v in diff.getdata() if v > 24)
+            changed = (
+                sum(1 for v in diff.get_flattened_data() if v > 24)
+                if hasattr(diff, "get_flattened_data")
+                else sum(1 for v in diff.getdata() if v > 24)
+            )
             rows.append((index, mean, changed, box, gray))
         previous = crop
 
