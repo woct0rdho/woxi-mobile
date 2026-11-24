@@ -11,7 +11,7 @@ name = "woxi_jni"
 crate-type = ["cdylib"]
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 jni = "0.22"
 # The interpreter core. `default-features = false` drops the CLI (tokio, zeromq,
 # rustyline, jupyter) which an embedded engine does not need.
