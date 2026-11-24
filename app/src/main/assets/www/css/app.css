@@ -308,6 +308,31 @@ html, body {
   z-index: 2;
 }
 
+/* 3D plots: a WebGL surface with a 2D label overlay. The box is fixed. A gesture
+   changes the camera or the data-view mapping inside it. */
+.woxi-plot3d {
+  position: relative;
+  width: var(--woxi-plot3d-width, 100%);
+  max-width: var(--woxi-plot3d-max, 520px);
+  aspect-ratio: var(--woxi-plot3d-aspect, 4 / 3);
+  height: auto;
+  touch-action: none;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--woxi-plot3d-bg, var(--woxi-bg));
+  cursor: grab;
+}
+.woxi-plot3d canvas {
+  display: block;
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.woxi-plot3d-gl { z-index: 1; }
+.woxi-plot3d-overlay { z-index: 2; pointer-events: none; }
+.woxi-plot3d:active { cursor: grabbing; }
+.woxi-plot3d-unsupported { display: none; }
+
 .woxi-out-text {
   padding: 2px 4px;
   font-family: var(--woxi-mono);

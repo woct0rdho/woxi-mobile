@@ -90,7 +90,9 @@ function renderSignature(variant, active, extra) {
       "</span>";
   }
   const number = Math.min(active + 1, variant.length);
-  /** @type {import('./types.js').KeySpec[]} */
+  /**
+   * @type {import('./types.js').KeySpec[]}
+   */
   const keys = [
     EVAL_KEY,
     {

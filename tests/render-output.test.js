@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { envelopeAspect, projectedEnvelope } from "../app/src/main/assets/www/js/plot3d-maths.js";
 import { manipulateView, renderItems } from "../app/src/main/assets/www/js/render-output.js";
 
 // A typeset SVG as the engine writes it: width/height in the layout's pixels, no viewBox,
@@ -70,6 +71,104 @@ test("an svg without a size keeps its pixels and still gets the class", () => {
   const html = typeset('<svg xmlns="http://www.w3.org/2000/svg"><g/></svg>');
   assert.doesNotMatch(html, /em"/);
   assert.match(html, /class="woxi-svg"/);
+});
+
+const PLOT3D_THEME = {
+  background: "#ffffff",
+  axis: [102, 102, 102],
+  label: [102, 102, 102],
+};
+
+function scene3d(overrides = {}) {
+  return {
+    camera: { az: -1.07, el: 0.63, dist: 6.68, perspective: true },
+    ranges: [
+      [-1, 1],
+      [-1, 1],
+      [-1, 1],
+    ],
+    box: [1, 1, 1],
+    vertices: "",
+    indices: "",
+    colors: "",
+    lines: "",
+    lineColors: "",
+    coverage: [
+      [-1, 1],
+      [-1, 1],
+      [-1, 1],
+    ],
+    card: { width: null, height: null, full: false },
+    theme: PLOT3D_THEME,
+    axes: true,
+    boxed: true,
+    ...overrides,
+  };
+}
+
+test("a 3D scene renders a canvas card, not an SVG", () => {
+  const html = renderItems([{ type: "graphics", plot3d: scene3d() }]).html;
+  assert.match(html, /class="woxi-out woxi-out-graphic woxi-plot3d"/);
+  assert.match(html, /data-woxi-plot3d="0"/);
+  assert.match(html, /woxi-plot3d-gl/);
+  assert.doesNotMatch(html, /<svg/);
+});
+
+test("a 3D ImageSize sets the fixed card aspect", () => {
+  const plot3d = scene3d({ card: { width: 300, height: 200, full: false } });
+  const html = renderItems([{ type: "graphics", plot3d: plot3d }]).html;
+  assert.match(html, /--woxi-plot3d-width: 300px/);
+  assert.match(html, /--woxi-plot3d-aspect: 1\.5/);
+});
+
+test("a 3D Automatic pair keeps Woxi's fixed square card", () => {
+  const plot3d = scene3d({ card: { width: 360, height: 360, full: false } });
+  const html = renderItems([{ type: "graphics", plot3d: plot3d }]).html;
+  assert.match(html, /--woxi-plot3d-width: 360px/);
+  assert.match(html, /--woxi-plot3d-aspect: 1/);
+});
+
+test("a 3D theme sets the card background", () => {
+  const plot3d = scene3d({
+    theme: { background: "#1a1a1a", axis: [153, 153, 153], label: [153, 153, 153] },
+  });
+  const html = renderItems([{ type: "graphics", plot3d: plot3d }]).html;
+  assert.match(html, /--woxi-plot3d-bg: #1a1a1a/);
+});
+
+test("a 3D theme background is only emitted as a hex colour", () => {
+  const plot3d = scene3d({
+    theme: { background: "red; background:url(x)", axis: [153, 153, 153], label: [153, 153, 153] },
+  });
+  const html = renderItems([{ type: "graphics", plot3d: plot3d }]).html;
+  assert.doesNotMatch(html, /--woxi-plot3d-bg/);
+});
+
+test("a bare 3D width lets the height follow the box, and a full-width card does too", () => {
+  for (const card of [
+    { width: null, height: null, full: true },
+    { width: 300, height: null, full: false },
+  ]) {
+    const plot3d = scene3d({ card });
+    const html = renderItems([{ type: "graphics", plot3d: plot3d }]).html;
+    // The card's shape is the box's rotation envelope, not the first frame's: the box
+    // has to stay inside it at every camera orientation.
+    const envelope = projectedEnvelope(plot3d.box, plot3d.camera);
+    const aspect = envelopeAspect(envelope);
+    assert.match(html, new RegExp("--woxi-plot3d-aspect: " + aspect));
+    assert.notEqual(Math.round(aspect * 100), 100, "this box's envelope is not square");
+  }
+  const plot3d = scene3d({ card: { width: null, height: null, full: true } });
+  const html = renderItems([{ type: "graphics", plot3d: plot3d }]).html;
+  assert.match(html, /--woxi-plot3d-width: 100%/);
+});
+
+test("a malformed 3D scene renders an error, not a broken notebook", () => {
+  const html = renderItems([
+    { type: "graphics", plot3d: { camera: {}, ranges: [], box: [] } },
+  ]).html;
+  assert.match(html, /woxi-out-error/);
+  assert.doesNotMatch(html, /woxi-plot3d/);
 });
 
 test("a text item without svg stays plain text", () => {

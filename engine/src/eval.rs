@@ -4,7 +4,7 @@ use crate::manipulate::{
     is_plain_symbol, manipulate_initial, manipulate_json, parse_bindings, parse_manipulate,
     render_body, rendered_json,
 };
-use crate::output::{graphics_item_with_plot, item, residual_text};
+use crate::output::{graphics_item_with_plot, graphics_item_with_plot3d, item, residual_text};
 use crate::plot::{capture_statement, register_plot, repair_graphic, repair_svg_contour, Capture};
 
 /// Splits a cell on top-level semicolons, respecting brackets and quoted strings. Woxi's
@@ -110,7 +110,16 @@ pub(crate) fn evaluate_statement_items(stmt: &str, capture: Capture) -> Vec<Stri
                 return items;
             }
 
-            if let Some(svg) = graphics {
+            if let Some(scene3d) = output
+                .as_ref()
+                .and_then(|expr| crate::scene3d::scene3d(expr, stmt))
+            {
+                items.push(graphics_item_with_plot3d(&scene3d));
+                let residual = residual_text(&result.result);
+                if !residual.is_empty() {
+                    items.push(item("text", &residual, None));
+                }
+            } else if let Some(svg) = graphics {
                 // A direct `Graphics` now carries the repaired SVG. For a wrapped
                 // output (`Legended`, `Show`, ...) the repaired `result.graphics` is
                 // the picture the item gets.

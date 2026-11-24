@@ -16,6 +16,7 @@
 //! ```json
 //! [{"type":"text","text":"x^3/3","svg":"<svg ...>"},
 //!  {"type":"graphics","svg":"<svg ...>","plot":{"id":3,"x":[-6.28,6.28],"y":[-1,1]}},
+//!  {"type":"graphics","plot3d":{"camera":{...},"vertices":"...","indices":"..."}},
 //!  {"type":"print","text":"..."},
 //!  {"type":"warning","text":"..."},
 //!  {"type":"error","text":"..."},
@@ -32,6 +33,13 @@
 //! color, a width and base64 `u16` pairs. A two-axis plot reports its points mirrored in
 //! y and `plot_layer` undoes that, so the points are always in the picture's own data
 //! coordinates. Re-evaluating the entry produces a fresh handle, i.e. the original view.
+//!
+//! A 3D plot carries a `plot3d` field instead of an SVG: its data-space vertices,
+//! triangle indices, face colours, line segments and per-endpoint line colours, camera,
+//! current `PlotRange` view, sampled coverage and card size are a scene the client draws
+//! at display rate (`engine/src/scene3d`). The client owns the camera and data-view
+//! gestures. No plot request is made for a rotate, pan or uniform zoom while the view
+//! stays inside the scene's gesture bounds.
 //!
 //! Plot interactions use one request/reply pair per message, in the shape of a
 //! Jupyter message (a `msg_type`, a `content` object, and a reply that reports
@@ -72,6 +80,7 @@ mod json;
 mod manipulate;
 mod output;
 mod plot;
+mod scene3d;
 mod typeset;
 
 use jni::errors::LogErrorAndDefault;

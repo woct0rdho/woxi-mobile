@@ -425,6 +425,47 @@ test("the body reader keeps nested brackets, strings and comments", () => {
   assert.equal(WoxiWidgets.manipulateBody("f[x]"), "");
 });
 
+test("a 3D scene round-trips as its own MIME value", () => {
+  const plot3d = {
+    camera: { az: -1.07, el: 0.63, dist: 6.68, perspective: true },
+    ranges: [
+      [-1, 1],
+      [-1, 1],
+      [-1, 1],
+    ],
+    box: [1, 1, 1],
+    vertices: "AAAA",
+    indices: "AQID",
+    colors: "/////w==",
+    lines: "",
+    lineColors: "",
+    coverage: [
+      [-1, 1],
+      [-1, 1],
+      [-1, 1],
+    ],
+    card: { width: null, height: null, full: false },
+    theme: { background: "#ffffff", axis: [102, 102, 102], label: [102, 102, 102] },
+    axes: true,
+    boxed: true,
+  };
+  const text = serialize({
+    entries: [
+      {
+        input: "Plot3D[x, {x, -1, 1}, {y, -1, 1}]",
+        executionCount: 1,
+        items: [{ type: "graphics", plot3d: plot3d }],
+      },
+    ],
+  });
+  const parsed = parse(text);
+  assert.equal(parsed.entries[0].items.length, 1);
+  assert.deepEqual(parsed.entries[0].items[0].plot3d, plot3d);
+  const notebook = JSON.parse(text);
+  assert.deepEqual(notebook.cells[0].outputs[0].data["application/vnd.woxi.plot3d"], plot3d);
+  assert.equal(notebook.cells[0].outputs[0].data["text/plain"], undefined);
+});
+
 test("the file name helpers are stable", () => {
   // `displayTitle` strips the extension, not the directory: it is a label for the notebook.
   assert.equal(displayTitle("/tmp/My Notebook.ipynb"), "/tmp/My Notebook");

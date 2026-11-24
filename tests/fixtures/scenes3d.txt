@@ -1,0 +1,10 @@
+Plot3D[Sin[x] Cos[y], {x, -3, 3}, {y, -3, 3}]
+  faces=5000 segments=1900 box=[1,1,0.4] camera={"az":-1.07,"el":0.63,"dist":6.767569726275452,"perspective":true} ranges=[[-3,3],[-3,3],[-0.9999417202299663,0.9999417202299663]] axes=true boxed=true coverage=[[-3,3],[-3,3],[-0.9999417202299663,0.9999417202299663]] card={"width":null,"height":null,"full":false}
+Plot3D[Sin[x] Cos[y], {x, -3, 3}, {y, -3, 3}, ColorFunction -> "Rainbow"]
+  faces=5000 segments=1900 box=[1,1,0.4] camera={"az":-1.07,"el":0.63,"dist":6.767569726275452,"perspective":true} ranges=[[-3,3],[-3,3],[-0.9999417202299663,0.9999417202299663]] axes=true boxed=true coverage=[[-3,3],[-3,3],[-0.9999417202299663,0.9999417202299663]] card={"width":null,"height":null,"full":false}
+ParametricPlot3D[{Cos[u] (2 + Cos[v]), Sin[u] (2 + Cos[v]), Sin[v]}, {u, 0, 2 Pi}, {v, 0, 2 Pi}]
+  faces=5000 segments=1700 box=[1,0.9980267284282714,0.33267557614275717] camera={"az":-1.07,"el":0.63,"dist":6.767569726275452,"perspective":true} ranges=[[-3,3],[-2.9940801852848145,2.9940801852848145],[-0.9980267284282716,0.9980267284282716]] axes=true boxed=true coverage=[[-3,3],[-2.9940801852848145,2.9940801852848145],[-0.9980267284282716,0.9980267284282716]] card={"width":null,"height":null,"full":false}
+ContourPlot3D[x^2 + y^2 + z^2 == 1, {x, -1.2, 1.2}, {y, -1.2, 1.2}, {z, -1.2, 1.2}]
+  faces=11244 segments=0 box=[1,1,1] camera={"az":-1.07,"el":0.63,"dist":6.767569726275452,"perspective":true} ranges=[[-1.2,1.2],[-1.2,1.2],[-1.2,1.2]] axes=true boxed=true coverage=[[-1,1],[-1,1],[-1,1]] card={"width":null,"height":null,"full":false}
+SphericalPlot3D[1 + 0.3 Sin[5 t] Sin[6 p], {t, 0, Pi}, {p, 0, 2 Pi}]
+  faces=5000 segments=1700 box=[1,0.9923267365898545,0.9887225018877873] camera={"az":-1.07,"el":0.63,"dist":6.767569726275452,"perspective":true} ranges=[[-1.3089281152294956,1.3089281152294956],[-1.2988843650163941,1.2988843650163946],[-1.2941666808809729,1.2941666808809729]] axes=true boxed=true coverage=[[-1.2585847261822074,1.2585847261822074],[-1.2489272740542252,1.2489272740542257],[-1.2443910393086277,1.2443910393086277]] card={"width":null,"height":null,"full":false}

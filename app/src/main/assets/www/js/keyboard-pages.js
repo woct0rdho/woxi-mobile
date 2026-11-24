@@ -279,7 +279,9 @@ const PAGES = {
 
 // Ready-made examples, one tap each. The keys insert the call and let the assist
 // bar name its arguments, and this list backs the sheet's Examples tab.
-/** @type {import('./types.js').KeySpec[]} */
+/**
+ * @type {import('./types.js').KeySpec[]}
+ */
 const EXAMPLES = [
   { label: "Plot", insert: "Plot[Sin[x], {x, -2 Pi, 2 Pi}]", tooltip: "Function plot" },
   { label: "ListPlot", insert: "ListPlot[{1, 4, 9, 16, 25}]", tooltip: "Scatter plot of data" },

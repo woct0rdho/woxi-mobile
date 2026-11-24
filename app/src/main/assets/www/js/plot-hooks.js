@@ -8,6 +8,7 @@
 // routes an action name here.
 
 import * as WoxiPlot from "./plot-interact.js";
+import * as WoxiPlot3d from "./plot3d.js";
 
 // Answers the engine has already given are delayed by this much, so races between a finger and
 // a frame can be reproduced on a device.
@@ -108,6 +109,28 @@ function fireOn(plot, id, type, x, y) {
 function plotCenter(plot) {
   const box = plot.getBoundingClientRect();
   return { x: box.left + box.width / 2, y: box.top + box.height / 2, box: box };
+}
+
+// Streams a synthetic gesture over `frames` display frames: `at(t)` gives the pointers
+// ([id, x, y]) at progress t in [0, 1]. They go down at t = 0, move once per display
+// frame and come up at t = 1, through the same pointer events a finger produces, so a
+// screen recording of the plot sees every frame the controller draws.
+function streamPointers(plot, frames, at, done, log) {
+  const down = at(0);
+  for (const [id, x, y] of down) fireOn(plot, id, "pointerdown", x, y);
+  let step = 0;
+  const tick = function () {
+    step += 1;
+    const t = step / frames;
+    const type = step < frames ? "pointermove" : "pointerup";
+    for (const [id, x, y] of at(t)) fireOn(plot, id, type, x, y);
+    if (step < frames) {
+      window.requestAnimationFrame(tick);
+      return;
+    }
+    log(done);
+  };
+  window.requestAnimationFrame(tick);
 }
 
 // Runs one plot action. Returns whether it was one, so the caller's switch can fall through to
@@ -263,6 +286,107 @@ export function plotAction(name, argument, context) {
       };
       log("plotscene: " + JSON.stringify(sceneDigest));
       break;
+    }
+    case "plot3dstate": {
+      const controller =
+        argument === "first" ? WoxiPlot3d.firstController() : WoxiPlot3d.lastController();
+      log("plot3dstate: " + (controller ? JSON.stringify(controller.state()) : "none"));
+      return true;
+    }
+    case "plot3dperf": {
+      const controller = WoxiPlot3d.lastController();
+      if (argument === "reset" && controller) controller.resetStats();
+      log(WoxiPlot3d.perfLine(controller));
+      return true;
+    }
+    case "plot3dspin": {
+      const controller = WoxiPlot3d.lastController();
+      if (!controller) {
+        log("plot3dspin: no 3D plot");
+        return true;
+      }
+      const parts = String(argument || "").split(",");
+      const frames = parseInt(parts[0], 10) || 60;
+      const dy = parts.length > 1 ? Number(parts[1]) : 0.01;
+      void controller.spin(frames, dy).then(function () {
+        log("plot3dspin: done " + frames);
+      });
+      return true;
+    }
+    case "plot3dpinch": {
+      const controller = WoxiPlot3d.lastController();
+      if (!controller) {
+        log("plot3dpinch: no 3D plot");
+        return true;
+      }
+      controller.pinchBy(Number(argument) || 1.2);
+      log("plot3dpinch: " + String(argument || 1.2));
+      return true;
+    }
+    case "plot3dorbit": {
+      // A one-finger drag at display-frame rate over `frames` frames, through the same
+      // pointer events a finger produces, so a screen recording sees every frame the
+      // controller draws. `plot3dorbit dx,dy,frames` (dx/dy in CSS px), centred on the card.
+      const plot = document.querySelector(".woxi-plot3d");
+      if (!plot) {
+        log("plot3dorbit: no 3D plot");
+        return true;
+      }
+      const parts = (argument || "120,0,30").split(",");
+      const dx = Number(parts[0]) || 0;
+      const dy = Number(parts[1]) || 0;
+      const frames = parseInt(parts[2], 10) || 30;
+      const centre = plotCenter(plot);
+      const startX = centre.x - dx / 2;
+      const startY = centre.y - dy / 2;
+      streamPointers(
+        plot,
+        frames,
+        (t) => [[21, startX + dx * t, startY + dy * t]],
+        "plot3dorbit: done " + frames,
+        log
+      );
+      return true;
+    }
+    case "plot3dpinchmove": {
+      // Two synthetic pointers over time on the newest 3D plot: the gap grows by `factor`
+      // while the midpoint moves by (`shiftX`,`shiftY`) CSS px, like a real pinch-pan.
+      // `plot3dpinchmove factor,shiftX,shiftY[,frames]`.
+      const plot = document.querySelector(".woxi-plot3d");
+      if (!plot) {
+        log("plot3dpinchmove: no 3D plot");
+        return true;
+      }
+      const parts = (argument || "2,0,0,30").split(",");
+      const factor = Number(parts[0]) || 2;
+      const shiftX = Number(parts[1]) || 0;
+      const shiftY = Number(parts[2]) || 0;
+      const frames = parseInt(parts[3], 10) || 30;
+      const centre = plotCenter(plot);
+      const startGap = Math.min(centre.box.width, centre.box.height) * 0.15;
+      streamPointers(
+        plot,
+        frames,
+        (t) => {
+          const gap = startGap * (1 + (factor - 1) * t);
+          const x = centre.x + shiftX * t;
+          const y = centre.y + shiftY * t;
+          return [
+            [1, x - gap, y],
+            [2, x + gap, y],
+          ];
+        },
+        "plot3dpinchmove: done factor=" +
+          factor +
+          " shift=" +
+          shiftX +
+          "," +
+          shiftY +
+          " frames=" +
+          frames,
+        log
+      );
+      return true;
     }
     case "plotstate": {
       // What a plot's controller believes: the first plot by default, the newest with `last`.

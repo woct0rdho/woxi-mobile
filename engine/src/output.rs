@@ -44,6 +44,12 @@ pub(crate) fn graphics_item_with_plot(
     out
 }
 
+/// A `graphics` item for a 3D picture whose geometry is drawn by the client. The SVG is
+/// deliberately absent: the scene is the picture, and the notebook keeps the scene.
+pub(crate) fn graphics_item_with_plot3d(scene3d: &str) -> String {
+    format!("{{\"type\":\"graphics\",\"plot3d\":{scene3d}}}")
+}
+
 /// Result text with the graphics placeholders removed (`-Graphics-` etc.).
 pub(crate) fn residual_text(result: &str) -> String {
     result

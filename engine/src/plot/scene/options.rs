@@ -78,6 +78,8 @@ pub(crate) fn unmodeled_options(source: &PlotSource) -> bool {
             "Mesh" | "MeshFunctions" | "MeshShading" | "Exclusions" => {
                 !empty(replacement) && !automatic(replacement)
             }
+            // The scene draws the default mesh only. A custom mesh style would be lost.
+            "MeshStyle" => !empty(replacement) && !automatic(replacement),
             "ClippingStyle" => !empty(replacement),
             // A gradient along the curve cannot be drawn from one color, and a reversed axis
             // cannot be mapped from a range.
@@ -124,6 +126,7 @@ mod tests {
             "Plot[Sin[x], {x, -5, 5}, Epilog -> {Red, Disk[{0, 0}, 0.2]}]",
             "Plot[Sin[x], {x, -5, 5}, Prolog -> {Red, Line[{{-5, 0}, {5, 0}}]}]",
             "Plot[Sin[x], {x, -5, 5}, Mesh -> {5}]",
+            "Plot[Sin[x], {x, -5, 5}, MeshStyle -> Red]",
             "Plot[1/x, {x, -2, 2}, Exclusions -> {0}]",
             "Plot[Sin[x], {x, -5, 5}, PlotRangeClipping -> False]",
             "Plot[Sin[x], {x, -5, 5}, ColorFunction -> Hue]",
@@ -135,6 +138,7 @@ mod tests {
         for statement in [
             "Plot[Sin[x], {x, -5, 5}]",
             "Plot[Sin[x], {x, -5, 5}, Mesh -> None]",
+            "Plot[Sin[x], {x, -5, 5}, MeshStyle -> None]",
             "Plot[Sin[x], {x, -5, 5}, Epilog -> None]",
             "Plot[Sin[x], {x, -5, 5}, Exclusions -> Automatic]",
             "Plot[Sin[x], {x, -5, 5}, PlotRangeClipping -> True]",

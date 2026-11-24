@@ -12,10 +12,11 @@
 //
 // A result is an `execute_result` carrying `text/plain` and, when the engine typeset it,
 // `image/svg+xml`. A plot is an `execute_result` with the SVG and an empty `text/plain`.
-// Printed text is a stdout stream. Warnings and errors are stderr streams, errors prefixed
-// with "Error: ". A Manipulate panel adds the standard widget-view MIME plus its state in
-// `metadata.widgets`. Its ordinary SVG/text output is the fallback for readers without
-// ipywidgets.
+// A 3D scene is an `execute_result` with only `application/vnd.woxi.plot3d`. It has no
+// text placeholder or SVG payload. Printed text is a stdout stream. Warnings and errors
+// are stderr streams, errors prefixed with "Error: ". A Manipulate panel adds the standard
+// widget-view MIME plus its state in `metadata.widgets`. Its ordinary SVG/text output is
+// the fallback for readers without ipywidgets.
 
 import { executionCounts, isEvaluated, newCellId, uniqueCellId } from "./notebook-model.js";
 import * as WoxiWidgets from "./widgets.js";
@@ -94,7 +95,9 @@ function outputsFor(entry, executionCount, views, entryIndex) {
         break;
       }
       case "graphics":
-        if (item.svg) {
+        if (item.plot3d) {
+          out.push(executeResult({ "application/vnd.woxi.plot3d": item.plot3d }, executionCount));
+        } else if (item.svg) {
           out.push(
             executeResult(
               { "image/svg+xml": splitLines(item.svg), "text/plain": [""] },
@@ -221,6 +224,8 @@ function outputToItems(output, models, input) {
   }
   const text = joinLines(data["text/plain"]);
   const svg = joinLines(data["image/svg+xml"]);
+  const plot3d = data["application/vnd.woxi.plot3d"];
+  if (plot3d && typeof plot3d === "object") return [{ type: "graphics", plot3d: plot3d }];
   if (svg) return [{ type: text ? "text" : "graphics", text: text || undefined, svg: svg }];
   if (text) return [{ type: "text", text: text }];
   return [];

@@ -23,6 +23,7 @@ import { persist } from "./notebook-store.js";
 import { latency as plotLatency } from "./plot-hooks.js";
 import * as WoxiPlot from "./plot-interact.js";
 import { build as buildPlotSamples } from "./plot-samples.js";
+import * as WoxiPlot3d from "./plot3d.js";
 import { refreshAssist } from "./refresh.js";
 import * as WoxiRender from "./render-output.js";
 import { runtime, state, toast } from "./runtime.js";
@@ -66,6 +67,7 @@ export async function evaluateEntry(entry) {
 
 function detachPlotControllers(entry) {
   if (!entry || !entry.dom) return;
+  WoxiPlot3d.detach(entry.dom.output);
   WoxiPlot.release(WoxiPlot.detach(entry.dom.output), entry.dom.output);
 }
 
@@ -182,6 +184,9 @@ export async function runEntry(entry) {
 
 export function attachPlots(entry, items, previous) {
   if (!entry || !entry.dom) return;
+  // The 3D scenes live in the answer items. A rebuild has no answer argument, so use
+  // the items the notebook restored before `items` is normalized to an empty list.
+  const plot3dItems = items ?? entry.items ?? [];
   // The samples of each plot in this answer, keyed by handle: a controller starts
   // from them instead of asking for what the engine just sent.
   const seeds = [];
@@ -216,6 +221,10 @@ export function attachPlots(entry, items, previous) {
     },
     seeds
   );
+  // 3D plots carry their whole scene in the answer (and in the notebook item), so a
+  // rebuild can re-attach them without an engine handle. `items` is null on a rebuild.
+  // `entry.items` still has the scene the notebook stored.
+  WoxiPlot3d.attach(entry.dom.output, plot3dItems);
 }
 
 export async function requestPlot(msgType, content) {

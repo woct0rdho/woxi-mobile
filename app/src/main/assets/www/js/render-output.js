@@ -11,6 +11,7 @@
 // Manipulate controls that live-update their view.
 
 import { escapeHtml } from "./html.js";
+import { html as plot3dHtml } from "./plot3d.js";
 import * as shape from "./svg-shape.js";
 import { DEFAULT_SLIDER_STEP, SLIDER_STEPS } from "./widgets.js";
 
@@ -209,6 +210,9 @@ function itemToHtml(item, index) {
         ? '<div class="woxi-out woxi-out-graphic">' + graphicSvg(item.svg) + "</div>"
         : '<div class="woxi-out woxi-out-math">' + typesetSvg(item.svg) + "</div>";
     case "graphics": {
+      // A 3D scene is drawn by `plot3d.js`. The engine item carries its geometry and
+      // camera instead of a megabyte of SVG.
+      if (item.plot3d) return plot3dHtml(item.plot3d, index);
       // A 2D plot carries a handle and the range it shows, so the plot can be
       // panned and zoomed without re-evaluating what the user typed. Only what a
       // rebuilt controller needs is persisted: the samples' coverage and the densify

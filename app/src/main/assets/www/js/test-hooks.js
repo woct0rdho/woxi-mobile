@@ -915,6 +915,40 @@ export function createTestAction(menu) {
         log("scrollto: " + argument);
         break;
       }
+      case "shotout": {
+        // Bring entry n's output to the top of the viewport (the in-app keyboard is a fixed
+        // part of the layout and does not fold away). Logs the plot card's on-screen
+        // rectangle and the keyboard's top edge, which is where a gesture or a screenshot
+        // of a plot goes.
+        const index = parseInt(argument, 10) - 1;
+        const target2 = state.entries[index];
+        if (!target2 || !target2.dom) {
+          log("shotout: no entry " + argument);
+          break;
+        }
+        const output = target2.dom.output;
+        output.scrollIntoView({ block: "start" });
+        const rect = output.getBoundingClientRect();
+        const keyboard = document.getElementById("woxi-keyboard");
+        const keyboardTop = keyboard ? keyboard.getBoundingClientRect().top : window.innerHeight;
+        const plot = output.querySelector(".woxi-plot3d, .woxi-plot");
+        const card = plot ? plot.getBoundingClientRect() : rect;
+        log(
+          "shotout: " +
+            argument +
+            " x=" +
+            Math.round(card.left) +
+            " y=" +
+            Math.round(card.top) +
+            " w=" +
+            Math.round(card.width) +
+            " h=" +
+            Math.round(card.height) +
+            " kb=" +
+            Math.round(keyboardTop)
+        );
+        break;
+      }
       case "sheet":
         menu.showMenu();
         break;
