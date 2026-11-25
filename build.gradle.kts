@@ -1,5 +1,5 @@
 plugins {
-    id("com.android.application") version "9.5.2" apply false
+    id("com.android.application") version "9.5.3" apply false
 }
 
 // AGP 9's built-in Kotlin runs on the Kotlin Gradle plugin it declares (2.2.10).
